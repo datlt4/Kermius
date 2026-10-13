@@ -99,6 +99,7 @@ export class Session {
     this.el.className = "session";
     this.el.innerHTML = `<div class="term"></div>${
       host ? `<div class="sess-tools">
+        <button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
         <button data-t="upload" title="Upload a file to the host">${icon("image", 15)}</button>
         <button data-t="paste-img" title="Paste image from clipboard">${icon("paste", 15)}</button>
         <div class="up-prog" hidden><div class="bar"><i></i></div><span></span></div></div>` : ""
@@ -232,7 +233,10 @@ export class Session {
     });
     this.el.querySelector(".sess-tools")?.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest<HTMLElement>("[data-t]")?.dataset.t;
-      if (a === "upload") this.pickAndUpload();
+      if (a === "snippets") {
+        const r = (e.target as HTMLElement).closest("button")!.getBoundingClientRect();
+        this.el.dispatchEvent(new CustomEvent("kermius-snippets", { bubbles: true, detail: { session: this, x: r.left, y: r.bottom + 4 } }));
+      } else if (a === "upload") this.pickAndUpload();
       else if (a === "paste-img") this.pasteImage();
     });
     this.overlay.addEventListener("click", (e) => {
@@ -409,6 +413,14 @@ export class Session {
     } finally {
       this.showProgress(null);
     }
+  }
+
+  /** Send a snippet: lines are typed as-is, with a final Enter. */
+  runText(script: string) {
+    if (!this.sid || this.state !== "connected") return toast("Not connected", "err");
+    const text = script.replace(/\r?\n/g, "\r");
+    api.sshWrite(this.sid, text.endsWith("\r") ? text : `${text}\r`);
+    this.term.focus();
   }
 
   pasteImage() {

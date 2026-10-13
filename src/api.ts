@@ -28,6 +28,14 @@ export interface Host {
   deleted: boolean;
 }
 
+export interface Snippet {
+  id: string;
+  name: string;
+  script: string;
+  updatedAt: number;
+  deleted: boolean;
+}
+
 export interface SyncSettings {
   url: string;
   token: string;
@@ -51,6 +59,9 @@ const tauriApi = {
   listHosts: () => invoke<Host[]>("list_hosts"),
   saveHost: (host: Host) => invoke<Host>("save_host", { host }),
   deleteHost: (id: string) => invoke<void>("delete_host", { id }),
+  listSnippets: () => invoke<Snippet[]>("list_snippets"),
+  saveSnippet: (snippet: Snippet) => invoke<Snippet>("save_snippet", { snippet }),
+  deleteSnippet: (id: string) => invoke<void>("delete_snippet", { id }),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),

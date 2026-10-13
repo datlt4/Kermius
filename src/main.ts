@@ -1,15 +1,18 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, emptyHost, isWeb, type Host, type SyncSettings, type Tunnel } from "./api";
+import { api, emptyHost, isWeb, type Host, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 
-type View = "hosts" | "forwarding" | "settings";
+type View = "hosts" | "forwarding" | "snippets" | "settings";
 
 const state = {
   hosts: [] as Host[],
+  snippets: [] as Snippet[],
+  /** Last focused terminal tab: where snippets run from the Snippets page. */
+  lastSession: "",
   view: "hosts" as View,
   folder: null as string | null,
   tag: null as string | null,
@@ -97,6 +100,7 @@ function renderSidebar() {
   const nav: [View, string, string][] = [
     ["hosts", "server", "Hosts"],
     ["forwarding", "forward", "Port Forwarding"],
+    ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
   ];
   els.nav.innerHTML = nav
@@ -241,6 +245,7 @@ els.tabs.addEventListener("auxclick", (e) => {
 
 function activate(id: string) {
   state.active = id;
+  if (id !== "home") state.lastSession = id;
   for (const s of state.sessions) s.id === id ? s.show() : s.hide();
   els.page.hidden = id !== "home";
   els.terms.hidden = id === "home";
@@ -277,6 +282,7 @@ function closeSession(id: string) {
 function renderPage() {
   if (state.view === "hosts") renderHosts();
   else if (state.view === "forwarding") renderForwarding();
+  else if (state.view === "snippets") renderSnippets();
   else renderSettings();
 }
 
@@ -525,6 +531,122 @@ els.page.addEventListener("click", async (e) => {
     }
   }
   renderForwardList();
+});
+
+// ---------- snippets ----------
+
+function renderSnippets() {
+  els.page.innerHTML = `
+    <div class="toolbar">
+      <label class="search snip-search">${icon("search")}<input placeholder="Search snippets…" value="${esc(state.query)}" spellcheck="false" /></label>
+      <button class="btn primary" data-snip="new">${icon("plus", 16)}<span>New Snippet</span></button>
+    </div>
+    <div class="content"><div class="snip-list"></div></div>`;
+  renderSnippetList();
+}
+
+function renderSnippetList() {
+  const q = state.query.trim().toLowerCase();
+  const list = state.snippets
+    .filter((x) => !q || x.name.toLowerCase().includes(q) || x.script.toLowerCase().includes(q))
+    .sort((a, b) => byName(a.name, b.name));
+  const canRun = !isWeb && state.sessions.length > 0;
+  $(".snip-list", els.page).innerHTML = list.length
+    ? `<div class="grid">${list
+        .map(
+          (x) => `<div class="card snip" data-snip-id="${x.id}" tabindex="0">
+            <div class="avatar snip-ic">${icon("code", 18)}</div>
+            <div class="card-body"><div class="card-title">${esc(x.name || "Untitled")}</div>
+              <div class="card-sub mono">${esc(x.script.split("\n")[0])}</div></div>
+            <div class="card-actions">
+              ${canRun ? `<button class="icon-btn" data-snip="run" title="Run in the last terminal">${icon("play", 15)}</button>` : ""}
+              <button class="icon-btn" data-snip="copy" title="Copy">${icon("copy", 15)}</button>
+            </div></div>`,
+        )
+        .join("")}</div>`
+    : `<div class="empty">${icon("code", 40)}<h3>No snippets</h3><p>Save commands you run often and send them to any terminal.</p>
+        <button class="btn primary" data-snip="new">New Snippet</button></div>`;
+}
+
+function runSnippet(sn: Snippet, session = state.sessions.find((s) => s.id === state.lastSession) ?? state.sessions[state.sessions.length - 1]) {
+  if (!session) return toast("Open a terminal first", "err");
+  activate(session.id);
+  session.runText(sn.script);
+}
+
+function snippetDialog(sn: Snippet) {
+  const el = document.createElement("div");
+  el.className = "modal-wrap";
+  el.innerHTML = `<form class="modal snip-modal">
+    <h3>${sn.id ? "Edit snippet" : "New snippet"}</h3>
+    <label class="field"><span>Name</span><input name="name" value="${esc(sn.name)}" placeholder="Restart docker stack" /></label>
+    <label class="field"><span>Script</span><textarea name="script" rows="8" spellcheck="false" placeholder="cd ~/app && docker compose up -d">${esc(sn.script)}</textarea></label>
+    <div class="modal-actions">${sn.id ? `<button type="button" class="btn danger" data-m="delete">Delete</button><div class="grow"></div>` : ""}
+      <button type="button" class="btn ghost" data-m="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div></form>`;
+  document.body.append(el);
+  const form = el.querySelector("form")!;
+  const close = () => el.remove();
+  (form.elements.namedItem(sn.id ? "script" : "name") as HTMLElement).focus();
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = (form.elements.namedItem("name") as HTMLInputElement).value.trim();
+    const script = (form.elements.namedItem("script") as HTMLTextAreaElement).value;
+    if (!script.trim()) return toast("Script is empty", "err");
+    try {
+      await api.saveSnippet({ ...sn, name: name || script.split("\n")[0].slice(0, 40), script });
+      close();
+      await reload();
+      scheduleSync();
+    } catch (err) {
+      toast(String(err), "err");
+    }
+  });
+  el.addEventListener("click", async (e) => {
+    const t = e.target as HTMLElement;
+    const m = t.closest<HTMLElement>("[data-m]")?.dataset.m;
+    if (m === "cancel" || t === el) return close();
+    if (m === "delete" && (await confirmDialog(`Delete ${sn.name || "snippet"}?`, "It will be removed from all synced devices."))) {
+      await api.deleteSnippet(sn.id);
+      close();
+      await reload();
+      scheduleSync();
+    }
+  });
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") form.requestSubmit();
+  });
+}
+
+els.page.addEventListener("click", (e) => {
+  if (state.view !== "snippets") return;
+  const t = e.target as HTMLElement;
+  const act = t.closest<HTMLElement>("[data-snip]")?.dataset.snip;
+  const card = t.closest<HTMLElement>("[data-snip-id]");
+  const sn = card && state.snippets.find((x) => x.id === card.dataset.snipId);
+  if (act === "new") return snippetDialog({ id: "", name: "", script: "", updatedAt: 0, deleted: false });
+  if (sn && act === "run") return runSnippet(sn);
+  if (sn && act === "copy") return api.clipboardWrite(sn.script).then(() => toast("Copied", "ok"));
+  if (sn) snippetDialog(sn);
+});
+
+els.page.addEventListener("input", (e) => {
+  const t = e.target as HTMLInputElement;
+  if (t.closest(".snip-search")) {
+    state.query = t.value;
+    renderSnippetList();
+  }
+});
+
+// Snippet picker from a terminal's toolbar.
+els.terms.addEventListener("kermius-snippets", (e) => {
+  const { session, x, y } = (e as CustomEvent).detail as { session: Session; x: number; y: number };
+  if (!state.snippets.length) return toast("No snippets yet: add them in Snippets", "info");
+  contextMenu(
+    x,
+    y,
+    [...state.snippets].sort((a, b) => byName(a.name, b.name)).map((sn) => ({ label: sn.name || sn.script.slice(0, 40), icon: "code", action: () => runSnippet(sn, session) })),
+  );
 });
 
 // ---------- settings ----------
@@ -877,7 +999,7 @@ async function runSync(manual: boolean) {
 // ---------- global ----------
 
 async function reload() {
-  state.hosts = await api.listHosts();
+  [state.hosts, state.snippets] = await Promise.all([api.listHosts(), api.listSnippets()]);
   renderSidebar();
   if (state.active === "home" && state.view !== "settings") {
     if (state.view === "hosts" && $(".results", els.page)) refreshResults();

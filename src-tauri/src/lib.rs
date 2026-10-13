@@ -8,7 +8,7 @@ mod sync;
 mod termix;
 mod tunnel;
 
-use model::{now_ms, Host, SyncSettings};
+use model::{now_ms, Host, Snippet, SyncSettings};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -69,6 +69,41 @@ fn delete_host(state: State<AppState>, id: String) -> Res<()> {
         let mut st = state.store.state.lock();
         if let Some(h) = st.vault.hosts.iter_mut().find(|h| h.id == id) {
             *h = Host { id: h.id.clone(), updated_at: now_ms(), deleted: true, ..Default::default() };
+        }
+    }
+    state.store.save().map_err(e)
+}
+
+#[tauri::command]
+fn list_snippets(state: State<AppState>) -> Vec<Snippet> {
+    let st = state.store.state.lock();
+    st.vault.snippets.iter().filter(|s| !s.deleted).cloned().collect()
+}
+
+#[tauri::command]
+fn save_snippet(state: State<AppState>, mut snippet: Snippet) -> Res<Snippet> {
+    if snippet.id.is_empty() {
+        snippet.id = uuid::Uuid::new_v4().to_string();
+    }
+    snippet.updated_at = now_ms();
+    snippet.deleted = false;
+    {
+        let mut st = state.store.state.lock();
+        match st.vault.snippets.iter_mut().find(|s| s.id == snippet.id) {
+            Some(s) => *s = snippet.clone(),
+            None => st.vault.snippets.push(snippet.clone()),
+        }
+    }
+    state.store.save().map_err(e)?;
+    Ok(snippet)
+}
+
+#[tauri::command]
+fn delete_snippet(state: State<AppState>, id: String) -> Res<()> {
+    {
+        let mut st = state.store.state.lock();
+        if let Some(s) = st.vault.snippets.iter_mut().find(|s| s.id == id) {
+            *s = Snippet { id: s.id.clone(), updated_at: now_ms(), deleted: true, ..Default::default() };
         }
     }
     state.store.save().map_err(e)
@@ -294,6 +329,9 @@ pub fn run() {
             save_host,
             delete_host,
             import_termix,
+            list_snippets,
+            save_snippet,
+            delete_snippet,
             copy_password,
             clipboard_write,
             clipboard_read,

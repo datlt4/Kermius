@@ -1,9 +1,9 @@
 // Web build backend: talks to the sync server on the same origin; vault lives only in memory.
-import type { Api, Host, SyncSettings } from "./api";
-import { decodeVault, encodeVault, mergeVaults, newSalt, type Vault } from "./vaultcrypto";
+import type { Api, Host, Snippet, SyncSettings } from "./api";
+import { decodeVault, emptyVault, encodeVault, mergeVaults, newSalt, type Vault } from "./vaultcrypto";
 
 let session: { token: string; passphrase: string } | null = null;
-let vault: Vault = { hosts: [], knownHosts: [] };
+let vault: Vault = emptyVault();
 let lastSync = 0;
 
 const unsupported = () => Promise.reject(new Error("Not available on the web"));
@@ -36,7 +36,7 @@ async function sync(): Promise<boolean> {
     const res = await fetch("/v1/vault", { headers: auth, cache: "no-store" });
     let version = 0;
     let salt: Uint8Array = newSalt();
-    let remote: Vault = { hosts: [], knownHosts: [] };
+    let remote: Vault = emptyVault();
     if (res.status === 200) {
       version = Number(res.headers.get("x-version"));
       ({ salt, vault: remote } = await decodeVault(session.passphrase, new Uint8Array(await res.arrayBuffer())));
@@ -63,7 +63,7 @@ async function sync(): Promise<boolean> {
 /** Unlock with the sync config; throws on wrong token/passphrase. */
 export async function webLogin(token: string, passphrase: string) {
   session = { token, passphrase };
-  vault = { hosts: [], knownHosts: [] };
+  vault = emptyVault();
   try {
     await sync();
   } catch (e) {
@@ -86,6 +86,19 @@ export const webApi: Api = {
   deleteHost: async (id: string) => {
     const i = vault.hosts.findIndex((x) => x.id === id);
     if (i >= 0) vault.hosts[i] = { ...vault.hosts[i], password: "", privateKey: "", keyPassphrase: "", notes: "", tunnels: [], deleted: true, updatedAt: Date.now() };
+    await sync();
+  },
+  listSnippets: async () => vault.snippets.filter((x) => !x.deleted),
+  saveSnippet: async (snippet: Snippet) => {
+    const sn = { ...snippet, id: snippet.id || uuid(), updatedAt: Date.now(), deleted: false };
+    const i = vault.snippets.findIndex((x) => x.id === sn.id);
+    i < 0 ? vault.snippets.push(sn) : (vault.snippets[i] = sn);
+    await sync();
+    return sn;
+  },
+  deleteSnippet: async (id: string) => {
+    const i = vault.snippets.findIndex((x) => x.id === id);
+    if (i >= 0) vault.snippets[i] = { ...vault.snippets[i], script: "", deleted: true, updatedAt: Date.now() };
     await sync();
   },
   importTermix: unsupported,

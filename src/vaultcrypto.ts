@@ -1,7 +1,7 @@
 // Browser/Node port of the Rust vault format (src-tauri/src/{crypto,sync,model}.rs).
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { argon2id } from "hash-wasm";
-import type { Host } from "./api";
+import type { Host, Snippet } from "./api";
 
 export interface KnownHost {
   id: string;
@@ -12,7 +12,12 @@ export interface KnownHost {
 export interface Vault {
   hosts: Host[];
   knownHosts: KnownHost[];
+  snippets: Snippet[];
+  /** Collections from other app versions are kept and merged too. */
+  [collection: string]: unknown;
 }
+
+export const emptyVault = (): Vault => ({ hosts: [], knownHosts: [], snippets: [] });
 
 const MAGIC = new TextEncoder().encode("KMS1");
 const SALT_LEN = 16;
@@ -49,12 +54,15 @@ export async function decodeVault(passphrase: string, blob: Uint8Array): Promise
     throw new Error("Wrong passphrase");
   }
   const v = JSON.parse(new TextDecoder().decode(plain));
-  return { salt, vault: { hosts: v.hosts ?? [], knownHosts: v.knownHosts ?? [] } };
+  return { salt, vault: { ...emptyVault(), ...v } };
 }
 
 export const newSalt = () => random(SALT_LEN);
 
-function mergeItems<T extends { id: string; updatedAt: number }>(a: T[], b: T[]): T[] {
+type Item = { id: string; updatedAt: number };
+const isItems = (v: unknown): v is Item[] => Array.isArray(v) && v.every((x) => x && typeof x === "object" && "id" in x);
+
+function mergeItems<T extends Item>(a: T[], b: T[]): T[] {
   const out = a.map((x) => ({ ...x }));
   for (const item of b) {
     const i = out.findIndex((x) => x.id === item.id);
@@ -64,11 +72,14 @@ function mergeItems<T extends { id: string; updatedAt: number }>(a: T[], b: T[])
   return out;
 }
 
-/** Per-item last-writer-wins, same as `model::merge`. */
-export const mergeVaults = (a: Vault, b: Vault): Vault => ({
-  hosts: mergeItems(a.hosts, b.hosts),
-  knownHosts: mergeItems(a.knownHosts, b.knownHosts),
-});
+/** Per-item last-writer-wins for every `{id, updatedAt}` collection, same as `model::merge`. */
+export function mergeVaults(a: Vault, b: Vault): Vault {
+  const out: Vault = { ...b, ...a };
+  for (const k of Object.keys(b)) {
+    if (isItems(a[k]) && isItems(b[k])) out[k] = mergeItems(a[k] as Item[], b[k] as Item[]);
+  }
+  return out;
+}
 
 /** base64("url|token|passphrase"); passphrase may contain "|". */
 export function parseSyncConfig(text: string): { url: string; token: string; passphrase: string } | null {
