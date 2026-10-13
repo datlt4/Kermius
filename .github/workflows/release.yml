@@ -69,79 +69,15 @@ jobs:
           Compress-Archive -Path $exe.FullName -DestinationPath kermius_${{ matrix.name }}_portable.zip
           gh release upload "${{ github.ref_name }}" kermius_${{ matrix.name }}_portable.zip --clobber
 
-  android:
+  mobile:
     needs: create-release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager "ndk;27.2.12479018"
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
-      - uses: swatinem/rust-cache@v2
-        with: { workspaces: src-tauri, key: android }
-      - run: npm ci
-      - name: Build APK
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-        run: |
-          npx tauri android init --ci
-          npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
-      - name: Sign and upload APK
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-        run: |
-          # Your keystore if configured; otherwise a throwaway key (sideloading works, but updates need the same key).
-          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > ks.jks; PASS="$KEYSTORE_PASS";
-          else PASS=kermius-ci; keytool -genkeypair -keystore ks.jks -storepass $PASS -keypass $PASS -alias kermius -keyalg RSA -validity 10000 -dname "CN=Kermius"; fi
-          APK=$(find src-tauri/gen/android -name '*universal-release-unsigned.apk' | head -1)
-          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
-          $BT/zipalign -f 4 "$APK" aligned.apk
-          OUT=kermius_android_${GITHUB_REF_NAME#v}.apk
-          $BT/apksigner sign --ks ks.jks --ks-pass pass:$PASS --out "$OUT" aligned.apk
-          gh release upload "$GITHUB_REF_NAME" "$OUT" --clobber
-
-  # Unsigned device build: re-sign on a Mac with a personal Apple ID (Sideloadly, AltStore, Xcode).
-  ios:
-    needs: create-release
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "aarch64-apple-ios" }
-      - uses: swatinem/rust-cache@v2
-        with: { workspaces: src-tauri, key: ios }
-      - run: npm ci
-      - run: npm run build
-      - run: npx tauri ios init --ci
-      - name: Build unsigned archive
-        run: |
-          PROJ=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -1)
-          SCHEME=$(xcodebuild -list -json -project "$PROJ" | node -e 'const j=JSON.parse(require("fs").readFileSync(0));console.log(j.project.schemes.find(s=>/iOS/i.test(s))||j.project.schemes[0])')
-          echo "project=$PROJ scheme=$SCHEME"
-          xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration release \
-            -destination 'generic/platform=iOS' -archivePath build/Kermius.xcarchive archive \
-            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM="" > xcodebuild.log 2>&1 || true
-          tail -n 40 xcodebuild.log
-          APP=$(find build/Kermius.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
-          if [ -z "$APP" ]; then grep -E "error:|ARCHIVE FAILED" xcodebuild.log | sort -u | head -n 10 | while IFS= read -r l; do echo "::error::${l:0:900}"; done; exit 1; fi
-          mkdir -p Payload && cp -R "$APP" Payload/
-          zip -qr "kermius_ios_${GITHUB_REF_NAME#v}_unsigned.ipa" Payload
-      - name: Upload IPA
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" kermius_ios_*_unsigned.ipa --clobber
+    uses: ./.github/workflows/mobile.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
 
   publish:
-    needs: [create-release, desktop, android, ios]
+    needs: [create-release, desktop, mobile]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
