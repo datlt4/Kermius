@@ -60,3 +60,7 @@ API: `GET /v1/vault` → blob + `x-version`; `PUT /v1/vault` with `x-base-versio
 | `Ctrl+Tab` / `Ctrl+1…9` | Switch tabs |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste in terminal |
 | `Ctrl+S` / `Esc` | Save / close host editor |
+
+## License
+
+[MIT](LICENSE)
