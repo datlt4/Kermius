@@ -1,6 +1,8 @@
 services:
   kermius-sync:
-    build: .
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     image: hienanh/kermius-sync:latest
     container_name: kermius-sync
     restart: unless-stopped

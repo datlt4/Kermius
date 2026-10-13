@@ -2,15 +2,20 @@
 //! with a monotonically increasing version (optimistic concurrency).
 //! The server never sees plaintext or the encryption passphrase.
 //!
-//! Env: KERMIUS_TOKEN (required), KERMIUS_DATA (default ./data), KERMIUS_ADDR (default 0.0.0.0:8080)
+//! Also serves the web client (KERMIUS_WEB dir) which decrypts the vault in the browser.
+//!
+//! Env: KERMIUS_TOKEN (required), KERMIUS_DATA (default ./data), KERMIUS_ADDR (default 0.0.0.0:8080),
+//! KERMIUS_WEB (default ./web)
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tokio::sync::Mutex;
 
 struct App {
@@ -85,12 +90,26 @@ async fn main() {
     let addr = std::env::var("KERMIUS_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
 
     let app = Arc::new(App { token, dir, lock: Mutex::new(()) });
-    let router = Router::new()
-        .route("/", get(|| async { "ok" }))
+    let web = PathBuf::from(std::env::var("KERMIUS_WEB").unwrap_or_else(|_| "./web".into()));
+    let mut router = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/vault", get(get_vault).put(put_vault))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(app);
+    router = if web.join("index.html").exists() {
+        router.fallback_service(ServeDir::new(&web).fallback(ServeFile::new(web.join("index.html"))))
+    } else {
+        router.route("/", get(|| async { "ok" }))
+    };
+    let set = |name, value| SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value));
+    let router = router
+        .layer(set(
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+        ))
+        .layer(set(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+        .layer(set(header::REFERRER_POLICY, "no-referrer"));
 
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     println!("kermius-sync listening on {addr}");

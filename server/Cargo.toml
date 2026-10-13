@@ -1,10 +1,11 @@
 [package]
 name = "kermius-sync"
-version = "0.1.1"
+version = "1.0.0"
 edition = "2021"
 
 [dependencies]
 axum = "0.8"
+tower-http = { version = "0.6", features = ["fs", "set-header"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync", "signal"] }
 
 [profile.release]
