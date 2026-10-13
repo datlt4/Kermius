@@ -1,0 +1,782 @@
+import "./styles.css";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { api, emptyHost, type Host, type SyncSettings, type Tunnel } from "./api";
+import { Session, loadPrefs, type TermPrefs } from "./terminal";
+import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
+
+type View = "hosts" | "forwarding" | "settings";
+
+const state = {
+  hosts: [] as Host[],
+  view: "hosts" as View,
+  folder: null as string | null,
+  tag: null as string | null,
+  query: "",
+  layout: (localStorage.getItem("kermius.layout") as "grid" | "list") || "grid",
+  sessions: [] as Session[],
+  active: "home" as string,
+  editing: null as Host | null,
+  tunnels: new Set<string>(),
+  sync: null as SyncSettings | null,
+  syncing: false,
+  syncError: "",
+};
+
+const app = $("#app");
+app.innerHTML = `
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand" data-tauri-drag-region><div class="logo">${icon("terminal", 18)}</div><span>Kermius</span></div>
+    <nav class="nav"></nav>
+    <div class="side-scroll"></div>
+    <div class="side-foot"></div>
+  </aside>
+  <div class="scrim"></div>
+  <main class="main">
+    <div class="tabbar"></div>
+    <div class="stage">
+      <section class="page"></section>
+      <div class="terms"></div>
+    </div>
+  </main>
+  <aside class="drawer"></aside>
+</div>`;
+
+const els = {
+  shell: $(".shell"),
+  nav: $(".nav"),
+  side: $(".side-scroll"),
+  foot: $(".side-foot"),
+  tabs: $(".tabbar"),
+  page: $(".page"),
+  terms: $(".terms"),
+  drawer: $(".drawer"),
+};
+
+// ---------- derived data ----------
+
+const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
+function folders() {
+  const m = new Map<string, number>();
+  for (const h of state.hosts) if (h.folder) m.set(h.folder, (m.get(h.folder) ?? 0) + 1);
+  return [...m].sort((a, b) => byName(a[0], b[0]));
+}
+
+function tags() {
+  const m = new Map<string, number>();
+  for (const h of state.hosts) for (const t of h.tags) m.set(t, (m.get(t) ?? 0) + 1);
+  return [...m].sort((a, b) => byName(a[0], b[0]));
+}
+
+function matches(h: Host, q: string) {
+  return [h.name, h.address, h.username, h.folder, ...h.tags].some((s) => s.toLowerCase().includes(q));
+}
+
+function visibleHosts() {
+  const q = state.query.trim().toLowerCase();
+  let list = state.hosts;
+  if (q) list = list.filter((h) => matches(h, q));
+  else if (state.tag) list = list.filter((h) => h.tags.includes(state.tag!));
+  else list = list.filter((h) => h.folder === (state.folder ?? ""));
+  if (state.tag && q) list = list.filter((h) => h.tags.includes(state.tag!));
+  return [...list].sort((a, b) => byName(a.name, b.name));
+}
+
+// ---------- sidebar ----------
+
+function renderSidebar() {
+  const nav: [View, string, string][] = [
+    ["hosts", "server", "Hosts"],
+    ["forwarding", "forward", "Port Forwarding"],
+    ["settings", "settings", "Settings"],
+  ];
+  els.nav.innerHTML = nav
+    .map(([v, ic, label]) => `<button class="nav-item ${state.view === v && state.active === "home" ? "on" : ""}" data-view="${v}">${icon(ic)}<span>${label}</span></button>`)
+    .join("");
+
+  const fs = folders();
+  const ts = tags();
+  els.side.innerHTML = `
+    <div class="side-title">Groups</div>
+    ${fs.map(([f, n]) => `<button class="side-item ${state.folder === f && !state.tag ? "on" : ""}" data-folder="${esc(f)}">
+        <span class="dot" style="--h:${hue(f)}"></span><span class="grow">${esc(f)}</span><span class="count">${n}</span></button>`).join("")}
+    <div class="side-title">Tags</div>
+    <div class="tag-cloud">${ts.map(([t, n]) => `<button class="chip ${state.tag === t ? "on" : ""}" data-tag="${esc(t)}">${esc(t)} <b>${n}</b></button>`).join("")}</div>`;
+  renderSyncFoot();
+}
+
+function renderSyncFoot() {
+  const s = state.sync;
+  let text = "Sync off";
+  let cls = "off";
+  if (s?.url) {
+    if (state.syncing) (text = "Syncing…"), (cls = "busy");
+    else if (state.syncError) (text = "Sync failed"), (cls = "err");
+    else if (s.lastSync) (text = `Synced ${ago(s.lastSync)}`), (cls = "ok");
+    else text = "Not synced yet";
+  }
+  els.foot.innerHTML = `<button class="sync-pill ${cls}" title="${esc(state.syncError)}">${icon("sync", 14)}<span>${text}</span></button>`;
+}
+
+function ago(ts: number) {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+els.nav.addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-view]");
+  if (!b) return;
+  state.view = b.dataset.view as View;
+  state.folder = null;
+  state.tag = null;
+  goHome();
+});
+
+els.side.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const f = t.closest<HTMLElement>("[data-folder]");
+  const tg = t.closest<HTMLElement>("[data-tag]");
+  if (f) {
+    state.folder = state.folder === f.dataset.folder && !state.tag ? null : f.dataset.folder!;
+    state.tag = null;
+  } else if (tg) {
+    state.tag = state.tag === tg.dataset.tag ? null : tg.dataset.tag!;
+    state.folder = null;
+  } else return;
+  state.view = "hosts";
+  state.query = "";
+  goHome();
+});
+
+els.foot.addEventListener("click", () => {
+  if (state.sync?.url) runSync(true);
+  else {
+    state.view = "settings";
+    goHome();
+  }
+});
+
+$(".scrim").addEventListener("click", () => els.shell.classList.remove("side-open"));
+
+// ---------- tabs ----------
+
+function renderTabs() {
+  els.tabs.innerHTML = `
+    <button class="icon-btn menu-btn" data-act="menu">${icon("menu")}</button>
+    <button class="tab home ${state.active === "home" ? "on" : ""}" data-tab="home">${icon("lock", 15)}<span>Vault</span></button>
+    ${state.sessions
+      .map(
+        (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
+          <span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}</span>
+          <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
+      )
+      .join("")}
+    <div class="grow" data-tauri-drag-region></div>
+    ${state.active !== "home" ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
+    ${desktop ? `<div class="win-ctl">
+      <button data-win="min" title="Minimize">${icon("min", 15)}</button>
+      <button data-win="max" title="Maximize">${icon("max", 13)}</button>
+      <button data-win="close" class="close" title="Close">${icon("x", 15)}</button></div>` : ""}`;
+}
+
+// Custom title bar: window controls live in the tab bar (desktop only).
+const desktop = !/Android|iPhone|iPad/i.test(navigator.userAgent);
+els.tabs.setAttribute("data-tauri-drag-region", "");
+
+els.tabs.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const win = t.closest<HTMLElement>("[data-win]")?.dataset.win;
+  if (win) {
+    const w = getCurrentWindow();
+    return void (win === "min" ? w.minimize() : win === "max" ? w.toggleMaximize() : w.close());
+  }
+  const close = t.closest<HTMLElement>("[data-close]");
+  if (close) return closeSession(close.dataset.close!);
+  const act = t.closest<HTMLElement>("[data-act]")?.dataset.act;
+  if (act === "menu") return els.shell.classList.toggle("side-open");
+  if (act === "copy-pass") return state.sessions.find((s) => s.id === state.active)?.copyPassword();
+  const tab = t.closest<HTMLElement>("[data-tab]");
+  if (tab) activate(tab.dataset.tab!);
+});
+
+els.tabs.addEventListener("auxclick", (e) => {
+  const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
+  if (e.button === 1 && tab && tab.dataset.tab !== "home") closeSession(tab.dataset.tab!);
+});
+
+function activate(id: string) {
+  state.active = id;
+  for (const s of state.sessions) s.id === id ? s.show() : s.hide();
+  els.page.hidden = id !== "home";
+  els.terms.hidden = id === "home";
+  renderTabs();
+  renderSidebar();
+  if (id === "home") $<HTMLInputElement>(".search input", els.page)?.focus({ preventScroll: true });
+}
+
+function goHome() {
+  els.shell.classList.remove("side-open");
+  renderPage();
+  activate("home");
+}
+
+function openSession(h: Host) {
+  const s = new Session(h, renderTabs, (x) => closeSession(x.id));
+  state.sessions.push(s);
+  s.mount(els.terms);
+  els.shell.classList.remove("side-open");
+  activate(s.id);
+}
+
+function closeSession(id: string) {
+  const i = state.sessions.findIndex((s) => s.id === id);
+  if (i < 0) return;
+  state.sessions[i].dispose();
+  state.sessions.splice(i, 1);
+  if (state.active === id) activate(state.sessions[Math.min(i, state.sessions.length - 1)]?.id ?? "home");
+  else renderTabs();
+}
+
+// ---------- pages ----------
+
+function renderPage() {
+  if (state.view === "hosts") renderHosts();
+  else if (state.view === "forwarding") renderForwarding();
+  else renderSettings();
+}
+
+function hostCard(h: Host) {
+  const shown = h.tags.slice(0, 3);
+  return `<div class="card host" data-host="${h.id}" tabindex="0">
+    <div class="avatar" style="--h:${hue(h.folder || h.name)}">${icon("server", 20)}</div>
+    <div class="card-body">
+      <div class="card-title">${esc(h.name || h.address)}</div>
+      <div class="card-sub">ssh, ${esc(h.username || "—")}${state.layout === "list" ? ` · ${esc(h.address)}:${h.port}` : ""}</div>
+      ${shown.length ? `<div class="card-tags">${shown.map((t) => `<span class="mini-tag">${esc(t)}</span>`).join("")}${h.tags.length > 3 ? `<span class="mini-tag">+${h.tags.length - 3}</span>` : ""}</div>` : ""}
+    </div>
+    <div class="card-actions">
+      ${h.password ? `<button class="icon-btn" data-act="pass" title="Copy password">${icon("key", 16)}</button>` : ""}
+      <button class="icon-btn" data-act="edit" title="Edit">${icon("edit", 16)}</button>
+    </div>
+  </div>`;
+}
+
+function renderHosts() {
+  const q = state.query.trim();
+  const list = visibleHosts();
+  const showGroups = !q && !state.folder && !state.tag;
+  const groups = showGroups ? folders() : [];
+  const crumb = state.folder
+    ? `<button class="crumb" data-crumb>All hosts</button>${icon("chevron", 14)}<span>${esc(state.folder)}</span>`
+    : state.tag
+      ? `<button class="crumb" data-crumb>All hosts</button>${icon("chevron", 14)}<span>#${esc(state.tag)}</span>`
+      : "";
+
+  els.page.innerHTML = `
+    <div class="toolbar">
+      <label class="search">${icon("search")}<input placeholder="Search hosts, IPs, users, tags…  (Ctrl+K)" value="${esc(state.query)}" spellcheck="false" autocomplete="off" /></label>
+      <button class="btn primary" data-act="new">${icon("plus", 16)}<span>New Host</span></button>
+      <div class="seg">
+        <button class="${state.layout === "grid" ? "on" : ""}" data-layout="grid" title="Grid">${icon("grid", 16)}</button>
+        <button class="${state.layout === "list" ? "on" : ""}" data-layout="list" title="List">${icon("list", 16)}</button>
+      </div>
+    </div>
+    <div class="content">
+      ${crumb ? `<div class="crumbs">${crumb}</div>` : ""}
+      <div class="results">${resultsHtml(groups, list, showGroups)}</div>
+    </div>`;
+}
+
+function resultsHtml(groups: [string, number][], list: Host[], showGroups: boolean) {
+  const empty = !state.hosts.length
+    ? `<div class="empty">${icon("server", 40)}<h3>No hosts yet</h3><p>Create a host or import your Termix export from Settings.</p>
+        <div class="row"><button class="btn primary" data-act="new">New Host</button><button class="btn ghost" data-act="goto-settings">Import</button></div></div>`
+    : `<div class="empty small"><p>No hosts match.</p></div>`;
+  return `
+    ${groups.length ? `<h4 class="section">Groups</h4><div class="grid groups">${groups
+      .map(([f, n]) => `<div class="card group" data-open-folder="${esc(f)}" tabindex="0">
+        <div class="avatar folder" style="--h:${hue(f)}">${icon("folder", 20)}</div>
+        <div class="card-body"><div class="card-title">${esc(f)}</div><div class="card-sub">${n} host${n === 1 ? "" : "s"}</div></div></div>`)
+      .join("")}</div>` : ""}
+    ${list.length ? `<h4 class="section">${showGroups ? "Hosts" : `${list.length} host${list.length === 1 ? "" : "s"}`}</h4>
+      <div class="grid ${state.layout}">${list.map(hostCard).join("")}</div>` : groups.length ? "" : empty}`;
+}
+
+/** Update only the results when typing so the input keeps focus and stays snappy. */
+function refreshResults() {
+  const q = state.query.trim();
+  const showGroups = !q && !state.folder && !state.tag;
+  const r = $(".results", els.page);
+  if (r) r.innerHTML = resultsHtml(showGroups ? folders() : [], visibleHosts(), showGroups);
+}
+
+els.page.addEventListener("input", (e) => {
+  const t = e.target as HTMLInputElement;
+  if (t.closest(".search")) {
+    state.query = t.value;
+    refreshResults();
+  } else if (t.closest(".fwd-search")) {
+    state.query = t.value;
+    renderForwardList();
+  }
+});
+
+els.page.addEventListener("keydown", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest(".search") && e.key === "Enter") {
+    const first = visibleHosts()[0];
+    if (first) openSession(first);
+  } else if (e.key === "Enter" && t.classList.contains("card")) t.click();
+});
+
+els.page.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const act = t.closest<HTMLElement>("[data-act]")?.dataset.act;
+  const card = t.closest<HTMLElement>("[data-host]");
+  const host = card && state.hosts.find((h) => h.id === card.dataset.host);
+  if (act === "new") return openEditor({ ...emptyHost(), folder: state.folder ?? "", tags: state.tag ? [state.tag] : [] });
+  if (act === "goto-settings") return (state.view = "settings"), goHome();
+  if (host && act === "pass") return copyPassword(host);
+  if (host && act === "edit") return openEditor(host);
+  if (host) return openSession(host);
+  const lay = t.closest<HTMLElement>("[data-layout]");
+  if (lay) {
+    state.layout = lay.dataset.layout as "grid" | "list";
+    localStorage.setItem("kermius.layout", state.layout);
+    return renderHosts();
+  }
+  const f = t.closest<HTMLElement>("[data-open-folder]");
+  if (f) return (state.folder = f.dataset.openFolder!), (state.query = ""), goHome();
+  if (t.closest("[data-crumb]")) return (state.folder = null), (state.tag = null), goHome();
+});
+
+els.page.addEventListener("contextmenu", (e) => {
+  const card = (e.target as HTMLElement).closest<HTMLElement>("[data-host]");
+  const h = card && state.hosts.find((x) => x.id === card.dataset.host);
+  if (!h) return;
+  e.preventDefault();
+  contextMenu(e.clientX, e.clientY, [
+    { label: "Connect", icon: "terminal", action: () => openSession(h) },
+    { label: "Copy password", icon: "key", action: () => copyPassword(h) },
+    { label: "Copy address", icon: "copy", action: () => api.clipboardWrite(h.address).then(() => toast("Address copied", "ok")) },
+    { label: "Copy ssh command", icon: "copy", action: () => api.clipboardWrite(`ssh ${h.username ? h.username + "@" : ""}${h.address}${h.port !== 22 ? ` -p ${h.port}` : ""}`).then(() => toast("Command copied", "ok")) },
+    "-",
+    { label: "Edit", icon: "edit", action: () => openEditor(h) },
+    { label: "Duplicate", icon: "plus", action: () => openEditor({ ...h, id: "", name: `${h.name} copy`, tunnels: h.tunnels.map((t) => ({ ...t })) }) },
+    { label: "Delete", icon: "trash", danger: true, action: () => deleteHost(h) },
+  ]);
+});
+
+function copyPassword(h: Host) {
+  api.copyPassword(h.id).then(
+    () => toast(`Password for ${h.name} copied`, "ok"),
+    (e) => toast(String(e), "err"),
+  );
+}
+
+// ---------- port forwarding ----------
+
+function renderForwarding() {
+  els.page.innerHTML = `
+    <div class="toolbar">
+      <label class="search fwd-search">${icon("search")}<input placeholder="Filter port forwarding rules…" value="${esc(state.query)}" spellcheck="false" /></label>
+    </div>
+    <div class="content"><div class="fwd-list"></div></div>`;
+  api.tunnelList().then((l) => {
+    state.tunnels = new Set(l);
+    renderForwardList();
+  });
+}
+
+function renderForwardList() {
+  const q = state.query.trim().toLowerCase();
+  const rows = state.hosts
+    .filter((h) => h.tunnels.length && (!q || matches(h, q) || h.tunnels.some((t) => String(t.sourcePort).includes(q))))
+    .sort((a, b) => byName(a.name, b.name));
+  const el = $(".fwd-list", els.page);
+  if (!el) return;
+  el.innerHTML = rows.length
+    ? rows
+        .map(
+          (h) => `<div class="fwd-host"><div class="fwd-head"><div class="avatar sm" style="--h:${hue(h.folder || h.name)}">${icon("server", 14)}</div>
+            <b>${esc(h.name)}</b><span class="muted">${esc(h.username)}@${esc(h.address)}</span></div>
+            ${h.tunnels
+              .map((t, i) => {
+                const on = state.tunnels.has(`${h.id}:${i}`);
+                return `<div class="fwd-row ${on ? "on" : ""}">
+                  <span class="badge">Local</span>
+                  <code>${esc(t.bindHost || "127.0.0.1")}:${t.sourcePort}</code>${icon("chevron", 14)}<code>${esc(t.endpointHost || "localhost")}:${t.endpointPort}</code>
+                  <div class="grow"></div>
+                  ${on ? `<button class="icon-btn" data-open-url="http://localhost:${t.sourcePort}" title="Copy URL">${icon("copy", 15)}</button>` : ""}
+                  <button class="switch ${on ? "on" : ""}" data-tunnel="${h.id}:${i}" aria-label="toggle"><i></i></button></div>`;
+              })
+              .join("")}</div>`,
+        )
+        .join("")
+    : `<div class="empty">${icon("forward", 40)}<h3>No port forwarding rules</h3><p>Add rules in a host's editor.</p></div>`;
+}
+
+els.page.addEventListener("click", async (e) => {
+  const t = e.target as HTMLElement;
+  const url = t.closest<HTMLElement>("[data-open-url]")?.dataset.openUrl;
+  if (url) return api.clipboardWrite(url).then(() => toast(`${url} copied`, "ok"));
+  const sw = t.closest<HTMLElement>("[data-tunnel]");
+  if (!sw) return;
+  const key = sw.dataset.tunnel!;
+  const [id, idx] = [key.slice(0, key.lastIndexOf(":")), +key.slice(key.lastIndexOf(":") + 1)];
+  if (state.tunnels.has(key)) {
+    await api.tunnelStop(id, idx);
+    state.tunnels.delete(key);
+  } else {
+    sw.classList.add("busy");
+    try {
+      await api.tunnelStart(id, idx);
+      state.tunnels.add(key);
+      toast("Tunnel started", "ok");
+    } catch (err) {
+      toast(String(err), "err");
+    }
+  }
+  renderForwardList();
+});
+
+// ---------- settings ----------
+
+function renderSettings() {
+  const s = state.sync ?? { url: "", token: "", passphrase: "", lastSync: 0 };
+  const p = loadPrefs();
+  els.page.innerHTML = `
+    <div class="content settings">
+      <h2>Settings</h2>
+      <div class="panel">
+        <div class="panel-head">${icon("sync")}<div><h3>Sync</h3><p class="muted">End-to-end encrypted. Data is encrypted on this device with your passphrase; the server only stores ciphertext.</p></div></div>
+        <label class="field"><span>Server URL</span><input id="s-url" placeholder="https://sync.example.com" value="${esc(s.url)}" /></label>
+        <label class="field"><span>Access token</span><input id="s-token" type="password" value="${esc(s.token)}" /></label>
+        <label class="field"><span>Encryption passphrase</span><input id="s-pass" type="password" value="${esc(s.passphrase)}" />
+          <small>Use the same passphrase on every device. If you lose it, synced data cannot be recovered.</small></label>
+        <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>
+          <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">${icon("import")}<div><h3>Import from Termix</h3><p class="muted">Termix → Host Manager → Export (JSON). Existing hosts are updated, not duplicated.</p></div></div>
+        <label class="field"><span>Export file path</span><input id="imp-path" placeholder="/home/you/termix-hosts.json" /></label>
+        <div class="row"><button class="btn" data-set="import">Import</button></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">${icon("terminal")}<div><h3>Terminal</h3></div></div>
+        <div class="field-row">
+          <label class="field grow"><span>Font family</span><input id="t-font" value="${esc(p.fontFamily)}" /></label>
+          <label class="field" style="width:110px"><span>Font size</span><input id="t-size" type="number" min="8" max="32" value="${p.fontSize}" /></label>
+        </div>
+        <div class="row"><button class="btn" data-set="term">Apply</button></div>
+      </div>
+      <p class="muted center">Kermius 0.1.0 · ${state.hosts.length} hosts</p>
+    </div>`;
+}
+
+els.page.addEventListener("click", async (e) => {
+  const a = (e.target as HTMLElement).closest<HTMLElement>("[data-set]")?.dataset.set;
+  if (!a) return;
+  const v = (id: string) => $<HTMLInputElement>(`#${id}`).value;
+  if (a === "sync-save") {
+    const settings = { url: v("s-url").trim(), token: v("s-token"), passphrase: v("s-pass"), lastSync: state.sync?.lastSync ?? 0 };
+    await api.setSyncSettings(settings);
+    state.sync = settings;
+    if (settings.url) await runSync(true);
+    renderSettings();
+  } else if (a === "import") {
+    try {
+      const r = await api.importTermix(v("imp-path").trim());
+      toast(`Imported: ${r.added} added, ${r.updated} updated`, "ok");
+      await reload();
+      scheduleSync();
+    } catch (err) {
+      toast(String(err), "err");
+    }
+  } else if (a === "term") {
+    const p: TermPrefs = { fontFamily: v("t-font"), fontSize: Math.max(8, Math.min(32, +v("t-size") || 14)) };
+    localStorage.setItem("kermius.term", JSON.stringify(p));
+    for (const s of state.sessions) s.applyPrefs(p);
+    toast("Terminal settings applied", "ok");
+  }
+});
+
+// ---------- editor drawer ----------
+
+function openEditor(h: Host) {
+  state.editing = structuredClone(h);
+  renderEditor();
+  els.shell.classList.add("drawer-open");
+  requestAnimationFrame(() => $<HTMLInputElement>("#e-address", els.drawer)?.focus());
+}
+
+function closeEditor() {
+  els.shell.classList.remove("drawer-open");
+  state.editing = null;
+}
+
+function tunnelRow(t: Tunnel, i: number) {
+  return `<div class="tun-row" data-i="${i}">
+    <input data-f="bindHost" value="${esc(t.bindHost)}" placeholder="127.0.0.1" />
+    <input data-f="sourcePort" type="number" value="${t.sourcePort || ""}" placeholder="8080" />
+    ${icon("chevron", 14)}
+    <input data-f="endpointHost" value="${esc(t.endpointHost)}" placeholder="localhost" />
+    <input data-f="endpointPort" type="number" value="${t.endpointPort || ""}" placeholder="80" />
+    <button class="icon-btn" data-ed="rm-tun" data-i="${i}">${icon("x", 14)}</button></div>`;
+}
+
+function renderEditor() {
+  const h = state.editing!;
+  els.drawer.innerHTML = `
+    <div class="drawer-head">
+      <button class="icon-btn" data-ed="close">${icon("back")}</button>
+      <h3>${h.id ? "Edit host" : "New host"}</h3>
+      <div class="grow"></div>
+      ${h.id ? `<button class="icon-btn danger" data-ed="delete" title="Delete">${icon("trash", 16)}</button>` : ""}
+    </div>
+    <div class="drawer-body">
+      <div class="hero">
+        <div class="avatar lg" style="--h:${hue(h.folder || h.name || "x")}">${icon("server", 26)}</div>
+        <label class="field grow"><span>Address</span><input id="e-address" value="${esc(h.address)}" placeholder="IP or hostname" spellcheck="false" /></label>
+      </div>
+      <div class="panel">
+        <h5>General</h5>
+        <label class="field"><span>Label</span><input id="e-name" value="${esc(h.name)}" placeholder="My server" /></label>
+        <label class="field"><span>Group</span><input id="e-folder" list="dl-folders" value="${esc(h.folder)}" placeholder="No group" /></label>
+        <datalist id="dl-folders">${folders().map(([f]) => `<option value="${esc(f)}">`).join("")}</datalist>
+        <div class="field"><span>Tags</span>
+          <div class="tag-input">${h.tags.map((t, i) => `<span class="chip on">${esc(t)}<button data-ed="rm-tag" data-i="${i}">${icon("x", 11)}</button></span>`).join("")}
+            <input id="e-tag" list="dl-tags" placeholder="Add tag…" /></div>
+          <datalist id="dl-tags">${tags().filter(([t]) => !h.tags.includes(t)).map(([t]) => `<option value="${esc(t)}">`).join("")}</datalist>
+        </div>
+      </div>
+      <div class="panel">
+        <h5>SSH</h5>
+        <div class="field-row">
+          <label class="field grow"><span>Username</span><input id="e-user" value="${esc(h.username)}" spellcheck="false" /></label>
+          <label class="field" style="width:96px"><span>Port</span><input id="e-port" type="number" value="${h.port}" /></label>
+        </div>
+        <label class="field"><span>Password</span>
+          <div class="input-group"><input id="e-pass" type="password" value="${esc(h.password)}" autocomplete="off" />
+            <button class="icon-btn" data-ed="toggle-pass" title="Show">${icon("eye", 16)}</button>
+            <button class="icon-btn" data-ed="copy-pass" title="Copy">${icon("copy", 16)}</button></div></label>
+        <details ${h.privateKey ? "open" : ""}><summary>Private key</summary>
+          <label class="field"><textarea id="e-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellcheck="false">${esc(h.privateKey)}</textarea></label>
+          <label class="field"><span>Key passphrase</span><input id="e-keypass" type="password" value="${esc(h.keyPassphrase)}" /></label>
+        </details>
+      </div>
+      <div class="panel">
+        <h5>Port forwarding <small class="muted">local → remote</small></h5>
+        <div class="tuns">${h.tunnels.map(tunnelRow).join("")}</div>
+        <button class="btn ghost sm" data-ed="add-tun">${icon("plus", 14)} Add rule</button>
+      </div>
+      <div class="panel">
+        <h5>Notes</h5>
+        <textarea id="e-notes" rows="3">${esc(h.notes)}</textarea>
+      </div>
+    </div>
+    <div class="drawer-foot">
+      ${h.id ? `<button class="btn ghost" data-ed="connect">${icon("terminal", 16)} Connect</button>` : ""}
+      <div class="grow"></div>
+      <button class="btn primary" data-ed="save">Save</button>
+    </div>`;
+}
+
+/** Pull form values into state.editing. */
+function readEditor() {
+  const h = state.editing!;
+  const v = (id: string) => $<HTMLInputElement>(`#${id}`, els.drawer).value;
+  h.address = v("e-address").trim();
+  h.name = v("e-name").trim();
+  h.folder = v("e-folder").trim();
+  h.username = v("e-user").trim();
+  h.port = +v("e-port") || 22;
+  h.password = v("e-pass");
+  h.privateKey = v("e-key");
+  h.keyPassphrase = v("e-keypass");
+  h.notes = v("e-notes");
+  h.tunnels = [...els.drawer.querySelectorAll<HTMLElement>(".tun-row")].map((r) => {
+    const f = (k: string) => $<HTMLInputElement>(`[data-f="${k}"]`, r).value.trim();
+    return { bindHost: f("bindHost") || "127.0.0.1", sourcePort: +f("sourcePort") || 0, endpointHost: f("endpointHost"), endpointPort: +f("endpointPort") || 0 };
+  });
+  const pending = v("e-tag").trim();
+  if (pending && !h.tags.includes(pending)) h.tags.push(pending);
+}
+
+els.drawer.addEventListener("click", async (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ed]");
+  if (!b) return;
+  const h = state.editing!;
+  switch (b.dataset.ed) {
+    case "close":
+      return closeEditor();
+    case "toggle-pass": {
+      const i = $<HTMLInputElement>("#e-pass", els.drawer);
+      i.type = i.type === "password" ? "text" : "password";
+      return;
+    }
+    case "copy-pass":
+      return api.clipboardWrite($<HTMLInputElement>("#e-pass", els.drawer).value).then(() => toast("Password copied", "ok"));
+    case "rm-tag":
+      readEditor();
+      h.tags.splice(+b.dataset.i!, 1);
+      return renderEditor();
+    case "add-tun":
+      readEditor();
+      h.tunnels.push({ bindHost: "127.0.0.1", sourcePort: 0, endpointHost: "", endpointPort: 0 });
+      return renderEditor();
+    case "rm-tun":
+      readEditor();
+      h.tunnels.splice(+b.dataset.i!, 1);
+      return renderEditor();
+    case "delete":
+      return deleteHost(h);
+    case "connect":
+      readEditor();
+      await saveEditor();
+      return openSession(state.hosts.find((x) => x.id === h.id)!);
+    case "save":
+      readEditor();
+      if (await saveEditor()) closeEditor();
+  }
+});
+
+els.drawer.addEventListener("keydown", (e) => {
+  const t = e.target as HTMLInputElement;
+  if (t.id === "e-tag" && (e.key === "Enter" || e.key === ",")) {
+    e.preventDefault();
+    readEditor();
+    renderEditor();
+    $<HTMLInputElement>("#e-tag", els.drawer).focus();
+  } else if (t.id === "e-tag" && e.key === "Backspace" && !t.value && state.editing!.tags.length) {
+    readEditor();
+    state.editing!.tags.pop();
+    renderEditor();
+    $<HTMLInputElement>("#e-tag", els.drawer).focus();
+  }
+});
+
+async function saveEditor() {
+  const h = state.editing!;
+  if (!h.address) {
+    toast("Address is required", "err");
+    return false;
+  }
+  if (!h.name) h.name = h.address;
+  try {
+    const saved = await api.saveHost(h);
+    state.editing = saved;
+    await reload();
+    scheduleSync();
+    toast("Saved", "ok");
+    return true;
+  } catch (err) {
+    toast(String(err), "err");
+    return false;
+  }
+}
+
+async function deleteHost(h: Host) {
+  if (!(await confirmDialog(`Delete ${h.name}?`, "This host will be removed from all synced devices."))) return;
+  await api.deleteHost(h.id);
+  if (state.editing?.id === h.id) closeEditor();
+  await reload();
+  scheduleSync();
+  toast("Host deleted", "ok");
+}
+
+// ---------- sync ----------
+
+let syncTimer = 0;
+function scheduleSync() {
+  if (!state.sync?.url) return;
+  clearTimeout(syncTimer);
+  syncTimer = window.setTimeout(() => runSync(false), 1500);
+}
+
+async function runSync(manual: boolean) {
+  if (state.syncing || !state.sync?.url) return;
+  state.syncing = true;
+  renderSyncFoot();
+  try {
+    const r = await api.syncNow();
+    state.sync.lastSync = r.lastSync;
+    state.syncError = "";
+    await reload();
+    if (manual) toast(`Synced · ${r.hosts} hosts`, "ok");
+  } catch (e) {
+    state.syncError = String(e);
+    if (manual) toast(state.syncError, "err");
+  } finally {
+    state.syncing = false;
+    renderSyncFoot();
+  }
+}
+
+// ---------- global ----------
+
+async function reload() {
+  state.hosts = await api.listHosts();
+  renderSidebar();
+  if (state.active === "home" && state.view !== "settings") {
+    if (state.view === "hosts" && $(".results", els.page)) refreshResults();
+    else renderPage();
+  }
+}
+
+addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (e.key === "Escape" && state.editing) return closeEditor();
+  if (mod && e.key.toLowerCase() === "s" && state.editing) {
+    e.preventDefault();
+    readEditor();
+    saveEditor().then((ok) => ok && closeEditor());
+    return;
+  }
+  if (!mod) return;
+  const k = e.key.toLowerCase();
+  // Inside a terminal, plain Ctrl+K/T/F belong to the shell; use Ctrl+Shift instead.
+  if (state.active !== "home" && !e.shiftKey && "ktf".includes(k)) return;
+  if (k === "k" || (k === "f" && state.active === "home")) {
+    e.preventDefault();
+    state.view = "hosts";
+    if (state.active !== "home" || !$(".search input", els.page)) goHome();
+    $<HTMLInputElement>(".search input", els.page)?.select();
+  } else if (k === "t") {
+    e.preventDefault();
+    goHome();
+  } else if (k === "w" && state.active !== "home" && e.shiftKey) {
+    e.preventDefault();
+    closeSession(state.active);
+  } else if (k === "tab") {
+    e.preventDefault();
+    const ids = ["home", ...state.sessions.map((s) => s.id)];
+    const i = ids.indexOf(state.active);
+    activate(ids[(i + (e.shiftKey ? ids.length - 1 : 1)) % ids.length]);
+  } else if (/^[1-9]$/.test(k) && e.altKey === false && !e.shiftKey) {
+    const ids = ["home", ...state.sessions.map((s) => s.id)];
+    if (ids[+k - 1]) {
+      e.preventDefault();
+      activate(ids[+k - 1]);
+    }
+  }
+});
+
+// Disable the webview's default context menu outside our own.
+addEventListener("contextmenu", (e) => {
+  if (!(e.target as HTMLElement).closest("input, textarea")) e.preventDefault();
+});
+
+(async () => {
+  state.sync = await api.getSyncSettings();
+  await reload();
+  renderPage();
+  activate("home");
+  runSync(false);
+  setInterval(() => runSync(false), 60_000);
+  setInterval(renderSyncFoot, 30_000);
+})();

@@ -1,0 +1,16 @@
+services:
+  kermius-sync:
+    build: .
+    image: kermius-sync:latest
+    container_name: kermius-sync
+    restart: unless-stopped
+    ports:
+      - "${KERMIUS_PORT:-8080}:8080"
+    environment:
+      # Generate with: openssl rand -hex 32
+      KERMIUS_TOKEN: ${KERMIUS_TOKEN:?set KERMIUS_TOKEN}
+    volumes:
+      - kermius-data:/data
+
+volumes:
+  kermius-data:
