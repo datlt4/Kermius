@@ -467,10 +467,14 @@ function renderSettings() {
     <div class="content settings">
       <h2>Settings</h2>
       <div class="panel">
-        <div class="panel-head">${icon("sync")}<div><h3>Sync</h3><p class="muted">End-to-end encrypted. Data is encrypted on this device with your passphrase; the server only stores ciphertext.</p></div></div>
+        <div class="panel-head">${icon("sync")}<div class="grow"><h3>Sync</h3><p class="muted">End-to-end encrypted. Data is encrypted on this device with your passphrase; the server only stores ciphertext.</p></div>
+          <button class="icon-btn" data-set="sync-paste" title="Paste url|token|passphrase">${icon("paste", 17)}</button>
+          <button class="icon-btn" data-set="sync-copy" title="Copy as url|token|passphrase">${icon("copy", 17)}</button></div>
         <label class="field"><span>Server URL</span><input id="s-url" placeholder="https://sync.example.com" value="${esc(s.url)}" /></label>
-        <label class="field"><span>Access token</span><input id="s-token" type="password" value="${esc(s.token)}" /></label>
-        <label class="field"><span>Encryption passphrase</span><input id="s-pass" type="password" value="${esc(s.passphrase)}" />
+        <label class="field"><span>Access token</span><div class="input-group"><input id="s-token" type="password" value="${esc(s.token)}" />
+          <button class="icon-btn" data-set="show" data-target="s-token" title="Show">${icon("eye", 16)}</button></div></label>
+        <label class="field"><span>Encryption passphrase</span><div class="input-group"><input id="s-pass" type="password" value="${esc(s.passphrase)}" />
+          <button class="icon-btn" data-set="show" data-target="s-pass" title="Show">${icon("eye", 16)}</button></div>
           <small>Use the same passphrase on every device. If you lose it, synced data cannot be recovered.</small></label>
         <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>
           <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
@@ -504,7 +508,21 @@ els.page.addEventListener("click", async (e) => {
   const a = (e.target as HTMLElement).closest<HTMLElement>("[data-set]")?.dataset.set;
   if (!a) return;
   const v = (id: string) => $<HTMLInputElement>(`#${id}`).value;
-  if (a === "sync-save") {
+  if (a === "show") {
+    const i = $<HTMLInputElement>(`#${(e.target as HTMLElement).closest<HTMLElement>("[data-target]")!.dataset.target}`);
+    i.type = i.type === "password" ? "text" : "password";
+  } else if (a === "sync-copy") {
+    await api.clipboardWrite([v("s-url").trim(), v("s-token"), v("s-pass")].join("|"));
+    toast("Sync config copied", "ok");
+  } else if (a === "sync-paste") {
+    // Passphrase may itself contain "|": everything after the 2nd separator belongs to it.
+    const [url, token, ...pass] = (await api.clipboardRead().catch(() => "")).trim().split("|");
+    if (!url || token === undefined || !pass.length) return toast("Clipboard is not url|token|passphrase", "err");
+    $<HTMLInputElement>("#s-url").value = url;
+    $<HTMLInputElement>("#s-token").value = token;
+    $<HTMLInputElement>("#s-pass").value = pass.join("|");
+    toast("Pasted. Press Save & sync to apply", "ok");
+  } else if (a === "sync-save") {
     const settings = { url: v("s-url").trim(), token: v("s-token"), passphrase: v("s-pass"), lastSync: state.sync?.lastSync ?? 0 };
     await api.setSyncSettings(settings);
     state.sync = settings;
