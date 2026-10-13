@@ -255,8 +255,9 @@ details[open] summary { margin-bottom: 10px; }
 details .field + .field { margin-top: 10px; }
 .tuns { display: flex; flex-direction: column; gap: 6px; }
 .tun-row { display: flex; align-items: center; gap: 6px; color: var(--faint); }
-.tun-row input { padding: 7px 8px; font-size: 13px; }
-.tun-row input[type="number"] { width: 78px; flex: none; }
+.tun-row input { padding: 7px 8px; font-size: 13px; color: var(--text); min-width: 0; }
+.tun-row input[type="number"] { width: 62px; flex: none; }
+.tun-row input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
 /* ---------- drawer ---------- */
 .drawer {
