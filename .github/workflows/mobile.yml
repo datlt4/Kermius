@@ -44,18 +44,23 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
       - uses: android-actions/setup-android@v3
-      - run: sdkmanager "ndk;27.2.12479018"
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
       - uses: swatinem/rust-cache@v2
         with: { workspaces: src-tauri, key: android }
       - run: npm ci
       - name: Build APK
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
           set -o pipefail
-          { npx tauri android init --ci && npx tauri android build --apk --target aarch64 --target armv7 --target x86_64; } 2>&1 | tee android-build.log
+          {
+            set -x
+            yes | sdkmanager --licenses >/dev/null || true
+            sdkmanager --install "ndk;27.2.12479018"
+            export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+            ls "$NDK_HOME"
+            npx tauri android init --ci
+            npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
+          } 2>&1 | tee android-build.log
       - name: Sign APK
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
@@ -95,6 +100,19 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx tauri ios init --ci 2>&1 | tee ios-init.log
+      # Xcode's "Build Rust Code" phase only works while `tauri ios build` runs (it needs code
+      # signing), so build the Rust static lib here and turn that phase into a no-op.
+      - name: Build Rust library
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+        run: |
+          set -o pipefail
+          cargo build --manifest-path src-tauri/Cargo.toml --lib --release --target aarch64-apple-ios \
+            --features tauri/custom-protocol 2>&1 | tee ios-rust.log
+          mkdir -p src-tauri/gen/apple/Externals/arm64/release
+          cp src-tauri/target/aarch64-apple-ios/release/libkermius_lib.a src-tauri/gen/apple/Externals/arm64/release/libapp.a
+          perl -pi -e 's/^(\s*shellScript = ).*xcode-script.*$/$1"true";/' src-tauri/gen/apple/*.xcodeproj/project.pbxproj
+          grep -c xcode-script src-tauri/gen/apple/*.xcodeproj/project.pbxproj || true
       - name: Build unsigned archive
         run: |
           PROJ=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -1)
@@ -119,5 +137,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          cat ios-init.log xcodebuild.log > ios-build.log 2>/dev/null || true
+          cat ios-init.log ios-rust.log xcodebuild.log > ios-build.log 2>/dev/null || true
           gh release upload ci-logs ios-build.log --clobber || true
