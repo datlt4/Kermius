@@ -468,8 +468,8 @@ function renderSettings() {
       <h2>Settings</h2>
       <div class="panel">
         <div class="panel-head">${icon("sync")}<div class="grow"><h3>Sync</h3><p class="muted">End-to-end encrypted. Data is encrypted on this device with your passphrase; the server only stores ciphertext.</p></div>
-          <button class="icon-btn" data-set="sync-paste" title="Paste url|token|passphrase">${icon("paste", 17)}</button>
-          <button class="icon-btn" data-set="sync-copy" title="Copy as url|token|passphrase">${icon("copy", 17)}</button></div>
+          <button class="icon-btn" data-set="sync-paste" title="Paste sync config (base64)">${icon("paste", 17)}</button>
+          <button class="icon-btn" data-set="sync-copy" title="Copy sync config (base64)">${icon("copy", 17)}</button></div>
         <label class="field"><span>Server URL</span><input id="s-url" placeholder="https://sync.example.com" value="${esc(s.url)}" /></label>
         <label class="field"><span>Access token</span><div class="input-group"><input id="s-token" type="password" value="${esc(s.token)}" />
           <button class="icon-btn" data-set="show" data-target="s-token" title="Show">${icon("eye", 16)}</button></div></label>
@@ -512,11 +512,18 @@ els.page.addEventListener("click", async (e) => {
     const i = $<HTMLInputElement>(`#${(e.target as HTMLElement).closest<HTMLElement>("[data-target]")!.dataset.target}`);
     i.type = i.type === "password" ? "text" : "password";
   } else if (a === "sync-copy") {
-    await api.clipboardWrite([v("s-url").trim(), v("s-token"), v("s-pass")].join("|"));
+    const raw = new TextEncoder().encode([v("s-url").trim(), v("s-token"), v("s-pass")].join("|"));
+    await api.clipboardWrite(btoa(String.fromCharCode(...raw)));
     toast("Sync config copied", "ok");
   } else if (a === "sync-paste") {
+    let text = (await api.clipboardRead().catch(() => "")).trim();
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0)));
+    } catch {
+      /* not base64: accept plain url|token|passphrase */
+    }
     // Passphrase may itself contain "|": everything after the 2nd separator belongs to it.
-    const [url, token, ...pass] = (await api.clipboardRead().catch(() => "")).trim().split("|");
+    const [url, token, ...pass] = text.split("|");
     if (!url || token === undefined || !pass.length) return toast("Clipboard is not url|token|passphrase", "err");
     $<HTMLInputElement>("#s-url").value = url;
     $<HTMLInputElement>("#s-token").value = token;
