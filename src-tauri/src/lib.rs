@@ -8,7 +8,7 @@ mod sync;
 mod termix;
 mod tunnel;
 
-use model::{now_ms, Host, Snippet, SyncSettings};
+use model::{now_ms, Host, Identity, Key, Snippet, SyncSettings};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +35,8 @@ fn e<E: std::fmt::Display>(err: E) -> String {
 impl AppState {
     fn host(&self, id: &str) -> Res<Host> {
         let st = self.store.state.lock();
-        st.vault.hosts.iter().find(|h| h.id == id && !h.deleted).cloned().ok_or("Host not found".into())
+        let host = st.vault.hosts.iter().find(|h| h.id == id && !h.deleted).cloned().ok_or("Host not found")?;
+        Ok(st.vault.resolve(host))
     }
 }
 
@@ -107,6 +108,106 @@ fn delete_snippet(state: State<AppState>, id: String) -> Res<()> {
         }
     }
     state.store.save().map_err(e)
+}
+
+/// Insert or replace by id, stamping a fresh id/timestamp; then persist.
+fn upsert<T: Clone>(
+    state: &AppState,
+    list: impl Fn(&mut model::Vault) -> &mut Vec<T>,
+    mut item: T,
+    id: impl Fn(&mut T) -> &mut String,
+    stamp: impl Fn(&mut T),
+) -> Res<T> {
+    if id(&mut item).is_empty() {
+        *id(&mut item) = uuid::Uuid::new_v4().to_string();
+    }
+    stamp(&mut item);
+    {
+        let mut st = state.store.state.lock();
+        let key = id(&mut item).clone();
+        let v = list(&mut st.vault);
+        match v.iter_mut().position(|x| *id(x) == key) {
+            Some(i) => v[i] = item.clone(),
+            None => v.push(item.clone()),
+        }
+    }
+    state.store.save().map_err(e)?;
+    Ok(item)
+}
+
+#[tauri::command]
+fn list_keys(state: State<AppState>) -> Vec<Key> {
+    state.store.state.lock().vault.keys.iter().filter(|k| !k.deleted).cloned().collect()
+}
+
+#[tauri::command]
+fn save_key(state: State<AppState>, key: Key) -> Res<Key> {
+    let public_key = key_info(key.private_key.clone(), key.passphrase.clone())?.public_key;
+    upsert(&state, |v| &mut v.keys, Key { public_key, ..key }, |k| &mut k.id, |k| {
+        k.updated_at = now_ms();
+        k.deleted = false;
+    })
+}
+
+#[tauri::command]
+fn delete_key(state: State<AppState>, id: String) -> Res<()> {
+    upsert(&state, |v| &mut v.keys, Key { id, ..Default::default() }, |k| &mut k.id, |k| {
+        k.updated_at = now_ms();
+        k.deleted = true;
+    })
+    .map(|_| ())
+}
+
+#[tauri::command]
+fn list_identities(state: State<AppState>) -> Vec<Identity> {
+    state.store.state.lock().vault.identities.iter().filter(|i| !i.deleted).cloned().collect()
+}
+
+#[tauri::command]
+fn save_identity(state: State<AppState>, identity: Identity) -> Res<Identity> {
+    upsert(&state, |v| &mut v.identities, identity, |i| &mut i.id, |i| {
+        i.updated_at = now_ms();
+        i.deleted = false;
+    })
+}
+
+#[tauri::command]
+fn delete_identity(state: State<AppState>, id: String) -> Res<()> {
+    upsert(&state, |v| &mut v.identities, Identity { id, ..Default::default() }, |i| &mut i.id, |i| {
+        i.updated_at = now_ms();
+        i.deleted = true;
+    })
+    .map(|_| ())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyInfo {
+    public_key: String,
+    fingerprint: String,
+    algorithm: String,
+}
+
+/// Validate a private key (with passphrase) and derive its public key.
+#[tauri::command]
+fn key_info(private_key: String, passphrase: String) -> Res<KeyInfo> {
+    let pass = Some(passphrase.as_str()).filter(|p| !p.is_empty());
+    let key = russh::keys::decode_secret_key(&private_key, pass).map_err(|err| format!("Invalid private key: {err}"))?;
+    let public = key.public_key();
+    Ok(KeyInfo {
+        public_key: public.to_openssh().map_err(e)?,
+        fingerprint: public.fingerprint(russh::keys::HashAlg::Sha256).to_string(),
+        algorithm: key.algorithm().to_string(),
+    })
+}
+
+/// New Ed25519 key in OpenSSH format (unencrypted; the vault itself is encrypted).
+#[tauri::command]
+fn generate_key(comment: String) -> Res<String> {
+    use russh::keys::ssh_key::{private::Ed25519Keypair, LineEnding, PrivateKey};
+    let mut key = PrivateKey::from(Ed25519Keypair::from_seed(&crypto::random::<32>()));
+    key.set_comment(comment);
+    Ok(key.to_openssh(LineEnding::LF).map_err(e)?.to_string())
 }
 
 #[tauri::command]
@@ -332,6 +433,14 @@ pub fn run() {
             list_snippets,
             save_snippet,
             delete_snippet,
+            list_keys,
+            save_key,
+            delete_key,
+            list_identities,
+            save_identity,
+            delete_identity,
+            key_info,
+            generate_key,
             copy_password,
             clipboard_write,
             clipboard_read,
@@ -353,4 +462,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kermius");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_key_roundtrips() {
+        let pem = generate_key("me@kermius".into()).unwrap();
+        assert!(pem.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        let info = key_info(pem, String::new()).unwrap();
+        assert!(info.public_key.starts_with("ssh-ed25519 ") && info.public_key.ends_with("me@kermius"));
+        assert!(info.fingerprint.starts_with("SHA256:"));
+        assert!(key_info("garbage".into(), String::new()).is_err());
+    }
 }

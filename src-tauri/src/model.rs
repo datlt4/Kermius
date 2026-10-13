@@ -24,6 +24,9 @@ pub struct Host {
     pub tags: Vec<String>,
     pub notes: String,
     pub tunnels: Vec<Tunnel>,
+    /// Keychain references; host fields take precedence when set.
+    pub identity_id: String,
+    pub key_id: String,
     pub updated_at: i64,
     /// Tombstone so deletions propagate through sync.
     pub deleted: bool,
@@ -48,6 +51,32 @@ pub struct Snippet {
     pub deleted: bool,
 }
 
+/// Keychain: an SSH private key.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Key {
+    pub id: String,
+    pub label: String,
+    pub private_key: String,
+    pub passphrase: String,
+    pub public_key: String,
+    pub updated_at: i64,
+    pub deleted: bool,
+}
+
+/// Keychain: reusable credentials (username + password and/or key).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Identity {
+    pub id: String,
+    pub label: String,
+    pub username: String,
+    pub password: String,
+    pub key_id: String,
+    pub updated_at: i64,
+    pub deleted: bool,
+}
+
 /// Everything that gets synced (end-to-end encrypted).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -55,6 +84,8 @@ pub struct Vault {
     pub hosts: Vec<Host>,
     pub known_hosts: Vec<KnownHost>,
     pub snippets: Vec<Snippet>,
+    pub keys: Vec<Key>,
+    pub identities: Vec<Identity>,
     /// Collections from newer app versions, kept and merged so syncing never drops them.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -128,11 +159,36 @@ fn merge_extra(
     out
 }
 
+impl Vault {
+    /// Fill empty credentials of `host` from its identity and key.
+    pub fn resolve(&self, mut host: Host) -> Host {
+        let identity = self.identities.iter().find(|i| !i.deleted && !i.id.is_empty() && i.id == host.identity_id);
+        if let Some(i) = identity {
+            if host.username.is_empty() {
+                host.username = i.username.clone();
+            }
+            if host.password.is_empty() {
+                host.password = i.password.clone();
+            }
+        }
+        let key_id = Some(host.key_id.as_str()).filter(|k| !k.is_empty()).or(identity.map(|i| i.key_id.as_str()));
+        if let Some(k) = key_id.and_then(|id| self.keys.iter().find(|k| !k.deleted && k.id == id)) {
+            if host.private_key.trim().is_empty() {
+                host.private_key = k.private_key.clone();
+                host.key_passphrase = k.passphrase.clone();
+            }
+        }
+        host
+    }
+}
+
 pub fn merge(a: &Vault, b: &Vault) -> Vault {
     Vault {
         hosts: merge_items(&a.hosts, &b.hosts, |h| &h.id, |h| h.updated_at),
         known_hosts: merge_items(&a.known_hosts, &b.known_hosts, |k| &k.id, |k| k.updated_at),
         snippets: merge_items(&a.snippets, &b.snippets, |s| &s.id, |s| s.updated_at),
+        keys: merge_items(&a.keys, &b.keys, |k| &k.id, |k| k.updated_at),
+        identities: merge_items(&a.identities, &b.identities, |i| &i.id, |i| i.updated_at),
         extra: merge_extra(&a.extra, &b.extra),
     }
 }
@@ -153,6 +209,19 @@ mod tests {
         let names: Vec<_> = m.hosts.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, ["new", "a-only", "b-only"]);
         assert_eq!(merge(&b, &a).hosts.len(), 3);
+    }
+
+    #[test]
+    fn resolve_uses_identity_and_key() {
+        let v = Vault {
+            keys: vec![Key { id: "k".into(), private_key: "PRIV".into(), ..Default::default() }],
+            identities: vec![Identity { id: "i".into(), username: "u".into(), password: "p".into(), key_id: "k".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        let h = v.resolve(Host { identity_id: "i".into(), ..Default::default() });
+        assert_eq!((h.username.as_str(), h.password.as_str(), h.private_key.as_str()), ("u", "p", "PRIV"));
+        let own = v.resolve(Host { identity_id: "i".into(), username: "me".into(), ..Default::default() });
+        assert_eq!(own.username, "me");
     }
 
     #[test]

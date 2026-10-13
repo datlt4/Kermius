@@ -1,5 +1,5 @@
 // Web build backend: talks to the sync server on the same origin; vault lives only in memory.
-import type { Api, Host, Snippet, SyncSettings } from "./api";
+import type { Api, Host, Identity, Key, Snippet, SyncSettings } from "./api";
 import { decodeVault, emptyVault, encodeVault, mergeVaults, newSalt, type Vault } from "./vaultcrypto";
 
 let session: { token: string; passphrase: string } | null = null;
@@ -74,6 +74,25 @@ export async function webLogin(token: string, passphrase: string) {
 
 const live = () => vault.hosts.filter((h) => !h.deleted);
 
+type Synced = { id: string; updatedAt: number; deleted: boolean };
+const coll = <T extends Synced>(name: string) => ((vault[name] ??= []) as T[]);
+
+async function upsert<T extends Synced>(name: string, item: T): Promise<T> {
+  const list = coll<T>(name);
+  const it = { ...item, id: item.id || uuid(), updatedAt: Date.now(), deleted: false };
+  const i = list.findIndex((x) => x.id === it.id);
+  i < 0 ? list.push(it) : (list[i] = it);
+  await sync();
+  return it;
+}
+
+async function tombstone(name: string, id: string) {
+  const list = coll<Synced>(name);
+  const i = list.findIndex((x) => x.id === id);
+  if (i >= 0) list[i] = { id, updatedAt: Date.now(), deleted: true };
+  await sync();
+}
+
 export const webApi: Api = {
   listHosts: async () => live(),
   saveHost: async (host: Host) => {
@@ -101,11 +120,21 @@ export const webApi: Api = {
     if (i >= 0) vault.snippets[i] = { ...vault.snippets[i], script: "", deleted: true, updatedAt: Date.now() };
     await sync();
   },
+  listKeys: async () => coll<Key>("keys").filter((x) => !x.deleted),
+  saveKey: (key: Key) => upsert("keys", key),
+  deleteKey: (id: string) => tombstone("keys", id),
+  listIdentities: async () => coll<Identity>("identities").filter((x) => !x.deleted),
+  saveIdentity: (identity: Identity) => upsert("identities", identity),
+  deleteIdentity: (id: string) => tombstone("identities", id),
+  keyInfo: unsupported,
+  generateKey: unsupported,
   importTermix: unsupported,
   copyPassword: async (id: string) => {
     const h = live().find((x) => x.id === id);
-    if (!h?.password) throw new Error("This host has no password");
-    await copyText(h.password);
+    const ident = coll<Identity>("identities").find((i) => !i.deleted && i.id === h?.identityId);
+    const password = h?.password || ident?.password;
+    if (!password) throw new Error("This host has no password");
+    await copyText(password);
   },
   clipboardWrite: copyText,
   clipboardRead: async () => (navigator.clipboard && isSecureContext ? navigator.clipboard.readText() : unsupported()),

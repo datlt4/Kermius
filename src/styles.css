@@ -432,3 +432,14 @@ details .field + .field { margin-top: 10px; }
 .snip-modal { width: min(560px, 94vw); display: flex; flex-direction: column; gap: 12px; }
 .snip-modal h3 { margin: 0; }
 .snip-modal .modal-actions { align-items: center; }
+
+/* ---------- keychain ---------- */
+.avatar.key-ic { background: linear-gradient(135deg, #22c55e, #0e9488); }
+.avatar.id-ic { background: linear-gradient(135deg, #5b8cff, #8b5cf6); }
+.form-modal { width: min(520px, 94vw); display: flex; flex-direction: column; gap: 12px; max-height: 90vh; overflow-y: auto; }
+.form-modal h3 { margin: 0; }
+.form-modal .modal-actions { align-items: center; }
+.field select {
+  width: 100%; background: #171a22; border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px; outline: none; color: var(--text);
+}
+.field select:focus { border-color: rgba(91, 140, 255, 0.6); }

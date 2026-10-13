@@ -57,6 +57,7 @@ pub fn import(vault: &mut Vault, json: &str) -> Result<ImportReport> {
             tunnels,
             updated_at: now_ms(),
             deleted: false,
+            ..Default::default()
         };
         let existing = vault.hosts.iter_mut().find(|e| {
             !e.deleted

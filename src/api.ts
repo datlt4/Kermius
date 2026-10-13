@@ -24,6 +24,28 @@ export interface Host {
   tags: string[];
   notes: string;
   tunnels: Tunnel[];
+  identityId: string;
+  keyId: string;
+  updatedAt: number;
+  deleted: boolean;
+}
+
+export interface Key {
+  id: string;
+  label: string;
+  privateKey: string;
+  passphrase: string;
+  publicKey: string;
+  updatedAt: number;
+  deleted: boolean;
+}
+
+export interface Identity {
+  id: string;
+  label: string;
+  username: string;
+  password: string;
+  keyId: string;
   updatedAt: number;
   deleted: boolean;
 }
@@ -52,7 +74,7 @@ export type Status =
 
 export const emptyHost = (): Host => ({
   id: "", name: "", address: "", port: 22, username: "", password: "", privateKey: "",
-  keyPassphrase: "", folder: "", tags: [], notes: "", tunnels: [], updatedAt: 0, deleted: false,
+  keyPassphrase: "", folder: "", tags: [], notes: "", tunnels: [], identityId: "", keyId: "", updatedAt: 0, deleted: false,
 });
 
 const tauriApi = {
@@ -62,6 +84,15 @@ const tauriApi = {
   listSnippets: () => invoke<Snippet[]>("list_snippets"),
   saveSnippet: (snippet: Snippet) => invoke<Snippet>("save_snippet", { snippet }),
   deleteSnippet: (id: string) => invoke<void>("delete_snippet", { id }),
+  listKeys: () => invoke<Key[]>("list_keys"),
+  saveKey: (key: Key) => invoke<Key>("save_key", { key }),
+  deleteKey: (id: string) => invoke<void>("delete_key", { id }),
+  listIdentities: () => invoke<Identity[]>("list_identities"),
+  saveIdentity: (identity: Identity) => invoke<Identity>("save_identity", { identity }),
+  deleteIdentity: (id: string) => invoke<void>("delete_identity", { id }),
+  keyInfo: (privateKey: string, passphrase: string) =>
+    invoke<{ publicKey: string; fingerprint: string; algorithm: string }>("key_info", { privateKey, passphrase }),
+  generateKey: (comment: string) => invoke<string>("generate_key", { comment }),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),

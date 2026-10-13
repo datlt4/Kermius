@@ -1,16 +1,19 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, emptyHost, isWeb, type Host, type Snippet, type SyncSettings, type Tunnel } from "./api";
+import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
+import { bindKeychain, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 
-type View = "hosts" | "forwarding" | "snippets" | "settings";
+type View = "hosts" | "keychain" | "forwarding" | "snippets" | "settings";
 
 const state = {
   hosts: [] as Host[],
   snippets: [] as Snippet[],
+  keys: [] as Key[],
+  identities: [] as Identity[],
   /** Last focused terminal tab: where snippets run from the Snippets page. */
   lastSession: "",
   view: "hosts" as View,
@@ -99,6 +102,7 @@ function visibleHosts() {
 function renderSidebar() {
   const nav: [View, string, string][] = [
     ["hosts", "server", "Hosts"],
+    ["keychain", "key", "Keychain"],
     ["forwarding", "forward", "Port Forwarding"],
     ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
@@ -283,6 +287,7 @@ function renderPage() {
   if (state.view === "hosts") renderHosts();
   else if (state.view === "forwarding") renderForwarding();
   else if (state.view === "snippets") renderSnippets();
+  else if (state.view === "keychain") renderKeychain(els.page, keychain);
   else renderSettings();
 }
 
@@ -532,6 +537,18 @@ els.page.addEventListener("click", async (e) => {
   }
   renderForwardList();
 });
+
+// ---------- keychain ----------
+
+const keychain: KeychainCtx = {
+  keys: () => state.keys,
+  identities: () => state.identities,
+  changed: async () => {
+    await reload();
+    scheduleSync();
+  },
+};
+bindKeychain(els.page, keychain, () => state.view === "keychain" && state.active === "home");
 
 // ---------- snippets ----------
 
@@ -839,6 +856,7 @@ function renderEditor() {
           <label class="field grow"><span>Username</span><input id="e-user" value="${esc(h.username)}" spellcheck="false" /></label>
           <label class="field" style="width:96px"><span>Port</span><input id="e-port" type="number" value="${h.port}" /></label>
         </div>
+        ${credentialPickers(h.identityId, h.keyId, keychain)}
         <label class="field"><span>Password</span>
           <div class="input-group"><input id="e-pass" type="password" value="${esc(h.password)}" autocomplete="off" />
             <button class="icon-btn" data-ed="toggle-pass" title="Show">${icon("eye", 16)}</button>
@@ -877,6 +895,7 @@ function readEditor() {
   h.password = v("e-pass");
   h.privateKey = v("e-key");
   h.keyPassphrase = v("e-keypass");
+  Object.assign(h, readPickers(els.drawer));
   h.notes = v("e-notes");
   h.tunnels = [...els.drawer.querySelectorAll<HTMLElement>(".tun-row")].map((r) => {
     const f = (k: string) => $<HTMLInputElement>(`[data-f="${k}"]`, r).value.trim();
@@ -999,7 +1018,12 @@ async function runSync(manual: boolean) {
 // ---------- global ----------
 
 async function reload() {
-  [state.hosts, state.snippets] = await Promise.all([api.listHosts(), api.listSnippets()]);
+  [state.hosts, state.snippets, state.keys, state.identities] = await Promise.all([
+    api.listHosts(),
+    api.listSnippets(),
+    api.listKeys(),
+    api.listIdentities(),
+  ]);
   renderSidebar();
   if (state.active === "home" && state.view !== "settings") {
     if (state.view === "hosts" && $(".results", els.page)) refreshResults();
