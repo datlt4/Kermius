@@ -1,4 +1,8 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { webApi } from "./webapi";
+
+/** Running in a plain browser (served by the sync server) instead of the Tauri app. */
+export const isWeb = !("__TAURI_INTERNALS__" in window);
 
 export interface Tunnel {
   bindHost: string;
@@ -41,7 +45,7 @@ export const emptyHost = (): Host => ({
   keyPassphrase: "", folder: "", tags: [], notes: "", tunnels: [], updatedAt: 0, deleted: false,
 });
 
-export const api = {
+const tauriApi = {
   listHosts: () => invoke<Host[]>("list_hosts"),
   saveHost: (host: Host) => invoke<Host>("save_host", { host }),
   deleteHost: (id: string) => invoke<void>("delete_host", { id }),
@@ -65,5 +69,8 @@ export const api = {
   setSyncSettings: (settings: SyncSettings) => invoke<void>("set_sync_settings", { settings }),
   syncNow: () => invoke<{ hosts: number; pushed: boolean; lastSync: number }>("sync_now"),
 };
+
+export type Api = typeof tauriApi;
+export const api: Api = isWeb ? webApi : tauriApi;
 
 export { Channel };

@@ -1,8 +1,9 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getVersion } from "@tauri-apps/api/app";
-import { api, emptyHost, type Host, type SyncSettings, type Tunnel } from "./api";
+import { api, emptyHost, isWeb, type Host, type SyncSettings, type Tunnel } from "./api";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
+import { webLogin } from "./webapi";
+import { parseSyncConfig } from "./vaultcrypto";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 
 type View = "hosts" | "forwarding" | "settings";
@@ -188,7 +189,7 @@ function renderTabs() {
           <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
       )
       .join("")}
-    <button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>
+    ${isWeb ? "" : `<button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>`}
     <div class="grow" data-tauri-drag-region></div>
     ${state.sessions.some((s) => s.id === state.active && !s.local) ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
     ${desktop ? `<div class="win-ctl">
@@ -198,7 +199,7 @@ function renderTabs() {
 }
 
 // Custom title bar: window controls live in the tab bar (desktop only).
-const desktop = !/Android|iPhone|iPad/i.test(navigator.userAgent);
+const desktop = !isWeb && !/Android|iPhone|iPad/i.test(navigator.userAgent);
 els.tabs.setAttribute("data-tauri-drag-region", "");
 
 els.tabs.addEventListener("click", (e) => {
@@ -294,7 +295,7 @@ function renderHosts() {
   els.page.innerHTML = `
     <div class="toolbar">
       <label class="search">${icon("search")}<input placeholder="Search hosts, IPs, users, tags…  (Ctrl+K)" value="${esc(state.query)}" spellcheck="false" autocomplete="off" /></label>
-      <button class="btn" data-act="local">${icon("terminal", 16)}<span>Terminal</span></button>
+      ${isWeb ? "" : `<button class="btn" data-act="local">${icon("terminal", 16)}<span>Terminal</span></button>`}
       <button class="btn primary" data-act="new">${icon("plus", 16)}<span>New Host</span></button>
       <div class="seg">
         <button class="${state.mode === "groups" ? "on" : ""}" data-mode="groups" title="Group cards">${icon("folder", 16)}</button>
@@ -369,7 +370,7 @@ els.page.addEventListener("keydown", (e) => {
   const t = e.target as HTMLElement;
   if (t.closest(".search") && e.key === "Enter") {
     const first = visibleHosts()[0];
-    if (first) openSession(first);
+    if (first) isWeb ? openEditor(first) : openSession(first);
   } else if (e.key === "Enter" && t.classList.contains("card")) t.click();
 });
 
@@ -383,7 +384,7 @@ els.page.addEventListener("click", (e) => {
   if (act === "goto-settings") return (state.view = "settings"), goHome();
   if (host && act === "pass") return copyPassword(host);
   if (host && act === "edit") return openEditor(host);
-  if (host) return openSession(host);
+  if (host) return isWeb ? openEditor(host) : openSession(host);
   const mode = t.closest<HTMLElement>("[data-mode]");
   if (mode) {
     state.mode = mode.dataset.mode as "groups" | "sections";
@@ -414,7 +415,7 @@ els.page.addEventListener("contextmenu", (e) => {
   if (!h) return;
   e.preventDefault();
   contextMenu(e.clientX, e.clientY, [
-    { label: "Connect", icon: "terminal", action: () => openSession(h) },
+    ...(isWeb ? [] : [{ label: "Connect", icon: "terminal", action: () => openSession(h) }]),
     { label: "Copy password", icon: "key", action: () => copyPassword(h) },
     { label: "Copy address", icon: "copy", action: () => api.clipboardWrite(h.address).then(() => toast("Address copied", "ok")) },
     { label: "Copy ssh command", icon: "copy", action: () => api.clipboardWrite(`ssh ${h.username ? h.username + "@" : ""}${h.address}${h.port !== 22 ? ` -p ${h.port}` : ""}`).then(() => toast("Command copied", "ok")) },
@@ -466,7 +467,7 @@ function renderForwardList() {
                   <code>${esc(t.bindHost || "127.0.0.1")}:${t.sourcePort}</code>${icon("chevron", 14)}<code>${esc(t.endpointHost || "localhost")}:${t.endpointPort}</code>
                   <div class="grow"></div>
                   ${on ? `<button class="icon-btn" data-open-url="http://localhost:${t.sourcePort}" title="Copy URL">${icon("copy", 15)}</button>` : ""}
-                  <button class="switch ${on ? "on" : ""}" data-tunnel="${h.id}:${i}" aria-label="toggle"><i></i></button>
+                  ${isWeb ? "" : `<button class="switch ${on ? "on" : ""}" data-tunnel="${h.id}:${i}" aria-label="toggle"><i></i></button>`}
                   <button class="icon-btn danger" data-del-tunnel="${h.id}:${i}" title="Delete rule">${icon("trash", 15)}</button></div>`;
               })
               .join("")}</div>`,
@@ -523,16 +524,16 @@ function renderSettings() {
         <div class="panel-head">${icon("sync")}<div class="grow"><h3>Sync</h3><p class="muted">End-to-end encrypted. Data is encrypted on this device with your passphrase; the server only stores ciphertext.</p></div>
           <button class="icon-btn" data-set="sync-paste" title="Paste sync config (base64)">${icon("paste", 17)}</button>
           <button class="icon-btn" data-set="sync-copy" title="Copy sync config (base64)">${icon("copy", 17)}</button></div>
-        <label class="field"><span>Server URL</span><input id="s-url" placeholder="https://sync.example.com" value="${esc(s.url)}" /></label>
+        <label class="field"><span>Server URL</span><input id="s-url" placeholder="https://sync.example.com" value="${esc(s.url)}" ${isWeb ? "readonly" : ""} /></label>
         <label class="field"><span>Access token</span><div class="input-group"><input id="s-token" type="password" value="${esc(s.token)}" />
           <button class="icon-btn" data-set="show" data-target="s-token" title="Show">${icon("eye", 16)}</button></div></label>
         <label class="field"><span>Encryption passphrase</span><div class="input-group"><input id="s-pass" type="password" value="${esc(s.passphrase)}" />
           <button class="icon-btn" data-set="show" data-target="s-pass" title="Show">${icon("eye", 16)}</button></div>
           <small>Use the same passphrase on every device. If you lose it, synced data cannot be recovered.</small></label>
-        <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>
+        <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>${isWeb ? `<button class="btn ghost" data-set="lock">${icon("lock", 15)} Lock</button>` : ""}
           <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
       </div>
-      <div class="panel">
+      ${isWeb ? "" : `<div class="panel">
         <div class="panel-head">${icon("import")}<div><h3>Import from Termix</h3><p class="muted">Termix → Host Manager → Export (JSON). Existing hosts are updated, not duplicated.</p></div></div>
         <label class="field"><span>Export file path</span><input id="imp-path" placeholder="/home/you/termix-hosts.json" /></label>
         <div class="row"><button class="btn" data-set="import">Import</button></div>
@@ -552,7 +553,7 @@ function renderSettings() {
 drwxr-xr-x 2 aiserver aiserver 4.0K Oct 12 08:56 <span class="pv-dir">models</span>
 -rwxrwxr-x 1 aiserver aiserver  772 Oct 12 08:57 <span class="pv-ok">build.sh</span>
 echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
-      </div>
+      </div>`}
       <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>
     </div>`;
 }
@@ -561,6 +562,7 @@ els.page.addEventListener("click", async (e) => {
   const a = (e.target as HTMLElement).closest<HTMLElement>("[data-set]")?.dataset.set;
   if (!a) return;
   const v = (id: string) => $<HTMLInputElement>(`#${id}`).value;
+  if (a === "lock") return location.reload();
   if (a === "show") {
     const i = $<HTMLInputElement>(`#${(e.target as HTMLElement).closest<HTMLElement>("[data-target]")!.dataset.target}`);
     i.type = i.type === "password" ? "text" : "password";
@@ -720,7 +722,7 @@ function renderEditor() {
       </div>
     </div>
     <div class="drawer-foot">
-      ${h.id ? `<button class="btn ghost" data-ed="connect">${icon("terminal", 16)} Connect</button>` : ""}
+      ${h.id && !isWeb ? `<button class="btn ghost" data-ed="connect">${icon("terminal", 16)} Connect</button>` : ""}
       <div class="grow"></div>
       <button class="btn primary" data-ed="save">Save</button>
     </div>`;
@@ -911,9 +913,48 @@ addEventListener("contextmenu", (e) => {
   if (!(e.target as HTMLElement).closest("input, textarea")) e.preventDefault();
 });
 
+/** Web: unlock with the base64 sync config; a real form so Chrome offers to save it. */
+function webUnlock(): Promise<void> {
+  return new Promise((resolve) => {
+    const el = document.createElement("div");
+    el.className = "login";
+    const insecure = location.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(location.hostname);
+    el.innerHTML = `<form class="login-card" method="post" action="#">
+      <div class="logo lg">${icon("terminal", 26)}</div>
+      <h2>Kermius</h2>
+      <p class="muted">Paste the sync config from the app (Settings → Sync → copy).</p>
+      <input class="login-user" name="username" autocomplete="username" value="${esc(`kermius@${location.host}`)}" aria-label="Name" />
+      <input name="password" type="password" autocomplete="current-password" placeholder="Sync config (base64)" required autofocus />
+      ${insecure ? `<p class="warn">Not HTTPS: the access token and this page can be intercepted. Serve Kermius behind HTTPS.</p>` : ""}
+      <button class="btn primary" type="submit">${icon("lock", 15)} Unlock</button>
+      <p class="err"></p></form>`;
+    document.body.append(el);
+    const form = el.querySelector("form")!;
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const user = (form.elements.namedItem("username") as HTMLInputElement).value;
+      const secret = (form.elements.namedItem("password") as HTMLInputElement).value;
+      const cfg = parseSyncConfig(secret);
+      const err = el.querySelector(".err")!;
+      if (!cfg) return void (err.textContent = "Not a Kermius sync config");
+      err.textContent = "Unlocking…";
+      try {
+        await webLogin(cfg.token, cfg.passphrase);
+      } catch (x) {
+        return void (err.textContent = String(x instanceof Error ? x.message : x));
+      }
+      const PC = (window as any).PasswordCredential;
+      if (PC && isSecureContext) await navigator.credentials.store(new PC({ id: user, password: secret, name: "Kermius" })).catch(() => {});
+      el.remove();
+      resolve();
+    });
+  });
+}
+
 (async () => {
-  await loadFont(loadPrefs());
-  state.version = await getVersion();
+  if (isWeb) await webUnlock();
+  else await loadFont(loadPrefs());
+  state.version = __APP_VERSION__;
   state.sync = await api.getSyncSettings();
   await reload();
   renderPage();
