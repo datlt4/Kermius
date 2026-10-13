@@ -41,9 +41,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
-      - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
-      - uses: android-actions/setup-android@v3
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
       - uses: swatinem/rust-cache@v2
@@ -54,10 +51,9 @@ jobs:
           set -o pipefail
           {
             set -x
-            yes | sdkmanager --licenses >/dev/null || true
-            sdkmanager --install "ndk;27.2.12479018"
-            export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
-            ls "$NDK_HOME"
+            # The runner image ships the Android SDK, an NDK and JDK 17.
+            export JAVA_HOME="$JAVA_HOME_17_X64" NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+            echo "ANDROID_HOME=$ANDROID_HOME NDK_HOME=$NDK_HOME"; java -version
             npx tauri android init --ci
             npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
           } 2>&1 | tee android-build.log
