@@ -97,7 +97,12 @@ export class Session {
       theme: termTheme,
     });
     this.el.className = "session";
-    this.el.innerHTML = `<div class="term"></div><div class="overlay"></div>${
+    this.el.innerHTML = `<div class="term"></div>${
+      host ? `<div class="sess-tools">
+        <button data-t="upload" title="Upload a file to the host">${icon("image", 15)}</button>
+        <button data-t="paste-img" title="Paste image from clipboard">${icon("paste", 15)}</button>
+        <div class="up-prog" hidden><div class="bar"><i></i></div><span></span></div></div>` : ""
+    }<div class="overlay"></div>${
       coarse ? `<div class="keybar">${["Esc", "Tab", "Ctrl", "↑", "↓", "←", "→", "|", "/", "-", "~"].map((k) => `<button data-k="${k}">${k}</button>`).join("")}</div>` : ""
     }`;
     this.overlay = this.el.querySelector(".overlay")!;
@@ -209,6 +214,7 @@ export class Session {
       contextMenu(ev.clientX, ev.clientY, [
         { label: "Copy", icon: "copy", action: () => this.copySelection() },
         { label: "Paste", icon: "import", action: () => this.paste() },
+        ...(this.local ? [] : [{ label: "Paste image", icon: "image", action: () => this.pasteImage() }]),
         ...(this.local ? [] : [{ label: "Copy password", icon: "key", action: () => this.copyPassword() }]),
         "-" as const,
         { label: "Clear", icon: "x", action: () => t.clear() },
@@ -223,6 +229,11 @@ export class Session {
         (e.target as HTMLElement).classList.toggle("on", this.ctrl);
       } else this.send(map[k] ?? k);
       t.focus();
+    });
+    this.el.querySelector(".sess-tools")?.addEventListener("click", (e) => {
+      const a = (e.target as HTMLElement).closest<HTMLElement>("[data-t]")?.dataset.t;
+      if (a === "upload") this.pickAndUpload();
+      else if (a === "paste-img") this.pasteImage();
     });
     this.overlay.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest("button")?.dataset.a;
@@ -277,6 +288,7 @@ export class Session {
     onStatus.onmessage = (s) => {
       if (gen !== this.gen) return;
       if (s.type === "log") return this.addLog(s.message);
+      if (s.type === "upload") return this.showProgress(s.progress);
       if (s.type === "connected") {
         this.retryStep = 0;
         this.setState("connected");
@@ -372,6 +384,48 @@ export class Session {
   private async paste() {
     const text = await api.clipboardRead().catch(() => "");
     if (text) this.term.paste(text);
+    else if (!this.local) this.pasteImage();
+  }
+
+  private showProgress(p: number | null) {
+    const el = this.el.querySelector<HTMLElement>(".up-prog");
+    if (!el) return;
+    el.hidden = p === null;
+    if (p === null) return;
+    el.querySelector("i")!.style.width = `${Math.round(p * 100)}%`;
+    el.querySelector("span")!.textContent = `Uploading… ${Math.round(p * 100)}%`;
+  }
+
+  /** Upload, then paste the quoted remote path at the prompt (for Claude Code / OpenCode). */
+  private async upload(run: (sid: string) => Promise<string>) {
+    if (!this.sid || this.state !== "connected") return toast("Not connected", "err");
+    this.showProgress(0);
+    try {
+      const path = await run(this.sid);
+      this.term.paste(`'${path}'`);
+      this.term.focus();
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      this.showProgress(null);
+    }
+  }
+
+  pasteImage() {
+    return this.upload((sid) => api.sshPasteImage(sid));
+  }
+
+  private pickAndUpload() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      const ext = f.name.includes(".") ? f.name.split(".").pop()! : "";
+      this.upload(async (sid) => api.sshUpload(sid, ext, new Uint8Array(await f.arrayBuffer())));
+    };
+    input.click();
   }
 
   copyPassword() {

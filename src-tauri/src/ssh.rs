@@ -143,12 +143,39 @@ pub enum Status {
     Closed,
     Error { message: String },
     Log { message: String },
+    /// Upload progress 0..1 for image/file uploads.
+    Upload { progress: f64 },
 }
 
 pub enum Cmd {
     Data(Vec<u8>),
     Resize(u32, u32),
     Close,
+    /// Upload bytes to /tmp/kermius-images/<uuid>.<ext>; replies with the remote path.
+    Upload { ext: String, data: Vec<u8>, reply: tokio::sync::oneshot::Sender<Result<String, String>> },
+}
+
+/// Upload over a separate exec channel on the same connection (`cat > file`), reporting progress.
+async fn upload(h: &Handle<Client>, ext: &str, data: Vec<u8>, status: &Channel<Status>) -> Result<String, String> {
+    let e = |e: russh::Error| e.to_string();
+    let ext: String = ext.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect::<String>().to_lowercase();
+    let path = format!("/tmp/kermius-images/{}.{}", uuid::Uuid::new_v4(), if ext.is_empty() { "bin" } else { &ext });
+    let mut ch = h.channel_open_session().await.map_err(e)?;
+    ch.exec(true, format!("mkdir -p /tmp/kermius-images && cat > '{path}'")).await.map_err(e)?;
+    let total = data.len().max(1);
+    let mut sent = 0;
+    for chunk in data.chunks(64 * 1024) {
+        ch.data_bytes(chunk.to_vec()).await.map_err(e)?;
+        sent += chunk.len();
+        let _ = status.send(Status::Upload { progress: sent as f64 / total as f64 });
+    }
+    ch.eof().await.map_err(e)?;
+    while let Some(msg) = ch.wait().await {
+        if let ChannelMsg::ExitStatus { exit_status } = msg {
+            return if exit_status == 0 { Ok(path) } else { Err(format!("Upload failed (exit {exit_status})")) };
+        }
+    }
+    Ok(path)
 }
 
 /// Spawn an interactive shell session; returns the command sender.
@@ -167,7 +194,7 @@ pub fn spawn_shell(
             let log: Logger = Arc::new(move |message| {
                 let _ = status.send(Status::Log { message });
             });
-            let handle = connect(store, &host, log.clone()).await?;
+            let handle = Arc::new(connect(store, &host, log.clone()).await?);
             log("Opening session channel".into());
             let mut ch = handle.channel_open_session().await.map_err(|e| e.to_string())?;
             log(format!("Requesting PTY {cols}x{rows}"));
@@ -202,6 +229,12 @@ pub fn spawn_shell(
                     cmd = rx.recv() => match cmd {
                         Some(Cmd::Data(d)) => ch.data_bytes(d).await.map_err(|e| e.to_string())?,
                         Some(Cmd::Resize(c, r)) => { let _ = ch.window_change(c, r, 0, 0).await; }
+                        Some(Cmd::Upload { ext, data, reply }) => {
+                            let (h, status) = (handle.clone(), on_status.clone());
+                            tauri::async_runtime::spawn(async move {
+                                let _ = reply.send(upload(&h, &ext, data, &status).await);
+                            });
+                        }
                         Some(Cmd::Close) | None => { exited = true; break }
                     },
                 }
@@ -222,4 +255,50 @@ pub fn spawn_shell(
         });
     });
     tx
+}
+
+/// Against a real sshd: `KERMIUS_TEST_SSH="port|user|/path/to/private_key" cargo test ssh_e2e`
+#[cfg(test)]
+mod e2e {
+    use super::*;
+
+    #[tokio::test]
+    async fn ssh_e2e() {
+        let Ok(cfg) = std::env::var("KERMIUS_TEST_SSH") else { return };
+        let [port, user, key] = cfg.split('|').collect::<Vec<_>>()[..] else { panic!("bad KERMIUS_TEST_SSH") };
+        let dir = std::env::temp_dir().join(format!("kermius-ssh-test-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(Store::open(dir).unwrap());
+        let host = Host {
+            address: "127.0.0.1".into(),
+            port: port.parse().unwrap(),
+            username: user.into(),
+            private_key: std::fs::read_to_string(key).unwrap(),
+            ..Default::default()
+        };
+        let logs = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let l = logs.clone();
+        let h = connect(store.clone(), &host, Arc::new(move |m| l.lock().push(m))).await.unwrap();
+        println!("{}", logs.lock().join("\n"));
+        assert!(logs.lock().iter().any(|m| m.starts_with("New host key trusted")));
+        assert_eq!(store.state.lock().vault.known_hosts.len(), 1);
+
+        let progress = Arc::new(parking_lot::Mutex::new(0usize));
+        let p = progress.clone();
+        let status: Channel<Status> = Channel::new(move |_| {
+            *p.lock() += 1;
+            Ok(())
+        });
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let path = upload(&h, "png", data.clone(), &status).await.unwrap();
+        assert!(path.starts_with("/tmp/kermius-images/") && path.ends_with(".png"));
+        assert_eq!(std::fs::read(&path).unwrap(), data); // sshd is local, so the file is visible here
+        assert!(*progress.lock() >= 3);
+        std::fs::remove_file(&path).unwrap();
+
+        // Second connect: key is now known.
+        logs.lock().clear();
+        let l = logs.clone();
+        connect(store, &host, Arc::new(move |m| l.lock().push(m))).await.unwrap();
+        assert!(logs.lock().iter().any(|m| m.starts_with("Host key verified")));
+    }
 }

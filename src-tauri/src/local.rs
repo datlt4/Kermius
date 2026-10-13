@@ -62,6 +62,9 @@ pub fn spawn(
                 Cmd::Resize(c, r) => {
                     let _ = master.resize(size(c, r));
                 }
+                Cmd::Upload { reply, .. } => {
+                    let _ = reply.send(Err("Not available for local terminals".into()));
+                }
                 Cmd::Close => break,
             }
         }

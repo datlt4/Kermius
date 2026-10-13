@@ -39,7 +39,8 @@ export type Status =
   | { type: "connected" }
   | { type: "closed" }
   | { type: "error"; message: string }
-  | { type: "log"; message: string };
+  | { type: "log"; message: string }
+  | { type: "upload"; progress: number };
 
 export const emptyHost = (): Host => ({
   id: "", name: "", address: "", port: 22, username: "", password: "", privateKey: "",
@@ -59,6 +60,8 @@ const tauriApi = {
   localOpen: (cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
     invoke<string>("local_open", { cols, rows, onData, onStatus }),
   listFonts: () => invoke<string[]>("list_fonts"),
+  sshUpload: (sid: string, ext: string, bytes: Uint8Array) => invoke<string>("ssh_upload", bytes, { headers: { sid, ext } }),
+  sshPasteImage: (sid: string) => invoke<string>("ssh_paste_image", { sid }),
   sshWrite: (sid: string, data: string) => invoke<void>("ssh_write", { sid, data }),
   sshResize: (sid: string, cols: number, rows: number) => invoke<void>("ssh_resize", { sid, cols, rows }),
   sshClose: (sid: string) => invoke<void>("ssh_close", { sid }),

@@ -169,6 +169,45 @@ fn ssh_write(state: State<AppState>, sid: String, data: String) {
     send_cmd(&state, &sid, ssh::Cmd::Data(data.into_bytes()));
 }
 
+async fn upload_to_session(state: &AppState, sid: &str, ext: &str, data: Vec<u8>) -> Res<String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    let tx = state.sessions.lock().get(sid).cloned().ok_or("Session not found")?;
+    tx.send(ssh::Cmd::Upload { ext: ext.into(), data, reply }).map_err(|_| "Session closed")?;
+    rx.await.map_err(|_| "Session closed".to_string())?
+}
+
+/// Raw body = file bytes; headers `sid`, `ext`.
+#[tauri::command]
+async fn ssh_upload(state: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> Res<String> {
+    let header = |k: &str| request.headers().get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("Expected raw file bytes".into());
+    };
+    upload_to_session(&state, &header("sid"), &header("ext"), data.clone()).await
+}
+
+/// Upload the clipboard image (as PNG) to the session's host.
+#[tauri::command]
+async fn ssh_paste_image(app: tauri::AppHandle, state: State<'_, AppState>, sid: String) -> Res<String> {
+    #[cfg(desktop)]
+    {
+        let img = app.clipboard().read_image().map_err(|_| "No image in the clipboard".to_string())?;
+        let mut png_bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png_bytes, img.width(), img.height());
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().and_then(|mut w| w.write_image_data(img.rgba())).map_err(e)?;
+        }
+        upload_to_session(&state, &sid, "png", png_bytes).await
+    }
+    #[cfg(mobile)]
+    {
+        let _ = (app, state, sid);
+        Err("Not available on mobile".into())
+    }
+}
+
 #[tauri::command]
 fn ssh_resize(state: State<AppState>, sid: String, cols: u32, rows: u32) {
     send_cmd(&state, &sid, ssh::Cmd::Resize(cols, rows));
@@ -262,6 +301,8 @@ pub fn run() {
             local_open,
             list_fonts,
             ssh_write,
+            ssh_upload,
+            ssh_paste_image,
             ssh_resize,
             ssh_close,
             trust_new_host_key,

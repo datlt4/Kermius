@@ -99,6 +99,8 @@ export const webApi: Api = {
   sshConnect: unsupported,
   localOpen: unsupported,
   listFonts: async () => [],
+  sshUpload: unsupported,
+  sshPasteImage: unsupported,
   sshWrite: unsupported,
   sshResize: unsupported,
   sshClose: unsupported,

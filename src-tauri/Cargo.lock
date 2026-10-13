@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "kermius"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",
@@ -2459,6 +2459,7 @@ dependencies = [
  "dirs 6.0.0",
  "fontdb",
  "parking_lot",
+ "png 0.17.16",
  "portable-pty",
  "rand 0.8.8",
  "reqwest 0.12.28",
