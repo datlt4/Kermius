@@ -2,6 +2,8 @@
 
 A fast, Termius-style SSH client built with Tauri 2 (Rust + TypeScript), with self-hosted, end-to-end encrypted sync.
 
+![Kermius](docs/screenshot.png)
+
 - Hosts organised by **groups** (folders) and **tags**, instant search (`Ctrl+K`)
 - Multi-tab SSH terminals (xterm.js + WebGL), password / private key / keyboard-interactive auth
 - **Copy password** from host cards, the right-click menu, the editor, or the terminal toolbar
