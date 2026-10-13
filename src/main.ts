@@ -14,6 +14,9 @@ const state = {
   tag: null as string | null,
   query: "",
   layout: (localStorage.getItem("kermius.layout") as "grid" | "list") || "grid",
+  /** Root view: folder cards, or every host in collapsible per-group sections. */
+  mode: (localStorage.getItem("kermius.mode") as "groups" | "sections") || "groups",
+  collapsed: new Set<string>(JSON.parse(localStorage.getItem("kermius.collapsed") || "[]")),
   sessions: [] as Session[],
   active: "home" as string,
   editing: null as Host | null,
@@ -294,6 +297,10 @@ function renderHosts() {
       <button class="btn" data-act="local">${icon("terminal", 16)}<span>Terminal</span></button>
       <button class="btn primary" data-act="new">${icon("plus", 16)}<span>New Host</span></button>
       <div class="seg">
+        <button class="${state.mode === "groups" ? "on" : ""}" data-mode="groups" title="Group cards">${icon("folder", 16)}</button>
+        <button class="${state.mode === "sections" ? "on" : ""}" data-mode="sections" title="All hosts by group">${icon("layers", 16)}</button>
+      </div>
+      <div class="seg">
         <button class="${state.layout === "grid" ? "on" : ""}" data-layout="grid" title="Grid">${icon("grid", 16)}</button>
         <button class="${state.layout === "list" ? "on" : ""}" data-layout="list" title="List">${icon("list", 16)}</button>
       </div>
@@ -304,7 +311,27 @@ function renderHosts() {
     </div>`;
 }
 
+function sectionsHtml() {
+  const byFolder = new Map<string, Host[]>();
+  for (const h of [...state.hosts].sort((a, b) => byName(a.name, b.name))) {
+    byFolder.set(h.folder, [...(byFolder.get(h.folder) ?? []), h]);
+  }
+  const names = [...byFolder.keys()].filter(Boolean).sort(byName);
+  if (byFolder.has("")) names.push("");
+  return names
+    .map((f) => {
+      const hosts = byFolder.get(f)!;
+      const shut = state.collapsed.has(f);
+      return `<div class="sec ${shut ? "shut" : ""}">
+        <button class="sec-head" data-sec="${esc(f)}">${icon("chevron", 14)}<span class="dot" style="--h:${hue(f)}"></span>
+          <b>${esc(f || "No group")}</b><span class="count">${hosts.length}</span></button>
+        ${shut ? "" : `<div class="grid ${state.layout}">${hosts.map(hostCard).join("")}</div>`}</div>`;
+    })
+    .join("");
+}
+
 function resultsHtml(groups: [string, number][], list: Host[], showGroups: boolean) {
+  if (showGroups && state.mode === "sections" && state.hosts.length) return sectionsHtml();
   const empty = !state.hosts.length
     ? `<div class="empty">${icon("server", 40)}<h3>No hosts yet</h3><p>Create a host or import your Termix export from Settings.</p>
         <div class="row"><button class="btn primary" data-act="new">New Host</button><button class="btn ghost" data-act="goto-settings">Import</button></div></div>`
@@ -357,6 +384,19 @@ els.page.addEventListener("click", (e) => {
   if (host && act === "pass") return copyPassword(host);
   if (host && act === "edit") return openEditor(host);
   if (host) return openSession(host);
+  const mode = t.closest<HTMLElement>("[data-mode]");
+  if (mode) {
+    state.mode = mode.dataset.mode as "groups" | "sections";
+    localStorage.setItem("kermius.mode", state.mode);
+    return renderHosts();
+  }
+  const sec = t.closest<HTMLElement>("[data-sec]");
+  if (sec) {
+    const f = sec.dataset.sec!;
+    state.collapsed.has(f) ? state.collapsed.delete(f) : state.collapsed.add(f);
+    localStorage.setItem("kermius.collapsed", JSON.stringify([...state.collapsed]));
+    return refreshResults();
+  }
   const lay = t.closest<HTMLElement>("[data-layout]");
   if (lay) {
     state.layout = lay.dataset.layout as "grid" | "list";
