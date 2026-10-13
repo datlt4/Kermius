@@ -86,6 +86,7 @@ async fn main() {
 
     let app = Arc::new(App { token, dir, lock: Mutex::new(()) });
     let router = Router::new()
+        .route("/", get(|| async { "ok" }))
         .route("/health", get(|| async { "ok" }))
         .route("/v1/vault", get(get_vault).put(put_vault))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
