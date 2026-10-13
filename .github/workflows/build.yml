@@ -30,96 +30,96 @@ jobs:
             hienanh/kermius-sync:latest
             hienanh/kermius-sync:${{ steps.ver.outputs.version }}
 
-  desktop:
-    needs: sync-server
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: linux-x64, os: ubuntu-22.04, args: "--bundles deb,rpm,appimage" }
-          - { name: linux-arm64, os: ubuntu-22.04-arm, args: "--bundles deb,rpm" } # Raspberry Pi OS 64-bit
-          - { name: windows-x64, os: windows-latest, args: "" }
-          - { name: macos-universal, os: macos-latest, args: "--target universal-apple-darwin", targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "${{ matrix.targets }}" }
-      - uses: swatinem/rust-cache@v2
-        with: { workspaces: src-tauri }
-      - name: Linux deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-      - run: npm ci
-      - run: npx tauri build ${{ matrix.args }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: kermius-${{ matrix.name }}
-          path: |
-            src-tauri/target/**/release/bundle/**/*.deb
-            src-tauri/target/**/release/bundle/**/*.rpm
-            src-tauri/target/**/release/bundle/**/*.AppImage
-            src-tauri/target/**/release/bundle/**/*.msi
-            src-tauri/target/**/release/bundle/**/*-setup.exe
-            src-tauri/target/**/release/bundle/**/*.dmg
+  # desktop:
+  #   needs: sync-server
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - { name: linux-x64, os: ubuntu-22.04, args: "--bundles deb,rpm,appimage" }
+  #         - { name: linux-arm64, os: ubuntu-22.04-arm, args: "--bundles deb,rpm" } # Raspberry Pi OS 64-bit
+  #         - { name: windows-x64, os: windows-latest, args: "" }
+  #         - { name: macos-universal, os: macos-latest, args: "--target universal-apple-darwin", targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
+  #   runs-on: ${{ matrix.os }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: 22, cache: npm }
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with: { targets: "${{ matrix.targets }}" }
+  #     - uses: swatinem/rust-cache@v2
+  #       with: { workspaces: src-tauri }
+  #     - name: Linux deps
+  #       if: runner.os == 'Linux'
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+  #     - run: npm ci
+  #     - run: npx tauri build ${{ matrix.args }}
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: kermius-${{ matrix.name }}
+  #         path: |
+  #           src-tauri/target/**/release/bundle/**/*.deb
+  #           src-tauri/target/**/release/bundle/**/*.rpm
+  #           src-tauri/target/**/release/bundle/**/*.AppImage
+  #           src-tauri/target/**/release/bundle/**/*.msi
+  #           src-tauri/target/**/release/bundle/**/*-setup.exe
+  #           src-tauri/target/**/release/bundle/**/*.dmg
 
-  android:
-    needs: sync-server
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager "ndk;27.2.12479018"
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
-      - uses: swatinem/rust-cache@v2
-        with: { workspaces: src-tauri }
-      - run: npm ci
-      - name: Build APK
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-        run: |
-          npx tauri android init --ci
-          npx tauri android build --apk --target aarch64 --target armv7
-      - name: Sign APK
-        env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-        run: |
-          # Uses your keystore if configured, otherwise a throwaway key (fine for sideloading).
-          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > ks.jks; PASS="$KEYSTORE_PASS";
-          else PASS=kermius-ci; keytool -genkeypair -keystore ks.jks -storepass $PASS -keypass $PASS -alias kermius -keyalg RSA -validity 10000 -dname "CN=Kermius"; fi
-          APK=$(find src-tauri/gen/android -name '*universal-release-unsigned.apk' | head -1)
-          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
-          $BT/zipalign -f 4 "$APK" aligned.apk
-          $BT/apksigner sign --ks ks.jks --ks-pass pass:$PASS --out kermius-android.apk aligned.apk
-      - uses: actions/upload-artifact@v4
-        with: { name: kermius-android, path: kermius-android.apk }
+  # android:
+  #   needs: sync-server
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: 22, cache: npm }
+  #     - uses: actions/setup-java@v4
+  #       with: { distribution: temurin, java-version: 17 }
+  #     - uses: android-actions/setup-android@v3
+  #     - run: sdkmanager "ndk;27.2.12479018"
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
+  #     - uses: swatinem/rust-cache@v2
+  #       with: { workspaces: src-tauri }
+  #     - run: npm ci
+  #     - name: Build APK
+  #       env:
+  #         NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+  #       run: |
+  #         npx tauri android init --ci
+  #         npx tauri android build --apk --target aarch64 --target armv7
+  #     - name: Sign APK
+  #       env:
+  #         KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+  #         KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+  #       run: |
+  #         # Uses your keystore if configured, otherwise a throwaway key (fine for sideloading).
+  #         if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > ks.jks; PASS="$KEYSTORE_PASS";
+  #         else PASS=kermius-ci; keytool -genkeypair -keystore ks.jks -storepass $PASS -keypass $PASS -alias kermius -keyalg RSA -validity 10000 -dname "CN=Kermius"; fi
+  #         APK=$(find src-tauri/gen/android -name '*universal-release-unsigned.apk' | head -1)
+  #         BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+  #         $BT/zipalign -f 4 "$APK" aligned.apk
+  #         $BT/apksigner sign --ks ks.jks --ks-pass pass:$PASS --out kermius-android.apk aligned.apk
+  #     - uses: actions/upload-artifact@v4
+  #       with: { name: kermius-android, path: kermius-android.apk }
 
-  ios:
-    needs: sync-server
-    # Needs an Apple developer account: set APPLE_DEVELOPMENT_TEAM (+ signing secrets per Tauri docs).
-    if: ${{ vars.APPLE_DEVELOPMENT_TEAM != '' }}
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "aarch64-apple-ios" }
-      - run: npm ci
-      - env:
-          APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
-        run: |
-          npx tauri ios init --ci
-          npx tauri ios build --export-method debugging
-      - uses: actions/upload-artifact@v4
-        with: { name: kermius-ios, path: "src-tauri/gen/apple/build/**/*.ipa" }
+  # ios:
+  #   needs: sync-server
+  #   # Needs an Apple developer account: set APPLE_DEVELOPMENT_TEAM (+ signing secrets per Tauri docs).
+  #   if: ${{ vars.APPLE_DEVELOPMENT_TEAM != '' }}
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with: { node-version: 22, cache: npm }
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with: { targets: "aarch64-apple-ios" }
+  #     - run: npm ci
+  #     - env:
+  #         APPLE_DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
+  #       run: |
+  #         npx tauri ios init --ci
+  #         npx tauri ios build --export-method debugging
+  #     - uses: actions/upload-artifact@v4
+  #       with: { name: kermius-ios, path: "src-tauri/gen/apple/build/**/*.ipa" }
