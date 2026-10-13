@@ -1,0 +1,137 @@
+name: mobile
+
+# Android APK + unsigned iOS IPA.
+# - Called by release.yml with the release tag: files are attached to that release.
+# - Push to the `ci/mobile` branch to test: files go to the `mobile-dev` pre-release.
+# Build logs are always attached to the `ci-logs` pre-release (readable without signing in).
+on:
+  push:
+    branches: [ci/mobile]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TARGET_TAG: ${{ inputs.tag || 'mobile-dev' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure pre-releases exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view ci-logs >/dev/null 2>&1 || gh release create ci-logs --prerelease --target "$GITHUB_SHA" --title "CI build logs" --notes "Mobile build logs."
+          if [ "$TARGET_TAG" = mobile-dev ]; then
+            gh release delete mobile-dev --yes --cleanup-tag || true
+            gh release create mobile-dev --prerelease --target "$GITHUB_SHA" --title "Mobile dev build" --notes "Test build of $GITHUB_SHA"
+          fi
+
+  android:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, key: android }
+      - run: npm ci
+      - name: Build APK
+        run: |
+          set -o pipefail
+          {
+            set -x
+            # The runner image ships the Android SDK, an NDK and JDK 17.
+            export JAVA_HOME="$JAVA_HOME_17_X64" NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+            echo "ANDROID_HOME=$ANDROID_HOME NDK_HOME=$NDK_HOME"; java -version
+            npx tauri android init --ci
+            npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
+          } 2>&1 | tee android-build.log
+      - name: Sign APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+        run: |
+          # Your keystore if configured; otherwise a throwaway key (sideloading works, but updates need the same key).
+          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > ks.jks; PASS="$KEYSTORE_PASS";
+          else PASS=kermius-ci; keytool -genkeypair -keystore ks.jks -storepass $PASS -keypass $PASS -alias kermius -keyalg RSA -validity 10000 -dname "CN=Kermius"; fi
+          APK=$(find src-tauri/gen/android -name '*universal-release-unsigned.apk' | head -1)
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          $BT/zipalign -f 4 "$APK" aligned.apk
+          $BT/apksigner sign --ks ks.jks --ks-pass pass:$PASS --out "kermius_android_${TARGET_TAG#v}.apk" aligned.apk
+      - name: Upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TARGET_TAG" kermius_android_*.apk --clobber
+      - name: Upload log
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: test -f android-build.log && gh release upload ci-logs android-build.log --clobber || true
+
+  # Unsigned device build: re-sign on a Mac with a personal Apple ID (Sideloadly, AltStore, Xcode).
+  ios:
+    needs: prepare
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-apple-ios" }
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, key: ios }
+      - run: npm ci
+      - run: npm run build
+      - run: npx tauri ios init --ci 2>&1 | tee ios-init.log
+      # Xcode's "Build Rust Code" phase only works while `tauri ios build` runs (it needs code
+      # signing), so build the Rust static lib here and turn that phase into a no-op.
+      - name: Build Rust library
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+        run: |
+          set -o pipefail
+          cargo build --manifest-path src-tauri/Cargo.toml --lib --release --target aarch64-apple-ios \
+            --features tauri/custom-protocol 2>&1 | tee ios-rust.log
+          mkdir -p src-tauri/gen/apple/Externals/arm64/release
+          cp src-tauri/target/aarch64-apple-ios/release/libkermius_lib.a src-tauri/gen/apple/Externals/arm64/release/libapp.a
+          perl -pi -e 's/^(\s*shellScript = ).*xcode-script.*$/$1"true";/' src-tauri/gen/apple/*.xcodeproj/project.pbxproj
+          grep -c xcode-script src-tauri/gen/apple/*.xcodeproj/project.pbxproj || true
+      - name: Build unsigned archive
+        run: |
+          PROJ=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -1)
+          SCHEME=$(xcodebuild -list -json -project "$PROJ" | node -e 'const j=JSON.parse(require("fs").readFileSync(0));console.log(j.project.schemes.find(s=>/iOS/i.test(s))||j.project.schemes[0])')
+          echo "project=$PROJ scheme=$SCHEME"
+          xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration release \
+            -destination 'generic/platform=iOS' -archivePath build/Kermius.xcarchive archive \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM="" > xcodebuild.log 2>&1 || true
+          tail -n 40 xcodebuild.log
+          APP=$(find build/Kermius.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP" ]; then grep -E "error|ARCHIVE FAILED" xcodebuild.log | sort -u | head -n 15 | while IFS= read -r l; do echo "::error::${l:0:900}"; done; exit 1; fi
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qr "kermius_ios_${TARGET_TAG#v}_unsigned.ipa" Payload
+      - name: Upload IPA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TARGET_TAG" kermius_ios_*_unsigned.ipa --clobber
+      - name: Upload log
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat ios-init.log ios-rust.log xcodebuild.log > ios-build.log 2>/dev/null || true
+          gh release upload ci-logs ios-build.log --clobber || true
