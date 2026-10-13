@@ -120,7 +120,7 @@ function renderSyncFoot() {
     else if (s.lastSync) (text = `Synced ${ago(s.lastSync)}`), (cls = "ok");
     else text = "Not synced yet";
   }
-  els.foot.innerHTML = `<button class="sync-pill ${cls}" title="${esc(state.syncError)}">${icon("sync", 14)}<span>${text}</span></button>`;
+  els.foot.innerHTML = `<button class="sync-pill ${cls}" title="${esc(state.syncError)}">${icon("sync", 14)}<span class="grow">${text}</span><span class="ver">v${state.version}</span></button>`;
 }
 
 function ago(ts: number) {
