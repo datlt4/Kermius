@@ -219,6 +219,21 @@ els.tabs.addEventListener("click", (e) => {
   if (tab) activate(tab.dataset.tab!);
 });
 
+els.tabs.addEventListener("contextmenu", (e) => {
+  const id = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]")?.dataset.tab;
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) return;
+  e.preventDefault();
+  contextMenu(e.clientX, e.clientY, [
+    ...(s.local ? [] : [{ label: "Retry", icon: "sync", action: () => s.connect() }]),
+    { label: "Duplicate", icon: "plus", action: () => openSession(s.local ? null : s.host) },
+    ...(s.local ? [] : [{ label: "Copy password", icon: "key", action: () => s.copyPassword() }]),
+    "-" as const,
+    { label: "Close others", icon: "x", action: () => state.sessions.filter((x) => x !== s).forEach((x) => closeSession(x.id)) },
+    { label: "Close", icon: "x", danger: true, action: () => closeSession(s.id) },
+  ]);
+});
+
 els.tabs.addEventListener("auxclick", (e) => {
   const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
   if (e.button === 1 && tab && tab.dataset.tab !== "home") closeSession(tab.dataset.tab!);

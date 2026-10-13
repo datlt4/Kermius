@@ -38,7 +38,8 @@ export interface SyncSettings {
 export type Status =
   | { type: "connected" }
   | { type: "closed" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "log"; message: string };
 
 export const emptyHost = (): Host => ({
   id: "", name: "", address: "", port: 22, username: "", password: "", privateKey: "",

@@ -65,6 +65,14 @@ export class Session {
   private fit = new FitAddon();
   private overlay: HTMLElement;
   private error = "";
+  private logs: string[] = [];
+  private gen = 0;
+  // Auto-reconnect backoff (seconds); the last value repeats.
+  private static readonly DELAYS = [5, 10, 15, 20, 25, 30, 60];
+  private retryStep = 0;
+  private retryAt = 0;
+  private retryTimer = 0;
+  private tickTimer = 0;
   private ctrl = false;
   private resizeTimer = 0;
 
@@ -219,6 +227,10 @@ export class Session {
     this.overlay.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest("button")?.dataset.a;
       if (a === "retry") this.connect();
+      else if (a === "logs") {
+        localStorage.setItem("kermius.showLogs", localStorage.getItem("kermius.showLogs") === "1" ? "" : "1");
+        this.setState(this.state);
+      }
       else if (a === "trust") api.trustNewHostKey(this.host.id).then(() => this.connect());
       else if (a === "close") this.onClose(this);
     });
@@ -249,22 +261,28 @@ export class Session {
     api.sshWrite(this.sid, d);
   }
 
+  /** Connect now; also used by Retry (keeps the backoff position, so a failure waits for the next step). */
   async connect() {
-    if (this.sid) api.sshClose(this.sid);
+    this.clearRetry();
+    if (this.sid) api.sshClose(this.sid).catch(() => {});
     this.sid = null;
+    this.logs = [];
+    const gen = ++this.gen;
     this.setState("connecting");
     const onData = new Channel<ArrayBuffer>();
-    onData.onmessage = (d) => this.term.write(d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(d as unknown as number[]));
+    onData.onmessage = (d) => {
+      if (gen === this.gen) this.term.write(d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(d as unknown as number[]));
+    };
     const onStatus = new Channel<Status>();
     onStatus.onmessage = (s) => {
+      if (gen !== this.gen) return;
+      if (s.type === "log") return this.addLog(s.message);
       if (s.type === "connected") {
+        this.retryStep = 0;
         this.setState("connected");
         this.term.focus();
       } else if (s.type === "closed") this.setState("closed");
-      else {
-        this.error = s.message;
-        this.setState("error");
-      }
+      else this.fail(s.message);
     };
     try {
       const { cols, rows } = this.term;
@@ -272,9 +290,48 @@ export class Session {
         ? await api.localOpen(cols, rows, onData, onStatus)
         : await api.sshConnect(this.host.id, cols, rows, onData, onStatus);
     } catch (e) {
-      this.error = String(e);
-      this.setState("error");
+      if (gen === this.gen) this.fail(String(e));
     }
+  }
+
+  private fail(message: string) {
+    this.error = message;
+    this.addLog(`Error: ${message}`);
+    // Host key changes need a decision from the user; never retry those automatically.
+    if (!this.local && !message.startsWith("HOSTKEY_MISMATCH")) {
+      const delay = Session.DELAYS[Math.min(this.retryStep, Session.DELAYS.length - 1)];
+      this.retryStep++;
+      this.retryAt = Date.now() + delay * 1000;
+      this.retryTimer = window.setTimeout(() => this.connect(), delay * 1000);
+      this.tickTimer = window.setInterval(() => this.renderCountdown(), 1000);
+    }
+    this.setState("error");
+  }
+
+  private clearRetry() {
+    clearTimeout(this.retryTimer);
+    clearInterval(this.tickTimer);
+    this.retryAt = 0;
+  }
+
+  private renderCountdown() {
+    const el = this.overlay.querySelector(".countdown");
+    if (el) el.textContent = this.retryAt ? `Reconnecting in ${Math.max(0, Math.ceil((this.retryAt - Date.now()) / 1000))}s…` : "";
+  }
+
+  private addLog(line: string) {
+    this.logs.push(line);
+    const list = this.overlay.querySelector(".logs");
+    if (list) {
+      list.insertAdjacentHTML("beforeend", `<div>${esc(line)}</div>`);
+      list.scrollTop = list.scrollHeight;
+    }
+  }
+
+  private logsHtml() {
+    const open = localStorage.getItem("kermius.showLogs") === "1";
+    return `<button class="btn ghost sm" data-a="logs">${open ? "Hide logs" : "Show logs"}</button>
+      ${open ? `<div class="logs">${this.logs.map((l) => `<div>${esc(l)}</div>`).join("")}</div>` : ""}`;
   }
 
   private setState(s: SessionState) {
@@ -290,13 +347,17 @@ export class Session {
           ? `<div class="ov-bar"><span>Shell exited</span><button class="btn primary sm" data-a="retry">Restart</button><button class="btn ghost sm" data-a="close">Close tab</button></div>`
           : "";
     } else if (s === "connecting") {
-      this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3><p class="muted">${target}</p><div class="progress"><i></i></div></div>`;
+      this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3><p class="muted">${target}</p><div class="progress"><i></i></div>
+        ${this.logsHtml()}</div>`;
     } else if (s === "error") {
       const mismatch = this.error.startsWith("HOSTKEY_MISMATCH");
       this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3>${this.local ? "" : `<p class="muted">${target}</p>`}
         <p class="err">${esc(this.error.replace(/^HOSTKEY_MISMATCH: /, "⚠ "))}</p>
+        <p class="countdown muted"></p>
         <div class="row">${mismatch ? `<button class="btn danger" data-a="trust">Trust new key</button>` : ""}
-        <button class="btn primary" data-a="retry">Retry</button><button class="btn ghost" data-a="close">Close</button></div></div>`;
+        <button class="btn primary" data-a="retry">Retry</button><button class="btn ghost" data-a="close">Close</button></div>
+        ${this.local ? "" : this.logsHtml()}</div>`;
+      this.renderCountdown();
     } else if (s === "closed") {
       this.overlay.innerHTML = `<div class="ov-bar"><span>Connection closed</span><button class="btn primary sm" data-a="retry">Reconnect</button><button class="btn ghost sm" data-a="close">Close tab</button></div>`;
     } else this.overlay.innerHTML = "";
@@ -339,6 +400,8 @@ export class Session {
   }
 
   dispose() {
+    this.clearRetry();
+    this.gen++;
     if (this.sid) api.sshClose(this.sid);
     this.term.dispose();
     this.el.remove();

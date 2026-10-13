@@ -20,7 +20,7 @@ impl Tunnels {
             return Ok(());
         }
         let t = host.tunnels.get(index).cloned().ok_or("No such tunnel")?;
-        let first = ssh::connect(store.clone(), &host).await?;
+        let first = ssh::connect(store.clone(), &host, ssh::no_log()).await?;
         let listener = tokio::net::TcpListener::bind((t.bind_host.as_str(), t.source_port))
             .await
             .map_err(|e| format!("Bind {}:{}: {e}", t.bind_host, t.source_port))?;
@@ -34,7 +34,7 @@ impl Tunnels {
                     let handle = {
                         let mut guard = conn.lock().await;
                         if guard.is_closed() {
-                            match ssh::connect(store, &host).await {
+                            match ssh::connect(store, &host, ssh::no_log()).await {
                                 Ok(h) => *guard = Arc::new(h),
                                 Err(_) => return,
                             }
