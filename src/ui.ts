@@ -9,6 +9,7 @@ const P: Record<string, string> = {
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
   min: '<path d="M5 12h14"/>',
   max: '<rect x="4" y="4" width="16" height="16" rx="2"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',

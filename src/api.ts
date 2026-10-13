@@ -51,6 +51,9 @@ export const api = {
   clipboardRead: () => invoke<string>("clipboard_read"),
   sshConnect: (hostId: string, cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
     invoke<string>("ssh_connect", { hostId, cols, rows, onData, onStatus }),
+  localOpen: (cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
+    invoke<string>("local_open", { cols, rows, onData, onStatus }),
+  listFonts: () => invoke<string[]>("list_fonts"),
   sshWrite: (sid: string, data: string) => invoke<void>("ssh_write", { sid, data }),
   sshResize: (sid: string, cols: number, rows: number) => invoke<void>("ssh_resize", { sid, cols, rows }),
   sshClose: (sid: string) => invoke<void>("ssh_close", { sid }),

@@ -3,7 +3,13 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { api, Channel, type Host, type Status } from "./api";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/700.css";
+import "@fontsource/fira-code/400.css";
+import "@fontsource/fira-code/700.css";
+import "@fontsource/source-code-pro/400.css";
+import "@fontsource/source-code-pro/700.css";
+import { api, Channel, emptyHost, type Host, type Status } from "./api";
 import { contextMenu, esc, hue, icon, toast } from "./ui";
 
 export const termTheme = {
@@ -24,14 +30,27 @@ export interface TermPrefs {
   fontSize: number;
 }
 
+export const BUILTIN_FONTS = ["JetBrains Mono", "Fira Code", "Source Code Pro"];
+
 export function loadPrefs(): TermPrefs {
-  const d: TermPrefs = { fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace', fontSize: 14 };
+  const d: TermPrefs = { fontFamily: "JetBrains Mono", fontSize: 14 };
   try {
-    return { ...d, ...JSON.parse(localStorage.getItem("kermius.term") || "{}") };
+    const p = { ...d, ...JSON.parse(localStorage.getItem("kermius.term") || "{}") };
+    if (p.fontFamily.includes(",")) p.fontFamily = d.fontFamily; // old free-text font list
+    return p;
   } catch {
     return d;
   }
 }
+
+/** CSS font stack: chosen font, then a bundled one (has Vietnamese glyphs). */
+export const fontStack = (family: string) => `"${family}", "JetBrains Mono", monospace`;
+
+export const loadFont = (p: TermPrefs) =>
+  Promise.all([400, 700].map((w) => document.fonts.load(`${w} ${p.fontSize}px "${p.fontFamily}"`))).catch(() => {});
+
+// WebKitGTK's WebGL text is grayscale-AA and looks blurry next to native text; use DOM there.
+const useWebgl = !/Linux/.test(navigator.userAgent) || /Android/.test(navigator.userAgent);
 
 export type SessionState = "connecting" | "connected" | "closed" | "error";
 
@@ -49,14 +68,21 @@ export class Session {
   private ctrl = false;
   private resizeTimer = 0;
 
-  constructor(public host: Host, private onChange: () => void, private onClose: (s: Session) => void) {
+  /** `host === null` opens a local shell. */
+  readonly local: boolean;
+  host: Host;
+
+  constructor(host: Host | null, private onChange: () => void, private onClose: (s: Session) => void) {
+    this.local = !host;
+    this.host = host ?? { ...emptyHost(), name: "Local" };
     const prefs = loadPrefs();
     this.term = new Terminal({
-      fontFamily: prefs.fontFamily,
+      fontFamily: fontStack(prefs.fontFamily),
       fontSize: prefs.fontSize,
       lineHeight: 1.15,
       cursorBlink: true,
-      cursorStyle: "bar",
+      cursorStyle: "block",
+      cursorInactiveStyle: "outline",
       scrollback: 10000,
       allowProposedApi: true,
       macOptionIsMeta: true,
@@ -75,39 +101,92 @@ export class Session {
     t.loadAddon(this.fit);
     t.loadAddon(new WebLinksAddon());
     t.open(this.el.querySelector(".term")!);
-    try {
-      const gl = new WebglAddon();
-      gl.onContextLoss(() => gl.dispose());
-      t.loadAddon(gl);
-    } catch {
-      /* falls back to DOM renderer */
-    }
-    // WebKitGTK + IBus/Fcitx (e.g. Vietnamese Telex) delivers a committed IME word twice:
-    // once via the input event and once via xterm's compositionend handler. Drop the repeat.
-    let commit = "";
-    let commitSent = false;
-    let commitUntil = 0;
-    let last = { d: "", t: 0 };
-    t.textarea!.addEventListener("compositionend", (e) => {
-      commit = e.data;
-      commitUntil = performance.now() + 150;
-      commitSent = last.d === commit && performance.now() - last.t < 150;
-    });
-    t.onData((d) => {
-      const now = performance.now();
-      if (commit && d === commit && now < commitUntil) {
-        if (commitSent) return void (commit = "");
-        commitSent = true;
+    if (useWebgl) {
+      try {
+        const gl = new WebglAddon();
+        gl.onContextLoss(() => gl.dispose());
+        t.loadAddon(gl);
+      } catch {
+        /* falls back to DOM renderer */
       }
-      last = { d, t: now };
+    }
+    t.onData((d) => this.send(d));
+    // WebKitGTK IME commits arrive via several events and xterm sends on more than one; send each once here.
+    const ta = t.textarea!;
+    const termEl = this.el.querySelector(".term")!;
+    let composing = false;
+    let lastCommit = { d: "", t: 0 };
+    const commit = (raw: string) => {
+      const d = raw.replace(/\u00a0/g, " ");
+      if (!d) return;
+      lastCommit = { d, t: performance.now() };
       this.send(d);
-    });
+    };
+    // Own preedit overlay at the rendered cursor, styled like terminal text (xterm's view is hidden).
+    const pre = document.createElement("div");
+    pre.className = "preedit";
+    pre.hidden = true;
+    this.el.append(pre);
+    const showPreedit = (text: string) => {
+      pre.hidden = !text;
+      if (!text) return;
+      pre.textContent = text;
+      const cell = (t as any)._core?._renderService?.dimensions?.css?.cell ?? { width: 8, height: 16 };
+      const cur = this.el.querySelector(".xterm-cursor");
+      const base = this.el.getBoundingClientRect();
+      const screen = this.el.querySelector(".xterm-screen")!.getBoundingClientRect();
+      const r = cur?.getBoundingClientRect() ?? {
+        left: screen.left + t.buffer.active.cursorX * cell.width,
+        top: screen.top + t.buffer.active.cursorY * cell.height,
+      };
+      Object.assign(pre.style, {
+        left: `${r.left - base.left}px`,
+        top: `${r.top - base.top}px`,
+        height: `${cell.height}px`,
+        lineHeight: `${cell.height}px`,
+        fontFamily: t.options.fontFamily,
+        fontSize: `${t.options.fontSize}px`,
+      });
+    };
+    termEl.addEventListener("compositionstart", () => (composing = true), true);
+    termEl.addEventListener("compositionupdate", (e) => showPreedit((e as CompositionEvent).data), true);
+    termEl.addEventListener(
+      "compositionend",
+      (e) => {
+        e.stopPropagation();
+        composing = false;
+        pre.hidden = true;
+        const ch = (t as any)._core?._compositionHelper;
+        if (ch) {
+          ch._isComposing = false;
+          ch._isSendingComposition = false;
+          ch._compositionView?.classList.remove("active");
+        }
+        commit((e as CompositionEvent).data);
+        ta.value = "";
+      },
+      true,
+    );
+    termEl.addEventListener(
+      "input",
+      (e) => {
+        e.stopPropagation();
+        const ie = e as InputEvent;
+        if (composing || ie.isComposing || ie.inputType !== "insertText" || !ie.data) return;
+        const d = ie.data.replace(/\u00a0/g, " ");
+        if (d === lastCommit.d && performance.now() - lastCommit.t < 100) return; // same commit reported twice
+        commit(d);
+        ta.value = "";
+      },
+      true,
+    );
     t.onBinary((d) => this.send(d));
     t.onResize(({ cols, rows }) => {
       clearTimeout(this.resizeTimer);
       this.resizeTimer = window.setTimeout(() => this.sid && api.sshResize(this.sid, cols, rows), 60);
     });
     t.attachCustomKeyEventHandler((e) => {
+      if (e.isComposing || e.keyCode === 229) return false; // IME: text arrives via composition/input above
       if (e.type !== "keydown" || !e.ctrlKey) return true;
       // App shortcuts (handled globally) must not reach the shell.
       if (e.key === "Tab" || (!e.shiftKey && /^Digit[1-9]$/.test(e.code))) return false;
@@ -122,8 +201,8 @@ export class Session {
       contextMenu(ev.clientX, ev.clientY, [
         { label: "Copy", icon: "copy", action: () => this.copySelection() },
         { label: "Paste", icon: "import", action: () => this.paste() },
-        { label: "Copy password", icon: "key", action: () => this.copyPassword() },
-        "-",
+        ...(this.local ? [] : [{ label: "Copy password", icon: "key", action: () => this.copyPassword() }]),
+        "-" as const,
         { label: "Clear", icon: "x", action: () => t.clear() },
       ]);
     });
@@ -146,10 +225,17 @@ export class Session {
     let raf = 0;
     new ResizeObserver(() => {
       cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => this.el.offsetParent && this.fit.fit());
+      raf = requestAnimationFrame(() => this.refit());
     }).observe(this.el);
-    this.fit.fit();
+    this.refit();
     this.connect();
+  }
+
+  /** Fit to the container and repaint everything (renderers can leave stale rows after resize). */
+  private refit() {
+    if (!this.el.offsetParent) return;
+    this.fit.fit();
+    this.term.refresh(0, this.term.rows - 1);
   }
 
   private send(d: string) {
@@ -181,7 +267,10 @@ export class Session {
       }
     };
     try {
-      this.sid = await api.sshConnect(this.host.id, this.term.cols, this.term.rows, onData, onStatus);
+      const { cols, rows } = this.term;
+      this.sid = this.local
+        ? await api.localOpen(cols, rows, onData, onStatus)
+        : await api.sshConnect(this.host.id, cols, rows, onData, onStatus);
     } catch (e) {
       this.error = String(e);
       this.setState("error");
@@ -194,11 +283,17 @@ export class Session {
     const avatar = `<div class="avatar lg" style="--h:${hue(h.folder || h.name)}">${icon("server", 26)}</div>`;
     const target = `${esc(h.username)}@${esc(h.address)}:${h.port}`;
     this.overlay.className = `overlay ${s}`;
-    if (s === "connecting") {
+    if (this.local && s !== "error") {
+      this.overlay.className = `overlay ${s === "closed" ? "closed" : ""}`;
+      this.overlay.innerHTML =
+        s === "closed"
+          ? `<div class="ov-bar"><span>Shell exited</span><button class="btn primary sm" data-a="retry">Restart</button><button class="btn ghost sm" data-a="close">Close tab</button></div>`
+          : "";
+    } else if (s === "connecting") {
       this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3><p class="muted">${target}</p><div class="progress"><i></i></div></div>`;
     } else if (s === "error") {
       const mismatch = this.error.startsWith("HOSTKEY_MISMATCH");
-      this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3><p class="muted">${target}</p>
+      this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3>${this.local ? "" : `<p class="muted">${target}</p>`}
         <p class="err">${esc(this.error.replace(/^HOSTKEY_MISMATCH: /, "⚠ "))}</p>
         <div class="row">${mismatch ? `<button class="btn danger" data-a="trust">Trust new key</button>` : ""}
         <button class="btn primary" data-a="retry">Retry</button><button class="btn ghost" data-a="close">Close</button></div></div>`;
@@ -228,7 +323,7 @@ export class Session {
   show() {
     this.el.hidden = false;
     requestAnimationFrame(() => {
-      this.fit.fit();
+      this.refit();
       this.term.focus();
     });
   }
@@ -238,9 +333,9 @@ export class Session {
   }
 
   applyPrefs(p: TermPrefs) {
-    this.term.options.fontFamily = p.fontFamily;
+    this.term.options.fontFamily = fontStack(p.fontFamily);
     this.term.options.fontSize = p.fontSize;
-    if (!this.el.hidden) this.fit.fit();
+    this.refit();
   }
 
   dispose() {

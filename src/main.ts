@@ -1,7 +1,8 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import { api, emptyHost, type Host, type SyncSettings, type Tunnel } from "./api";
-import { Session, loadPrefs, type TermPrefs } from "./terminal";
+import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 
 type View = "hosts" | "forwarding" | "settings";
@@ -20,13 +21,16 @@ const state = {
   sync: null as SyncSettings | null,
   syncing: false,
   syncError: "",
+  fonts: null as string[] | null,
+  version: "",
 };
 
 const app = $("#app");
 app.innerHTML = `
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand" data-tauri-drag-region><div class="logo">${icon("terminal", 18)}</div><span>Kermius</span></div>
+    <div class="brand" data-tauri-drag-region><div class="logo">${icon("terminal", 18)}</div><span class="grow">Kermius</span>
+      <button class="icon-btn collapse-btn" data-act="collapse" title="Collapse sidebar">${icon("sidebar", 16)}</button></div>
     <nav class="nav"></nav>
     <div class="side-scroll"></div>
     <div class="side-foot"></div>
@@ -92,7 +96,7 @@ function renderSidebar() {
     ["settings", "settings", "Settings"],
   ];
   els.nav.innerHTML = nav
-    .map(([v, ic, label]) => `<button class="nav-item ${state.view === v && state.active === "home" ? "on" : ""}" data-view="${v}">${icon(ic)}<span>${label}</span></button>`)
+    .map(([v, ic, label]) => `<button class="nav-item ${state.view === v && state.active === "home" ? "on" : ""}" data-view="${v}" title="${label}">${icon(ic)}<span>${label}</span></button>`)
     .join("");
 
   const fs = folders();
@@ -162,6 +166,12 @@ els.foot.addEventListener("click", () => {
 
 $(".scrim").addEventListener("click", () => els.shell.classList.remove("side-open"));
 
+els.shell.classList.toggle("side-collapsed", localStorage.getItem("kermius.sideCollapsed") === "1");
+$(".collapse-btn").addEventListener("click", () => {
+  const on = els.shell.classList.toggle("side-collapsed");
+  localStorage.setItem("kermius.sideCollapsed", on ? "1" : "");
+});
+
 // ---------- tabs ----------
 
 function renderTabs() {
@@ -175,8 +185,9 @@ function renderTabs() {
           <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
       )
       .join("")}
+    <button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>
     <div class="grow" data-tauri-drag-region></div>
-    ${state.active !== "home" ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
+    ${state.sessions.some((s) => s.id === state.active && !s.local) ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
     ${desktop ? `<div class="win-ctl">
       <button data-win="min" title="Minimize">${icon("min", 15)}</button>
       <button data-win="max" title="Maximize">${icon("max", 13)}</button>
@@ -198,6 +209,7 @@ els.tabs.addEventListener("click", (e) => {
   if (close) return closeSession(close.dataset.close!);
   const act = t.closest<HTMLElement>("[data-act]")?.dataset.act;
   if (act === "menu") return els.shell.classList.toggle("side-open");
+  if (act === "local") return openSession(null);
   if (act === "copy-pass") return state.sessions.find((s) => s.id === state.active)?.copyPassword();
   const tab = t.closest<HTMLElement>("[data-tab]");
   if (tab) activate(tab.dataset.tab!);
@@ -224,7 +236,7 @@ function goHome() {
   activate("home");
 }
 
-function openSession(h: Host) {
+function openSession(h: Host | null) {
   const s = new Session(h, renderTabs, (x) => closeSession(x.id));
   state.sessions.push(s);
   s.mount(els.terms);
@@ -279,6 +291,7 @@ function renderHosts() {
   els.page.innerHTML = `
     <div class="toolbar">
       <label class="search">${icon("search")}<input placeholder="Search hosts, IPs, users, tags…  (Ctrl+K)" value="${esc(state.query)}" spellcheck="false" autocomplete="off" /></label>
+      <button class="btn" data-act="local">${icon("terminal", 16)}<span>Terminal</span></button>
       <button class="btn primary" data-act="new">${icon("plus", 16)}<span>New Host</span></button>
       <div class="seg">
         <button class="${state.layout === "grid" ? "on" : ""}" data-layout="grid" title="Grid">${icon("grid", 16)}</button>
@@ -339,6 +352,7 @@ els.page.addEventListener("click", (e) => {
   const card = t.closest<HTMLElement>("[data-host]");
   const host = card && state.hosts.find((h) => h.id === card.dataset.host);
   if (act === "new") return openEditor({ ...emptyHost(), folder: state.folder ?? "", tags: state.tag ? [state.tag] : [] });
+  if (act === "local") return openSession(null);
   if (act === "goto-settings") return (state.view = "settings"), goHome();
   if (host && act === "pass") return copyPassword(host);
   if (host && act === "edit") return openEditor(host);
@@ -468,13 +482,21 @@ function renderSettings() {
       </div>
       <div class="panel">
         <div class="panel-head">${icon("terminal")}<div><h3>Terminal</h3></div></div>
-        <div class="field-row">
-          <label class="field grow"><span>Font family</span><input id="t-font" value="${esc(p.fontFamily)}" /></label>
-          <label class="field" style="width:110px"><span>Font size</span><input id="t-size" type="number" min="8" max="32" value="${p.fontSize}" /></label>
+        <div class="font-row">
+          <div class="font-pick">
+            <button class="font-current" data-set="font-open" style="font-family:${esc(fontStack(p.fontFamily))}">${esc(p.fontFamily)}${icon("chevron", 14)}</button>
+            <div class="font-menu" hidden><input class="font-search" placeholder="Search fonts…" spellcheck="false" /><div class="font-list"></div></div>
+          </div>
+          <div class="stepper">
+            <button data-set="size-dec">${icon("min", 14)}</button><span>${p.fontSize}</span><button data-set="size-inc">${icon("plus", 14)}</button>
+          </div>
         </div>
-        <div class="row"><button class="btn" data-set="term">Apply</button></div>
+        <pre class="font-preview" style="font-family:${esc(fontStack(p.fontFamily))};font-size:${p.fontSize}px"><span class="pv-host">ORIN4</span>:<span class="pv-path">~</span> <span class="pv-ok">➜</span> ls -lht
+drwxr-xr-x 2 aiserver aiserver 4.0K Oct 12 08:56 <span class="pv-dir">models</span>
+-rwxrwxr-x 1 aiserver aiserver  772 Oct 12 08:57 <span class="pv-ok">build.sh</span>
+echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
       </div>
-      <p class="muted center">Kermius 0.1.0 · ${state.hosts.length} hosts</p>
+      <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>
     </div>`;
 }
 
@@ -497,12 +519,52 @@ els.page.addEventListener("click", async (e) => {
     } catch (err) {
       toast(String(err), "err");
     }
-  } else if (a === "term") {
-    const p: TermPrefs = { fontFamily: v("t-font"), fontSize: Math.max(8, Math.min(32, +v("t-size") || 14)) };
-    localStorage.setItem("kermius.term", JSON.stringify(p));
-    for (const s of state.sessions) s.applyPrefs(p);
-    toast("Terminal settings applied", "ok");
+  } else if (a === "font-open") {
+    const menu = $(".font-menu", els.page);
+    menu.hidden = !menu.hidden;
+    if (menu.hidden) return;
+    state.fonts ??= await api.listFonts().catch(() => []);
+    renderFontList("");
+    $<HTMLInputElement>(".font-search", els.page).focus();
+  } else if (a === "size-dec" || a === "size-inc") {
+    const p = loadPrefs();
+    setPrefs({ ...p, fontSize: Math.max(8, Math.min(32, p.fontSize + (a === "size-inc" ? 1 : -1))) });
   }
+});
+
+function renderFontList(q: string) {
+  const cur = loadPrefs().fontFamily;
+  const system = (state.fonts ?? []).filter((f) => !BUILTIN_FONTS.includes(f));
+  const item = (f: string) =>
+    `<button class="font-item ${f === cur ? "on" : ""}" data-font="${esc(f)}" style="font-family:${esc(fontStack(f))}">${esc(f)}</button>`;
+  const match = (f: string) => f.toLowerCase().includes(q.toLowerCase());
+  const b = BUILTIN_FONTS.filter(match);
+  const sys = system.filter(match);
+  $(".font-list", els.page).innerHTML =
+    (b.length ? `<div class="font-sec">Built-in</div>${b.map(item).join("")}` : "") +
+    (sys.length ? `<div class="font-sec">System</div>${sys.map(item).join("")}` : "");
+}
+
+async function setPrefs(p: TermPrefs) {
+  localStorage.setItem("kermius.term", JSON.stringify(p));
+  await loadFont(p);
+  for (const s of state.sessions) s.applyPrefs(p);
+  renderSettings();
+}
+
+els.page.addEventListener("click", (e) => {
+  const f = (e.target as HTMLElement).closest<HTMLElement>("[data-font]")?.dataset.font;
+  if (f) setPrefs({ ...loadPrefs(), fontFamily: f });
+});
+
+els.page.addEventListener("input", (e) => {
+  const t = e.target as HTMLInputElement;
+  if (t.classList.contains("font-search")) renderFontList(t.value);
+});
+
+addEventListener("pointerdown", (e) => {
+  const menu = document.querySelector<HTMLElement>(".font-menu");
+  if (menu && !menu.hidden && !(e.target as HTMLElement).closest(".font-pick")) menu.hidden = true;
 });
 
 // ---------- editor drawer ----------
@@ -772,6 +834,8 @@ addEventListener("contextmenu", (e) => {
 });
 
 (async () => {
+  await loadFont(loadPrefs());
+  state.version = await getVersion();
   state.sync = await api.getSyncSettings();
   await reload();
   renderPage();

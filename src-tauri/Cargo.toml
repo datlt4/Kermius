@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 
 [lib]
@@ -31,3 +31,9 @@ parking_lot = "0.12"
 lto = true
 codegen-units = 1
 strip = true
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+fontdb = "0.23"
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+portable-pty = "0.9"

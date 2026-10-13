@@ -1,4 +1,6 @@
 mod crypto;
+#[cfg(not(target_os = "ios"))]
+mod local;
 mod model;
 mod ssh;
 mod store;
@@ -115,6 +117,47 @@ fn ssh_connect(
     Ok(sid)
 }
 
+#[tauri::command]
+fn local_open(
+    state: State<AppState>,
+    cols: u32,
+    rows: u32,
+    on_data: Channel<InvokeResponseBody>,
+    on_status: Channel<ssh::Status>,
+) -> Res<String> {
+    #[cfg(target_os = "ios")]
+    return Err("Local terminal is not available on iOS".into());
+    #[cfg(not(target_os = "ios"))]
+    {
+        let tx = local::spawn(cols, rows, on_data, on_status)?;
+        let sid = uuid::Uuid::new_v4().to_string();
+        state.sessions.lock().insert(sid.clone(), tx);
+        Ok(sid)
+    }
+}
+
+/// Installed monospace font families (desktop only).
+#[tauri::command]
+async fn list_fonts() -> Vec<String> {
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    return tauri::async_runtime::spawn_blocking(|| {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut v: Vec<String> = db
+            .faces()
+            .filter(|f| f.monospaced)
+            .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
+            .collect();
+        v.sort_by_key(|s| s.to_lowercase());
+        v.dedup();
+        v
+    })
+    .await
+    .unwrap_or_default();
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    Vec::new()
+}
+
 fn send_cmd(state: &AppState, sid: &str, cmd: ssh::Cmd) {
     if let Some(tx) = state.sessions.lock().get(sid) {
         let _ = tx.send(cmd);
@@ -216,6 +259,8 @@ pub fn run() {
             clipboard_write,
             clipboard_read,
             ssh_connect,
+            local_open,
+            list_fonts,
             ssh_write,
             ssh_resize,
             ssh_close,
