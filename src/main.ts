@@ -426,7 +426,8 @@ function renderForwardList() {
                   <code>${esc(t.bindHost || "127.0.0.1")}:${t.sourcePort}</code>${icon("chevron", 14)}<code>${esc(t.endpointHost || "localhost")}:${t.endpointPort}</code>
                   <div class="grow"></div>
                   ${on ? `<button class="icon-btn" data-open-url="http://localhost:${t.sourcePort}" title="Copy URL">${icon("copy", 15)}</button>` : ""}
-                  <button class="switch ${on ? "on" : ""}" data-tunnel="${h.id}:${i}" aria-label="toggle"><i></i></button></div>`;
+                  <button class="switch ${on ? "on" : ""}" data-tunnel="${h.id}:${i}" aria-label="toggle"><i></i></button>
+                  <button class="icon-btn danger" data-del-tunnel="${h.id}:${i}" title="Delete rule">${icon("trash", 15)}</button></div>`;
               })
               .join("")}</div>`,
         )
@@ -438,6 +439,18 @@ els.page.addEventListener("click", async (e) => {
   const t = e.target as HTMLElement;
   const url = t.closest<HTMLElement>("[data-open-url]")?.dataset.openUrl;
   if (url) return api.clipboardWrite(url).then(() => toast(`${url} copied`, "ok"));
+  const del = t.closest<HTMLElement>("[data-del-tunnel]")?.dataset.delTunnel;
+  if (del) {
+    const [id, idx] = [del.slice(0, del.lastIndexOf(":")), +del.slice(del.lastIndexOf(":") + 1)];
+    // Indices of running tunnels would shift, so require them stopped first.
+    if ([...state.tunnels].some((k) => k.startsWith(`${id}:`))) return toast("Stop this host's tunnels first", "err");
+    const h = state.hosts.find((x) => x.id === id);
+    if (!h) return;
+    await api.saveHost({ ...h, tunnels: h.tunnels.filter((_, i) => i !== idx) });
+    await reload();
+    scheduleSync();
+    return toast("Rule deleted", "ok");
+  }
   const sw = t.closest<HTMLElement>("[data-tunnel]");
   if (!sw) return;
   const key = sw.dataset.tunnel!;
