@@ -1,0 +1,121 @@
+name: release
+
+# Push a tag to publish: git tag v1.4.1 && git push github v1.4.1
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.rel.outputs.id }}
+    steps:
+      - id: rel
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace("refs/tags/", "");
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              tag_name: tag, name: `Kermius ${tag}`, draft: true, generate_release_notes: true,
+            });
+            core.setOutput("id", data.id);
+
+  desktop:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux_x64, os: ubuntu-22.04 }
+          - { name: linux_arm64, os: ubuntu-22.04-arm }
+          - { name: windows_x64, os: windows-latest }
+          - { name: windows_ia32, os: windows-latest, target: i686-pc-windows-msvc }
+          - { name: windows_arm64, os: windows-latest, target: aarch64-pc-windows-msvc, args: "--bundles nsis" }
+          - { name: macos_arm64, os: macos-latest, target: aarch64-apple-darwin }
+          - { name: macos_x64, os: macos-latest, target: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, key: "${{ matrix.name }}" }
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.id }}
+          args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${{ matrix.args }}
+      - name: Windows portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exe = Get-ChildItem -Recurse src-tauri/target -Filter kermius.exe | Where-Object { $_.FullName -match 'release' -and $_.FullName -notmatch 'deps' } | Select-Object -First 1
+          Compress-Archive -Path $exe.FullName -DestinationPath kermius_${{ matrix.name }}_portable.zip
+          gh release upload "${{ github.ref_name }}" kermius_${{ matrix.name }}_portable.zip --clobber
+
+  android:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "ndk;27.2.12479018"
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, key: android }
+      - run: npm ci
+      - name: Build APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          npx tauri android init --ci
+          npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
+      - name: Sign and upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+        run: |
+          # Your keystore if configured; otherwise a throwaway key (sideloading works, but updates need the same key).
+          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > ks.jks; PASS="$KEYSTORE_PASS";
+          else PASS=kermius-ci; keytool -genkeypair -keystore ks.jks -storepass $PASS -keypass $PASS -alias kermius -keyalg RSA -validity 10000 -dname "CN=Kermius"; fi
+          APK=$(find src-tauri/gen/android -name '*universal-release-unsigned.apk' | head -1)
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          $BT/zipalign -f 4 "$APK" aligned.apk
+          OUT=kermius_android_${GITHUB_REF_NAME#v}.apk
+          $BT/apksigner sign --ks ks.jks --ks-pass pass:$PASS --out "$OUT" aligned.apk
+          gh release upload "$GITHUB_REF_NAME" "$OUT" --clobber
+
+  publish:
+    needs: [create-release, desktop, android]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.id }}, draft: false,
+            });
