@@ -107,8 +107,41 @@ jobs:
           $BT/apksigner sign --ks ks.jks --ks-pass pass:$PASS --out "$OUT" aligned.apk
           gh release upload "$GITHUB_REF_NAME" "$OUT" --clobber
 
+  # Unsigned device build: re-sign on a Mac with a personal Apple ID (Sideloadly, AltStore, Xcode).
+  ios:
+    needs: create-release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "aarch64-apple-ios" }
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri, key: ios }
+      - run: npm ci
+      - run: npm run build
+      - run: npx tauri ios init --ci
+      - name: Build unsigned archive
+        run: |
+          PROJ=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -1)
+          SCHEME=$(xcodebuild -list -json -project "$PROJ" | node -e 'const j=JSON.parse(require("fs").readFileSync(0));console.log(j.project.schemes.find(s=>/iOS/i.test(s))||j.project.schemes[0])')
+          echo "project=$PROJ scheme=$SCHEME"
+          xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration release \
+            -destination 'generic/platform=iOS' -archivePath build/Kermius.xcarchive archive \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO DEVELOPMENT_TEAM="" > xcodebuild.log 2>&1 || true
+          tail -n 40 xcodebuild.log
+          APP=$(find build/Kermius.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          if [ -z "$APP" ]; then grep -E "error:|ARCHIVE FAILED" xcodebuild.log | sort -u | head -n 10 | while IFS= read -r l; do echo "::error::${l:0:900}"; done; exit 1; fi
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qr "kermius_ios_${GITHUB_REF_NAME#v}_unsigned.ipa" Payload
+      - name: Upload IPA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" kermius_ios_*_unsigned.ipa --clobber
+
   publish:
-    needs: [create-release, desktop, android]
+    needs: [create-release, desktop, android, ios]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
