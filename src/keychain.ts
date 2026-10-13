@@ -192,7 +192,7 @@ function identityDialog(i: Identity, ctx: KeychainCtx) {
   const keys = [...ctx.keys()].sort(byLabel);
   modal(
     i.id ? "Edit identity" : "New identity",
-    `<label class="field"><span>Label</span><input name="label" value="${esc(i.label)}" placeholder="Jetson default" /></label>
+    `<label class="field"><span>Label</span><input name="label" value="${esc(i.label)}" placeholder="Default login" /></label>
      <label class="field"><span>Username</span><input name="username" value="${esc(i.username)}" spellcheck="false" /></label>
      <label class="field"><span>Password</span><input name="password" type="password" value="${esc(i.password)}" autocomplete="off" /></label>
      <label class="field"><span>Key</span><select name="keyId"><option value="">None</option>${keys
