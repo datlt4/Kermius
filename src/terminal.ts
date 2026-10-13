@@ -79,7 +79,7 @@ export class Session {
     this.term = new Terminal({
       fontFamily: fontStack(prefs.fontFamily),
       fontSize: prefs.fontSize,
-      lineHeight: 1.15,
+      lineHeight: 1.0,
       cursorBlink: true,
       cursorStyle: "block",
       cursorInactiveStyle: "outline",
