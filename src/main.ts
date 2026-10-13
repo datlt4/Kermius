@@ -1,7 +1,7 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
-import { bindKeychain, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
+import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
@@ -548,7 +548,9 @@ const keychain: KeychainCtx = {
     scheduleSync();
   },
 };
-bindKeychain(els.page, keychain, () => state.view === "keychain" && state.active === "home");
+const onKeychain = () => state.view === "keychain" && state.active === "home";
+bindKeychain(els.page, keychain, onKeychain);
+bindKeychainMenu(els.page, keychain, onKeychain);
 
 // ---------- snippets ----------
 

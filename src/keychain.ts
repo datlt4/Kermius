@@ -1,5 +1,5 @@
 import { api, isWeb, type Identity, type Key } from "./api";
-import { $, confirmDialog, esc, icon, toast } from "./ui";
+import { $, confirmDialog, contextMenu, esc, icon, toast } from "./ui";
 
 export interface KeychainCtx {
   keys(): Key[];
@@ -65,6 +65,50 @@ export function bindKeychain(root: HTMLElement, ctx: KeychainCtx, active: () => 
   });
 }
 
+const copy = (text: string, what: string) => api.clipboardWrite(text).then(() => toast(`${what} copied`, "ok"));
+
+async function deleteKey(k: Key, ctx: KeychainCtx) {
+  if (!(await confirmDialog(`Delete ${k.label}?`, "Hosts and identities using this key will no longer use it."))) return;
+  await api.deleteKey(k.id);
+  await ctx.changed();
+}
+
+async function deleteIdentity(i: Identity, ctx: KeychainCtx) {
+  if (!(await confirmDialog(`Delete ${i.label}?`, "Hosts using this identity will keep only their own credentials."))) return;
+  await api.deleteIdentity(i.id);
+  await ctx.changed();
+}
+
+/** Right-click menus on key and identity cards. */
+export function bindKeychainMenu(root: HTMLElement, ctx: KeychainCtx, active: () => boolean) {
+  root.addEventListener("contextmenu", (e) => {
+    if (!active()) return;
+    const t = e.target as HTMLElement;
+    const keyEl = t.closest<HTMLElement>("[data-key]");
+    const k = keyEl && ctx.keys().find((x) => x.id === keyEl.dataset.key);
+    const idEl = t.closest<HTMLElement>("[data-identity]");
+    const i = idEl && ctx.identities().find((x) => x.id === idEl.dataset.identity);
+    if (!k && !i) return;
+    e.preventDefault();
+    if (k)
+      contextMenu(e.clientX, e.clientY, [
+        { label: "Edit", icon: "edit", action: () => keyDialog(k, ctx) },
+        ...(k.publicKey ? [{ label: "Copy public key", icon: "copy", action: () => copy(k.publicKey, "Public key") }] : []),
+        { label: "Copy private key", icon: "key", action: () => copy(k.privateKey, "Private key") },
+        "-" as const,
+        { label: "Delete", icon: "trash", danger: true, action: () => deleteKey(k, ctx) },
+      ]);
+    else if (i)
+      contextMenu(e.clientX, e.clientY, [
+        { label: "Edit", icon: "edit", action: () => identityDialog(i, ctx) },
+        { label: "Copy username", icon: "user", action: () => copy(i.username, "Username") },
+        ...(i.password ? [{ label: "Copy password", icon: "key", action: () => copy(i.password, "Password") }] : []),
+        "-" as const,
+        { label: "Delete", icon: "trash", danger: true, action: () => deleteIdentity(i, ctx) },
+      ]);
+  });
+}
+
 /** Modal form; `onSave` returns false to keep it open. */
 function modal(title: string, body: string, onSave: (form: HTMLFormElement) => Promise<boolean>, onDelete?: () => Promise<void>) {
   const el = document.createElement("div");
@@ -112,14 +156,7 @@ function keyDialog(k: Key, ctx: KeychainCtx) {
       await ctx.changed();
       return true;
     },
-    k.id
-      ? async () => {
-          if (await confirmDialog(`Delete ${k.label}?`, "Hosts and identities using this key will no longer use it.")) {
-            await api.deleteKey(k.id);
-            await ctx.changed();
-          }
-        }
-      : undefined,
+    k.id ? () => deleteKey(k, ctx) : undefined,
   );
   form.querySelector("[data-load]")?.addEventListener("click", () => {
     const input = document.createElement("input");
@@ -171,14 +208,7 @@ function identityDialog(i: Identity, ctx: KeychainCtx) {
       await ctx.changed();
       return true;
     },
-    i.id
-      ? async () => {
-          if (await confirmDialog(`Delete ${i.label}?`, "Hosts using this identity will keep only their own credentials.")) {
-            await api.deleteIdentity(i.id);
-            await ctx.changed();
-          }
-        }
-      : undefined,
+    i.id ? () => deleteIdentity(i, ctx) : undefined,
   );
 }
 
