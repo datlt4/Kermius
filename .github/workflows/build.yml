@@ -7,7 +7,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Runs first; app builds wait for it.
+  sync-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read server version
+        id: ver
+        run: echo "version=$(grep -m1 '^version' server/Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            hienanh/kermius-sync:latest
+            hienanh/kermius-sync:${{ steps.ver.outputs.version }}
+
   desktop:
+    needs: sync-server
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +68,7 @@ jobs:
             src-tauri/target/**/release/bundle/**/*.dmg
 
   android:
+    needs: sync-server
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,6 +105,7 @@ jobs:
         with: { name: kermius-android, path: kermius-android.apk }
 
   ios:
+    needs: sync-server
     # Needs an Apple developer account: set APPLE_DEVELOPMENT_TEAM (+ signing secrets per Tauri docs).
     if: ${{ vars.APPLE_DEVELOPMENT_TEAM != '' }}
     runs-on: macos-latest
@@ -97,20 +123,3 @@ jobs:
           npx tauri ios build --export-method debugging
       - uses: actions/upload-artifact@v4
         with: { name: kermius-ios, path: "src-tauri/gen/apple/build/**/*.ipa" }
-
-  sync-server:
-    runs-on: ubuntu-latest
-    permissions: { contents: read, packages: write }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        if: startsWith(github.ref, 'refs/tags/v')
-        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-      - uses: docker/build-push-action@v6
-        with:
-          context: server
-          platforms: linux/amd64,linux/arm64
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
-          tags: ghcr.io/${{ github.repository_owner }}/kermius-sync:${{ github.ref_name }}
