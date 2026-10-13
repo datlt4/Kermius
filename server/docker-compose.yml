@@ -1,7 +1,7 @@
 services:
   kermius-sync:
     build: .
-    image: kermius-sync:latest
+    image: hienanh/kermius-sync:latest
     container_name: kermius-sync
     restart: unless-stopped
     ports:

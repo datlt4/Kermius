@@ -43,7 +43,7 @@ Groups, tags, passwords, keys, notes and local port-forward rules are kept. Re-i
 cd server
 cp .env.example .env
 sed -i "s/^KERMIUS_TOKEN=.*/KERMIUS_TOKEN=$(openssl rand -hex 32)/" .env
-docker compose up -d --build   # listens on port 8080 (change KERMIUS_PORT in .env)
+docker compose up -d   # pulls hienanh/kermius-sync, listens on port 8080 (change KERMIUS_PORT in .env)
 ```
 
 Put it behind HTTPS (Caddy, Traefik, nginx…). In Kermius → Settings → Sync, enter the server URL, the token and an encryption passphrase. Use the same passphrase on every device; it never leaves the device and lost passphrases cannot be recovered.
