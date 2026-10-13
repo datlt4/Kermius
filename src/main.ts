@@ -703,9 +703,9 @@ function renderSettings() {
             <button data-set="size-dec">${icon("min", 14)}</button><span>${p.fontSize}</span><button data-set="size-inc">${icon("plus", 14)}</button>
           </div>
         </div>
-        <pre class="font-preview" style="font-family:${esc(fontStack(p.fontFamily))};font-size:${p.fontSize}px"><span class="pv-host">ORIN4</span>:<span class="pv-path">~</span> <span class="pv-ok">➜</span> ls -lht
-drwxr-xr-x 2 aiserver aiserver 4.0K Oct 12 08:56 <span class="pv-dir">models</span>
--rwxrwxr-x 1 aiserver aiserver  772 Oct 12 08:57 <span class="pv-ok">build.sh</span>
+        <pre class="font-preview" style="font-family:${esc(fontStack(p.fontFamily))};font-size:${p.fontSize}px"><span class="pv-host">server</span>:<span class="pv-path">~</span> <span class="pv-ok">➜</span> ls -lht
+drwxr-xr-x 2 user user 4.0K Oct 12 08:56 <span class="pv-dir">models</span>
+-rwxrwxr-x 1 user user  772 Oct 12 08:57 <span class="pv-ok">build.sh</span>
 echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
       </div>`}
       <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>

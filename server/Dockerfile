@@ -5,6 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY index.html vite.config.ts tsconfig.json ./
 COPY src ./src
+COPY public ./public
 RUN npx vite build
 
 FROM rust:1-slim AS build
