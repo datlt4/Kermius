@@ -133,7 +133,7 @@ function status(job: FsJob) {
   const l = live.get(job.id);
   if (l) {
     const t = elapsed(l.started);
-    if (l.phase === "syncing") return { cls: "busy", text: `Syncing ${l.pct}% · ${t}` };
+    if (l.phase === "syncing") return { cls: "busy", text: l.pct < 0 ? `Syncing (listing files) · ${t}` : `Syncing ${l.pct}% · ${t}` };
     if (l.phase === "scanning") {
       const sides = (["a", "b"] as const)
         .filter((k) => l.scan[k])
@@ -217,7 +217,7 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
       else {
         if (ev.done < l.counted) l.counted = 0; // next rsync step started
         totals[ev.dir] += ev.done - l.counted;
-        Object.assign(l, { pct: ev.total ? Math.min(100, Math.round((ev.done / ev.total) * 100)) : 0, rate: ev.rate, dir: ev.dir, counted: ev.done });
+        Object.assign(l, { pct: ev.total ? Math.min(100, Math.round((ev.done / ev.total) * 100)) : -1, rate: ev.rate, dir: ev.dir, counted: ev.done });
       }
       live.set(ev.id, l);
     }
@@ -311,7 +311,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                             ${w.limitHost ? `<button class="fs-conflicts" data-fs="raise" data-host="${esc(w.limitHost)}">Raise limit</button>` : ""}</div>`
                         : ""
                     }
-                    ${l?.phase === "syncing" ? `<div class="bar"><i style="width:${l.pct}%"></i></div>` : ""}
+                    ${l?.phase === "syncing" ? `<div class="bar ${l.pct < 0 ? "indeterminate" : ""}"><i style="width:${Math.max(0, l.pct)}%"></i></div>` : ""}
                   </div>
                   <div class="fs-actions">
                     <button class="icon-btn" data-fs="${j.paused ? "resume" : "pause"}" title="${j.paused ? "Resume" : "Pause"}">${icon(j.paused ? "play" : "stop", 15)}</button>
