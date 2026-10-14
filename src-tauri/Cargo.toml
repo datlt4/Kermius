@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "1.4.5"
+version = "1.5.0"
 edition = "2021"
 license = "MIT"
 
@@ -28,6 +28,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 anyhow = "1"
 parking_lot = "0.12"
 png = "0.17"
+russh-sftp = "3"
 
 [profile.release]
 lto = true

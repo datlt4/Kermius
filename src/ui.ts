@@ -11,6 +11,7 @@ const P: Record<string, string> = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   code: '<path d="M8 4C6 4 6 5 6 7v2c0 1.5-1 3-2 3 1 0 2 1.5 2 3v2c0 2 0 3 2 3M16 4c2 0 2 1 2 3v2c0 1.5 1 3 2 3-1 0-2 1.5-2 3v2c0 2 0 3-2 3"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
   paste: '<rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
@@ -122,5 +123,32 @@ export function confirmDialog(title: string, body: string, ok = "Delete"): Promi
       el.remove();
       resolve(r === "1");
     });
+  });
+}
+
+export function promptDialog(title: string, label: string, value = ""): Promise<string | null> {
+  return new Promise((resolve) => {
+    const el = document.createElement("div");
+    el.className = "modal-wrap";
+    el.innerHTML = `<form class="modal"><h3>${esc(title)}</h3>
+      <label class="field"><span>${esc(label)}</span><input name="v" value="${esc(value)}" spellcheck="false" /></label>
+      <div class="modal-actions" style="margin-top:16px"><button type="button" class="btn ghost" data-r="0">Cancel</button><button type="submit" class="btn primary">OK</button></div></form>`;
+    document.body.append(el);
+    const input = el.querySelector("input")!;
+    input.focus();
+    input.select();
+    const done = (v: string | null) => {
+      el.remove();
+      resolve(v);
+    };
+    el.querySelector("form")!.addEventListener("submit", (e) => {
+      e.preventDefault();
+      done(input.value.trim() || null);
+    });
+    el.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement;
+      if (t.dataset.r === "0" || t === el) done(null);
+    });
+    el.addEventListener("keydown", (e) => e.key === "Escape" && done(null));
   });
 }
