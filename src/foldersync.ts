@@ -144,7 +144,7 @@ function status(job: FsJob) {
   if (job.lastResult.startsWith(OFFLINE)) return { cls: "off", text: `Offline · ${job.lastResult.slice(OFFLINE.length)}` };
   if (job.lastResult === "Stopped") return { cls: "", text: `Stopped · ${job.paused ? "paused" : "will resume on the next run"}` };
   const ok = /^Up to date$|copied|deleted|conflicts kept/.test(job.lastResult);
-  return ok ? { cls: "ok", text: `${job.lastResult} · ${ago(job.lastRun)}` } : { cls: "err", text: job.lastResult };
+  return ok ? { cls: "ok", text: `${job.lastResult} · ${ago(job.lastRun)}` } : { cls: "err", text: job.lastResult.split("\n")[0] };
 }
 
 export async function loadJobs() {
@@ -275,6 +275,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                     ${j.lastRun ? `<div class="fs-stats"><span>A: ${statsLine(j.statsA)}</span><span>B: ${statsLine(j.statsB)}</span></div>` : ""}
                     <div class="fs-status ${st.cls}"><span class="dot-st"></span>${esc(st.text)}
                       ${l?.phase === "syncing" && l.rate ? `<span class="fs-rate">${l.dir === "down" ? "↓" : l.dir === "up" ? "↑" : "⇢"} ${fmtBytes(l.rate)}/s</span>` : ""}
+                      ${st.cls === "err" ? `<button class="fs-conflicts" data-fs="details">Details</button>` : ""}
                       ${j.conflicts ? `<button class="fs-conflicts" data-fs="conflicts">⚠ ${j.conflicts} conflict${j.conflicts > 1 ? "s" : ""}</button>` : ""}</div>
                     ${
                       w
@@ -318,7 +319,7 @@ export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, qui
     else if (!quiet) toast(r.summary, "ok");
   } catch (e) {
     const msg = String(e);
-    if (!quiet || !msg.startsWith(OFFLINE)) toast(msg.replace(OFFLINE, "Offline: "), msg.startsWith(OFFLINE) ? "info" : "err");
+    if (!quiet || !msg.startsWith(OFFLINE)) toast(msg.split("\n")[0].replace(OFFLINE, "Offline: "), msg.startsWith(OFFLINE) ? "info" : "err");
   } finally {
     live.delete(id);
     await loadJobs();
@@ -374,6 +375,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     if (act === "run") return runJob(job.id, ctx);
     if (act === "preview") return runJob(job.id, ctx, true);
     if (act === "edit") return jobDialog(job, ctx);
+    if (act === "details") return detailsDialog(job);
     if (act === "conflicts") return conflictsDialog(job, () => loadJobs().then(ctx.rerender));
   });
   root.addEventListener("contextmenu", (e) => {
@@ -403,6 +405,24 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
         },
       },
     ]);
+  });
+}
+
+/** Full error text of the last run (rsync lists every failed item). */
+function detailsDialog(job: FsJob) {
+  const el = document.createElement("div");
+  el.className = "modal-wrap";
+  const lines = job.lastResult.split("\n");
+  el.innerHTML = `<div class="modal form-modal"><h3>Last run: ${esc(job.name || "Untitled")}</h3>
+    <p class="err">${esc(lines[0])}</p>
+    ${lines.length > 1 ? `<div class="fs-plan">${lines.slice(1).map((l) => `<div>${esc(l)}</div>`).join("")}</div>` : ""}
+    <p class="muted">Files that failed are retried on the next run; files already copied are skipped.</p>
+    <div class="modal-actions"><button class="btn ghost" data-m="copy">Copy</button><button class="btn primary" data-m="close">Close</button></div></div>`;
+  document.body.append(el);
+  el.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t.dataset.m === "copy") api.clipboardWrite(job.lastResult).then(() => toast("Copied", "ok"));
+    else if (t === el || t.dataset.m === "close") el.remove();
   });
 }
 
