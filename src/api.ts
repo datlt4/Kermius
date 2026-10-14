@@ -72,6 +72,35 @@ export type TransferEvent =
   | { type: "done" }
   | { type: "error"; message: string };
 
+export interface FsEndpoint {
+  kind: "local" | "remote";
+  path: string;
+  hosts: string[];
+}
+
+export interface FsJob {
+  id: string;
+  name: string;
+  mode: "twoway" | "mirror";
+  a: FsEndpoint;
+  b: FsEndpoint;
+  delete: boolean;
+  excludes: string[];
+  intervalMin: number;
+  lastRun: number;
+  lastResult: string;
+}
+
+export type FsEvent = { type: "phase"; phase: string; message: string } | { type: "progress"; done: number; total: number };
+
+export interface FsPlan {
+  copyAb: string[];
+  copyBa: string[];
+  deleteA: string[];
+  deleteB: string[];
+  conflicts: [string, string][];
+}
+
 export interface SyncSettings {
   url: string;
   token: string;
@@ -123,6 +152,11 @@ const tauriApi = {
   transferStart: (id: string, direction: "upload" | "download", mode: "sftp" | "rsync", sources: string[], dest: string, onEvent: Channel<TransferEvent>) =>
     invoke<string>("transfer_start", { id, direction, mode, sources, dest, onEvent }),
   transferCancel: (tid: string) => invoke<void>("transfer_cancel", { tid }),
+  fsyncList: () => invoke<FsJob[]>("fsync_list"),
+  fsyncSave: (job: FsJob) => invoke<FsJob>("fsync_save", { job }),
+  fsyncDelete: (id: string) => invoke<void>("fsync_delete", { id }),
+  fsyncRun: (id: string, dryRun: boolean, onEvent: Channel<FsEvent>) =>
+    invoke<{ summary: string; plan: FsPlan }>("fsync_run", { id, dryRun, onEvent }),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),

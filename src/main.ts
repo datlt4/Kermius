@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
+import { bindFolderSync, loadJobs, renderFolderSync, runDueJobs, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
@@ -11,7 +12,7 @@ import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 /** Open tabs: terminals (SSH / local) and SFTP file managers. */
 type Tab = Session | FilesTab;
 
-type View = "hosts" | "keychain" | "forwarding" | "snippets" | "settings";
+type View = "hosts" | "keychain" | "forwarding" | "foldersync" | "snippets" | "settings";
 
 const state = {
   hosts: [] as Host[],
@@ -108,6 +109,7 @@ function renderSidebar() {
     ["hosts", "server", "Hosts"],
     ["keychain", "key", "Keychain"],
     ["forwarding", "forward", "Port Forwarding"],
+    ...(isWeb ? [] : [["foldersync", "folders", "Folder Sync"] as [View, string, string]]),
     ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
   ];
@@ -302,6 +304,7 @@ function renderPage() {
   else if (state.view === "forwarding") renderForwarding();
   else if (state.view === "snippets") renderSnippets();
   else if (state.view === "keychain") renderKeychain(els.page, keychain);
+  else if (state.view === "foldersync") renderFolderSync(els.page, folderSync);
   else renderSettings();
 }
 
@@ -566,6 +569,15 @@ const keychain: KeychainCtx = {
 const onKeychain = () => state.view === "keychain" && state.active === "home";
 bindKeychain(els.page, keychain, onKeychain);
 bindKeychainMenu(els.page, keychain, onKeychain);
+
+// ---------- folder sync ----------
+
+const onFolderSync = () => state.view === "foldersync" && state.active === "home";
+const folderSync: FolderSyncCtx = {
+  hosts: () => state.hosts,
+  rerender: () => onFolderSync() && renderFolderSync(els.page, folderSync),
+};
+bindFolderSync(els.page, folderSync, onFolderSync);
 
 // ---------- snippets ----------
 
@@ -1139,5 +1151,10 @@ function webUnlock(): Promise<void> {
   activate("home");
   runSync(false);
   setInterval(() => runSync(false), 60_000);
+  if (!isWeb) {
+    await loadJobs();
+    runDueJobs(folderSync);
+    setInterval(() => runDueJobs(folderSync), 60_000);
+  }
   setInterval(renderSyncFoot, 30_000);
 })();

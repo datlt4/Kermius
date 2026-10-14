@@ -484,3 +484,39 @@ details .field + .field { margin-top: 10px; }
 .ft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ft-info { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 760px) { .fpanes { grid-template-columns: 1fr; } }
+
+/* ---------- folder sync ---------- */
+.fs-list { display: flex; flex-direction: column; gap: 10px; }
+.fs-card { cursor: default; align-items: center; gap: 16px; }
+.fs-card:hover { transform: none; }
+.fs-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.fs-title { display: flex; align-items: center; gap: 10px; }
+.fs-sched { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.fs-path { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.fs-ep { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: calc(50% - 20px); font-family: "JetBrains Mono", monospace; font-size: 12.5px; background: #262b37; padding: 3px 8px; border-radius: 6px; }
+.fs-ep > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-path { flex-wrap: nowrap; }
+.fs-path b { color: var(--text); font-weight: 600; }
+.fs-arrow { font-size: 16px; color: var(--accent); }
+.fs-status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.fs-status .dot-st { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.fs-status.ok .dot-st { background: var(--ok); }
+.fs-status.busy .dot-st { background: var(--accent); animation: pulse 1s infinite; }
+.fs-status.off .dot-st { background: var(--warn); }
+.fs-status.err { color: #ff9aa8; }
+.fs-status.err .dot-st { background: var(--danger); }
+.fs-card .bar { height: 4px; border-radius: 4px; background: #343a49; overflow: hidden; }
+.fs-card .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.2s; }
+.fs-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.fs-actions .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.fs-modal { width: min(640px, 96vw); }
+.fs-side { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: #1a1d26; border: 1px solid var(--border); border-radius: 10px; }
+.fs-kind { align-self: flex-start; }
+.fs-kind button { width: auto; padding: 0 12px; font-size: 12.5px; }
+.fs-routes { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; }
+.fs-route { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 13px; }
+.fs-route:hover { background: rgba(255, 255, 255, 0.04); }
+.fs-route span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fs-route .icon-btn { width: 24px; height: 24px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.fs-plan { max-height: 180px; overflow-y: auto; font-family: "JetBrains Mono", monospace; font-size: 12px; padding: 6px 10px; background: #171a22; border-radius: 8px; margin-top: 6px; }
