@@ -30,6 +30,8 @@ struct AppState {
     tunnels: tunnel::Tunnels,
     files: Arc<files::Files>,
     running_syncs: Mutex<std::collections::HashSet<String>>,
+    /// Stop signals for running Folder Sync jobs.
+    sync_stops: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     watchers: watch::Watchers,
 }
 
@@ -598,7 +600,14 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
     }
     let (a, i) = (app.clone(), id.clone());
     let emit: foldersync::Emit = Arc::new(move |ev| emit_fsync(&a, &i, ev));
-    let result = foldersync::run(state.store.clone(), job, dry_run, emit).await;
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    state.sync_stops.lock().insert(id.clone(), stop_tx);
+    // Dropping the run future kills rsync; its --partial-dir keeps progress for the next run.
+    let result = tokio::select! {
+        r = foldersync::run(state.store.clone(), job, dry_run, emit) => r,
+        _ = stop_rx => Err("Stopped".to_string()),
+    };
+    state.sync_stops.lock().remove(&id);
     state.running_syncs.lock().remove(&id);
     if !dry_run {
         {
@@ -657,10 +666,25 @@ fn fsync_resolve(app: tauri::AppHandle, state: State<AppState>, id: String, path
     Ok(())
 }
 
+/// Stop a running sync (no-op if idle).
+#[tauri::command]
+fn fsync_stop(state: State<AppState>, id: String) {
+    if let Some(tx) = state.sync_stops.lock().remove(&id) {
+        let _ = tx.send(());
+    }
+}
+
 #[tauri::command]
 fn fsync_pause(app: tauri::AppHandle, state: State<AppState>, ids: Vec<String>, paused: bool) -> Res<()> {
     for j in state.store.state.lock().folder_syncs.iter_mut().filter(|j| ids.contains(&j.id)) {
         j.paused = paused;
+    }
+    if paused {
+        for id in &ids {
+            if let Some(tx) = state.sync_stops.lock().remove(id) {
+                let _ = tx.send(());
+            }
+        }
     }
     state.store.save().map_err(e)?;
     state.watchers.restart(&app);
@@ -798,6 +822,7 @@ pub fn run() {
                 tunnels: Default::default(),
                 files: Default::default(),
                 running_syncs: Default::default(),
+                sync_stops: Default::default(),
                 watchers: Default::default(),
             });
             app.state::<AppState>().watchers.restart(app.handle());
@@ -862,6 +887,7 @@ pub fn run() {
             fsync_watch_states,
             fsync_import_stignore,
             fsync_pause,
+            fsync_stop,
             fsync_raise_inotify,
             fsync_raise_inotify_remote,
             fsync_conflicts,
