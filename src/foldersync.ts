@@ -373,6 +373,9 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     contextMenu(e.clientX, e.clientY, [
       { label: "Sync now", icon: "play", action: () => runJob(job.id, ctx) },
       { label: "Preview", icon: "eye", action: () => runJob(job.id, ctx, true) },
+      ...(job.mode === "mirror"
+        ? [{ label: "Full rescan (ignore saved index)", icon: "sync", action: () => api.fsyncFullRescan(job.id).then(() => runJob(job.id, ctx)) }]
+        : []),
       { label: "Edit", icon: "edit", action: () => jobDialog(job, ctx) },
       ...(job.mode === "twoway" ? [{ label: "Resolve conflicts", icon: "eye", action: () => conflictsDialog(job, () => loadJobs().then(ctx.rerender)) }] : []),
       "-" as const,
