@@ -382,7 +382,8 @@ pub fn bridge_shell(host_id: &str) -> Result<String, String> {
 }
 
 /// Run rsync (with `--info=progress2` in `args`), reporting (bytes done, estimated total).
-pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<(), String> {
+/// Returns rsync's other stdout lines (itemized changes, --stats).
+pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("rsync");
     cmd.args(&args);
     // If Kermius exits mid-transfer, rsync must stop too (else a restarted app could run a second copy).
@@ -404,7 +405,7 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
         s
     });
     // progress2 lines: "  12,345,678  42%   10.5MB/s    0:00:03 ..." separated by \r
-    let mut pending = String::new();
+    let (mut pending, mut out) = (String::new(), String::new());
     let mut chunk = [0u8; 4096];
     loop {
         let n = stdout.read(&mut chunk).await.map_err(e)?;
@@ -419,14 +420,18 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
                 if let (Ok(b), Some(p)) = (bytes.replace(',', "").parse::<u64>(), pct.strip_suffix('%').and_then(|p| p.parse::<u64>().ok())) {
                     let total = if p > 0 { b * 100 / p } else { 0 };
                     progress(b, total.max(b));
+                    continue;
                 }
+            }
+            if line.ends_with('\n') {
+                out.push_str(&line);
             }
         }
     }
     let status = child.wait().await.map_err(e)?;
     let errors = err_task.await.unwrap_or_default();
     if status.success() {
-        Ok(())
+        Ok(out)
     } else {
         Err(rsync_error(&errors))
     }
@@ -484,6 +489,7 @@ async fn rsync_copy(host: &Host, dir: Direction, sources: &[String], dest: &str,
         let _ = events.send(Event::Progress { done, total, file: String::new() });
     })
     .await
+    .map(|_| ())
 }
 
 /// `kermius --ssh-bridge <host id> <ignored host> <command...>`: act as rsync's remote shell.

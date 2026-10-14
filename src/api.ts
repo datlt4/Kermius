@@ -195,7 +195,6 @@ const tauriApi = {
   fsyncPause: (ids: string[], paused: boolean) => invoke<void>("fsync_pause", { ids, paused }),
   fsyncRaiseInotify: () => invoke<void>("fsync_raise_inotify"),
   fsyncRaiseInotifyRemote: (hostId: string) => invoke<void>("fsync_raise_inotify_remote", { hostId }),
-  fsyncFullRescan: (id: string) => invoke<void>("fsync_full_rescan", { id }),
   fsyncImportStignore: (dir: string) => invoke<[string[], number]>("fsync_import_stignore", { dir }),
   fsyncWatchStates: () => invoke<Record<string, [string, string]>>("fsync_watch_states"),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
