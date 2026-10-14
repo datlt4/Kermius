@@ -365,9 +365,15 @@ pub async fn open_tcp(host: Host, default_port: u16, on_data: Channel<InvokeResp
     let (tx, mut rx) = mpsc::unbounded_channel::<Cmd>();
     tauri::async_runtime::spawn(async move {
         let mut buf = vec![0u8; 256 * 1024];
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
         let result: Result<(), std::io::Error> = async {
             loop {
                 tokio::select! {
+                    _ = tick.tick() => {
+                        if let Some(micros) = tcp_rtt(rd.as_ref()) {
+                            let _ = on_status.send(Status::Rtt { micros });
+                        }
+                    }
                     n = rd.read(&mut buf) => {
                         let n = n?;
                         if n == 0 { return Ok(()); }
@@ -388,6 +394,21 @@ pub async fn open_tcp(host: Host, default_port: u16, on_data: Channel<InvokeResp
         });
     });
     Ok(tx)
+}
+
+/// Smoothed RTT the kernel measured for this connection (Linux).
+#[cfg(target_os = "linux")]
+fn tcp_rtt(s: &TcpStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut info: libc::tcp_info = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::tcp_info>() as libc::socklen_t;
+    let ok = unsafe { libc::getsockopt(s.as_raw_fd(), libc::IPPROTO_TCP, libc::TCP_INFO, &mut info as *mut _ as *mut libc::c_void, &mut len) } == 0;
+    ok.then_some(info.tcpi_rtt)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tcp_rtt(_: &TcpStream) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]

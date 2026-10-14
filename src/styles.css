@@ -674,3 +674,5 @@ details .field + .field { margin-top: 10px; }
 .fwd-modal { width: min(560px, 94vw); }
 .fwd-modal .fs-routes { max-height: 200px; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
 .fwd-modal .fs-route input[type="radio"] { width: auto; flex: none; margin: 0; accent-color: var(--accent); }
+.vnc-stats { position: absolute; top: 10px; left: 12px; z-index: 5; display: flex; gap: 12px; padding: 5px 10px; font: 12px "JetBrains Mono", monospace; color: #c8cdd8; background: rgba(11, 13, 18, 0.72); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; pointer-events: none; }
+.vnc-stats b { color: #fff; font-weight: 600; }
