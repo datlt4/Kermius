@@ -1,6 +1,7 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { api, type FsEndpoint, type FsEvent, type FsJob, type FsPlan, type Host } from "./api";
+import { conflictsDialog } from "./conflicts";
 import { confirmDialog, contextMenu, esc, icon, toast } from "./ui";
 
 export interface FolderSyncCtx {
@@ -59,6 +60,7 @@ const emptyJob = (): FsJob => ({
   watch: true,
   lastRun: 0,
   lastResult: "",
+  conflicts: 0,
 });
 
 function ago(ts: number) {
@@ -143,7 +145,8 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                     <div class="fs-title"><b>${esc(j.name || "Untitled")}</b><span class="badge">${j.mode === "mirror" ? "Mirror" : "Two-way"}</span>
                       ${j.intervalMin ? `<span class="muted fs-sched">${icon("sync", 12)} ${INTERVALS.find((i) => i[0] === j.intervalMin)?.[1] ?? `${j.intervalMin} min`}</span>` : ""}</div>
                     <div class="fs-path">${sideLabel(j.a, ctx)}<span class="fs-arrow">${j.mode === "mirror" ? "→" : "⇄"}</span>${sideLabel(j.b, ctx)}</div>
-                    <div class="fs-status ${st.cls}"><span class="dot-st"></span>${esc(st.text)}</div>
+                    <div class="fs-status ${st.cls}"><span class="dot-st"></span>${esc(st.text)}
+                      ${j.conflicts ? `<button class="fs-conflicts" data-fs="conflicts">⚠ ${j.conflicts} conflict${j.conflicts > 1 ? "s" : ""}</button>` : ""}</div>
                     ${w ? `<div class="fs-status ${w.cls}">${icon("eye", 13)}${esc(w.text)}</div>` : ""}
                     ${l?.phase === "syncing" ? `<div class="bar"><i style="width:${l.pct}%"></i></div>` : ""}
                   </div>
@@ -201,6 +204,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     if (act === "run") return runJob(job.id, ctx);
     if (act === "preview") return runJob(job.id, ctx, true);
     if (act === "edit") return jobDialog(job, ctx);
+    if (act === "conflicts") return conflictsDialog(job, () => loadJobs().then(ctx.rerender));
   });
   root.addEventListener("contextmenu", (e) => {
     if (!active()) return;
@@ -212,7 +216,8 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
       { label: "Sync now", icon: "play", action: () => runJob(job.id, ctx) },
       { label: "Preview", icon: "eye", action: () => runJob(job.id, ctx, true) },
       { label: "Edit", icon: "edit", action: () => jobDialog(job, ctx) },
-      "-",
+      ...(job.mode === "twoway" ? [{ label: "Resolve conflicts", icon: "eye", action: () => conflictsDialog(job, () => loadJobs().then(ctx.rerender)) }] : []),
+      "-" as const,
       {
         label: "Delete",
         icon: "trash",
