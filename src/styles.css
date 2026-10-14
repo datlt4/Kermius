@@ -589,3 +589,7 @@ details .field + .field { margin-top: 10px; }
 .fs-status.paused { color: var(--muted); }
 .fs-card.paused { opacity: 0.65; }
 @media (max-width: 900px) { .fs-overview { grid-template-columns: 1fr; } }
+
+.fs-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; padding: 8px 10px; background: #1a1d26; border: 1px solid var(--border); border-radius: 10px; }
+.fs-opts .check { font-size: 12.5px; }
+.fs-exc-btns { margin-top: -4px; }

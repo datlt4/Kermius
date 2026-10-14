@@ -66,6 +66,8 @@ const INSTALL: [string, string][] = [
   ["openSUSE", "sudo zypper install -y rsync inotify-tools"],
 ];
 
+const COMMON_EXCLUDES = ["$RECYCLE.BIN", "System Volume Information", ".Trash-*", ".stfolder", ".stversions", ".DS_Store", "Thumbs.db", "desktop.ini"];
+
 const installList = (rows: [string, string][]) =>
   rows
     .map(([os, cmd]) => `<div class="fs-cmd"><span class="muted">${esc(os)}</span><code>${esc(cmd)}</code>
@@ -88,6 +90,10 @@ const emptyJob = (): FsJob => ({
   delete: false,
   initial: "a_to_b",
   excludes: [],
+  keepPerms: false,
+  keepOwner: false,
+  keepSpecials: false,
+  followLinks: false,
   intervalMin: 0,
   watch: true,
   lastRun: 0,
@@ -431,6 +437,10 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     draft.intervalMin = +v("interval");
     draft.delete = (f.elements.namedItem("delete") as HTMLInputElement | null)?.checked ?? false;
     draft.watch = (f.elements.namedItem("watch") as HTMLInputElement | null)?.checked ?? false;
+    draft.keepPerms = (f.elements.namedItem("keepPerms") as HTMLInputElement).checked;
+    draft.keepOwner = (f.elements.namedItem("keepOwner") as HTMLInputElement).checked;
+    draft.keepSpecials = (f.elements.namedItem("keepSpecials") as HTMLInputElement).checked;
+    draft.followLinks = (el.querySelector('input[name="links"]:checked') as HTMLInputElement | null)?.value === "follow";
     const initial = f.elements.namedItem("initial") as HTMLSelectElement | null;
     if (initial) draft.initial = initial.value as FsJob["initial"];
     draft.excludes = v("excludes").split("\n").map((x) => x.trim()).filter(Boolean);
@@ -472,7 +482,18 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
       <div class="field-row"><label class="field grow"><span>Run automatically (while Kermius is open)</span><select name="interval">${INTERVALS.map(
         ([m, l]) => `<option value="${m}" ${m === draft.intervalMin ? "selected" : ""}>${l}</option>`,
       ).join("")}</select></label></div>
-      <label class="field"><span>Exclude (one pattern per line, e.g. node_modules, *.tmp, .cache)</span><textarea name="excludes" rows="3">${esc(draft.excludes.join("\n"))}</textarea></label>
+      <div class="field"><span>Symlinks and attributes</span>
+        <div class="fs-opts">
+          <label class="check"><input type="radio" name="links" value="keep" ${draft.followLinks ? "" : "checked"} /> Copy symlinks as links</label>
+          <label class="check"><input type="radio" name="links" value="follow" ${draft.followLinks ? "checked" : ""} /> Copy the files links point to</label>
+          <label class="check"><input type="checkbox" name="keepPerms" ${draft.keepPerms ? "checked" : ""} /> Keep permissions (rwx)</label>
+          <label class="check"><input type="checkbox" name="keepOwner" ${draft.keepOwner ? "checked" : ""} /> Keep owner and group <small class="muted">(owner needs root on the destination)</small></label>
+          <label class="check"><input type="checkbox" name="keepSpecials" ${draft.keepSpecials ? "checked" : ""} /> Keep devices, sockets, FIFOs <small class="muted">(needs root)</small></label>
+        </div>
+        <small class="muted">Modification times are always kept. Leave permissions/owner off for NTFS, exFAT or FAT disks — they cannot store them and rsync would report errors.</small></div>
+      <label class="field"><span>Exclude (one pattern per line, e.g. node_modules, *.tmp, .cache)</span><textarea name="excludes" rows="4">${esc(draft.excludes.join("\n"))}</textarea></label>
+      <div class="row fs-exc-btns"><button type="button" class="btn sm" data-exc="common">${icon("plus", 13)} Add common excludes</button>
+        <button type="button" class="btn sm" data-exc="stignore">${icon("import", 13)} Import .stignore</button></div>
       <div class="modal-actions"><button type="button" class="btn ghost" data-m="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div></form>`;
   };
   render();
@@ -488,6 +509,25 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     }
     const cp = t.closest<HTMLElement>("[data-copy]")?.dataset.copy;
     if (cp) return api.clipboardWrite(cp).then(() => toast("Command copied", "ok"));
+    const exc = t.closest<HTMLElement>("[data-exc]")?.dataset.exc;
+    if (exc) {
+      read();
+      let add: string[] = COMMON_EXCLUDES;
+      if (exc === "stignore") {
+        const local = [draft.a, draft.b].find((x) => x.kind === "local" && x.path);
+        if (!local) return toast("Pick a local folder first", "err");
+        try {
+          const [patterns, skipped] = await api.fsyncImportStignore(local.path);
+          add = patterns;
+          toast(`Imported ${patterns.length} patterns${skipped ? `, skipped ${skipped} (! negations / #include are not supported)` : ""}`, "ok");
+        } catch (x) {
+          return toast(String(x), "err");
+        }
+      }
+      draft.excludes = [...new Set([...draft.excludes, ...add])];
+      (el.querySelector('[name="excludes"]') as HTMLTextAreaElement).value = draft.excludes.join("\n");
+      return;
+    }
     const browse = t.closest<HTMLElement>("[data-browse]")?.dataset.browse as "a" | "b" | undefined;
     if (browse) {
       read();

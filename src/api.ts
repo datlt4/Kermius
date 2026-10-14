@@ -87,6 +87,10 @@ export interface FsJob {
   delete: boolean;
   initial: "merge" | "a_to_b" | "b_to_a" | "";
   excludes: string[];
+  keepPerms: boolean;
+  keepOwner: boolean;
+  keepSpecials: boolean;
+  followLinks: boolean;
   intervalMin: number;
   watch: boolean;
   lastRun: number;
@@ -189,6 +193,7 @@ const tauriApi = {
   fsyncPause: (ids: string[], paused: boolean) => invoke<void>("fsync_pause", { ids, paused }),
   fsyncRaiseInotify: () => invoke<void>("fsync_raise_inotify"),
   fsyncRaiseInotifyRemote: (hostId: string) => invoke<void>("fsync_raise_inotify_remote", { hostId }),
+  fsyncImportStignore: (dir: string) => invoke<[string[], number]>("fsync_import_stignore", { dir }),
   fsyncWatchStates: () => invoke<Record<string, [string, string]>>("fsync_watch_states"),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),

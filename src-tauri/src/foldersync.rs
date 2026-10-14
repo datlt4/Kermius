@@ -38,6 +38,12 @@ pub struct Job {
     /// (overwrite and delete extras); "merge" (or empty) unions both sides without deleting.
     pub initial: String,
     pub excludes: Vec<String>,
+    /// Extra attributes to keep (off by default: NTFS/exFAT disks cannot store them).
+    pub keep_perms: bool,
+    pub keep_owner: bool,
+    pub keep_specials: bool,
+    /// Copy the files symlinks point to instead of the links themselves.
+    pub follow_links: bool,
     /// Minutes between automatic runs while the app is open; 0 = manual.
     pub interval_min: u32,
     /// Sync automatically when files change on either side (while the app is open).
@@ -234,7 +240,7 @@ impl ScanProgress<'_> {
     }
 }
 
-fn scan_local(root: &Path, excludes: &[String], report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
+fn scan_local(root: &Path, excludes: &[String], follow: bool, report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
     let mut tree = Tree::new();
     let mut progress = ScanProgress { report, stats: Stats::default(), last: std::time::Instant::now() };
     let mut stack = vec![root.to_path_buf()];
@@ -246,7 +252,15 @@ fn scan_local(root: &Path, excludes: &[String], report: &(dyn Fn(Stats) + Send +
             if excluded(&rel, excludes) {
                 continue;
             }
-            let m = std::fs::symlink_metadata(&p).map_err(e)?;
+            // Following links: describe the target (what rsync -L copies); broken links are skipped.
+            let m = if follow {
+                match std::fs::metadata(&p) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                }
+            } else {
+                std::fs::symlink_metadata(&p).map_err(e)?
+            };
             let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
             let dir_ = m.is_dir();
             let meta = Meta { dir: dir_, size: if dir_ { 0 } else { m.len() }, mtime };
@@ -262,8 +276,8 @@ fn scan_local(root: &Path, excludes: &[String], report: &(dyn Fn(Stats) + Send +
 }
 
 /// GNU find streamed over SSH, so progress can be reported while the remote walks the tree.
-async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
-    let cmd = format!("cd {} && find . -mindepth 1 \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%P\\0'", sh(path));
+async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], follow: bool, report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
+    let cmd = format!("cd {} && find {}. -mindepth 1 \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%P\\0'", sh(path), if follow { "-L " } else { "" });
     let mut ch = handle.channel_open_session().await.map_err(e)?;
     ch.exec(true, cmd).await.map_err(e)?;
     let mut tree = Tree::new();
@@ -303,15 +317,16 @@ async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], r
     Ok(tree)
 }
 
-async fn scan(side: &Side, excludes: &[String], label: &str, emit: &Emit) -> Result<Tree, String> {
+async fn scan(side: &Side, job: &Job, label: &str, emit: &Emit) -> Result<Tree, String> {
+    let (excludes, follow) = (&job.excludes, job.follow_links);
     let (em, label) = (emit.clone(), label.to_string());
     let report = move |s: Stats| em(Event::Scan { side: label.clone(), files: s.files, dirs: s.dirs, bytes: s.bytes });
     match side {
         Side::Local(p) => {
             let (p, x) = (p.clone(), excludes.to_vec());
-            tokio::task::spawn_blocking(move || scan_local(&p, &x, &report)).await.map_err(e)?
+            tokio::task::spawn_blocking(move || scan_local(&p, &x, follow, &report)).await.map_err(e)?
         }
-        Side::Remote { handle, path, .. } => scan_remote(handle, path, excludes, &report).await,
+        Side::Remote { handle, path, .. } => scan_remote(handle, path, excludes, follow, &report).await,
     }
 }
 
@@ -458,7 +473,7 @@ pub fn list_conflicts(job: &Job) -> Result<Vec<Conflict>, String> {
     if !root.is_dir() {
         return Err(format!("{OFFLINE}{} not found", root.to_string_lossy()));
     }
-    let tree = scan_local(&root, &job.excludes, &|_| {})?;
+    let tree = scan_local(&root, &job.excludes, job.follow_links, &|_| {})?;
     Ok(tree
         .iter()
         .filter(|(_, m)| !m.dir)
@@ -466,6 +481,27 @@ pub fn list_conflicts(job: &Job) -> Result<Vec<Conflict>, String> {
             conflict_original(p).map(|o| Conflict { original_exists: tree.contains_key(&o), path: p.clone(), original: o, size: m.size, mtime: m.mtime })
         })
         .collect())
+}
+
+/// Syncthing `.stignore` → Kermius exclude patterns (negations and includes are skipped).
+pub fn import_stignore(dir: &str) -> Result<(Vec<String>, usize), String> {
+    let text = std::fs::read_to_string(Path::new(dir).join(".stignore")).map_err(|err| format!(".stignore: {err}"))?;
+    let (mut out, mut skipped) = (Vec::new(), 0);
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let p = line.trim_start_matches("(?d)").trim_start_matches("(?i)");
+        if p.starts_with('!') || p.starts_with("#include") {
+            skipped += 1;
+            continue;
+        }
+        let p = p.replace("**", "*");
+        if !p.is_empty() && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    Ok((out, skipped))
 }
 
 /// Resolve a path inside the job's local folder, refusing `..` escapes.
@@ -556,7 +592,22 @@ async fn delete(side: &Side, rels: &[String], tree: &Tree) -> Result<(), String>
     }
 }
 
-async fn copy(from: &Side, to: &Side, rels: &[String], emit: &Emit) -> Result<(), String> {
+/// rsync attribute flags for a job.
+fn attr_flags(job: &Job) -> Vec<String> {
+    let mut f = vec![if job.follow_links { "-rLt" } else { "-rlt" }.to_string()];
+    if job.keep_perms {
+        f.push("-p".into());
+    }
+    if job.keep_owner {
+        f.push("-og".into());
+    }
+    if job.keep_specials {
+        f.push("-D".into());
+    }
+    f
+}
+
+async fn copy(from: &Side, to: &Side, rels: &[String], job: &Job, emit: &Emit) -> Result<(), String> {
     if rels.is_empty() {
         return Ok(());
     }
@@ -567,7 +618,8 @@ async fn copy(from: &Side, to: &Side, rels: &[String], emit: &Emit) -> Result<()
         buf.push(0);
     }
     std::fs::write(&list, buf).map_err(e)?;
-    let mut args: Vec<String> = ["-rlt", "-s", "--partial-dir=.rsync-partial", "--info=progress2", "--from0"].map(String::from).to_vec();
+    let mut args = attr_flags(job);
+    args.extend(["-s", "--partial-dir=.rsync-partial", "--info=progress2", "--from0"].map(String::from));
     args.push(format!("--files-from={}", list.to_string_lossy()));
     let remote = [from, to].into_iter().find_map(|s| match s {
         Side::Remote { host, .. } => Some(host.id.clone()),
@@ -653,7 +705,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
         })
         .collect();
     phase(&emit, "scanning", via.first().map(|v| format!("via {v}")).unwrap_or_default());
-    let (ta, tb) = (scan(&a, &job.excludes, "a", &emit).await?, scan(&b, &job.excludes, "b", &emit).await?);
+    let (ta, tb) = (scan(&a, &job, "a", &emit).await?, scan(&b, &job, "b", &emit).await?);
 
     if job.mode == "mirror" {
         guard_empty(&a, &ta, &tb, job.last_run > 0)?;
@@ -661,9 +713,9 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
         if !dry_run && !plan.is_empty() {
             phase(&emit, "syncing", "");
             delete(&b, &plan.delete_b, &tb).await?;
-            copy(&a, &b, &plan.copy_ab, &emit).await?;
+            copy(&a, &b, &plan.copy_ab, &job, &emit).await?;
         }
-        let nb = if dry_run || plan.is_empty() { tb } else { scan(&b, &job.excludes, "b", &emit).await? };
+        let nb = if dry_run || plan.is_empty() { tb } else { scan(&b, &job, "b", &emit).await? };
         plan.stats = Some((stats(&ta), stats(&nb)));
         return Ok((summary(&plan), plan));
     }
@@ -682,8 +734,8 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
             phase(&emit, "syncing", "first sync");
             let (copies, dels) = if forward { (&plan.copy_ab, &plan.delete_b) } else { (&plan.copy_ba, &plan.delete_a) };
             delete(dst, dels, tdst).await?;
-            copy(src, dst, copies, &emit).await?;
-            let (na, nb) = (scan(&a, &job.excludes, "a", &emit).await?, scan(&b, &job.excludes, "b", &emit).await?);
+            copy(src, dst, copies, &job, &emit).await?;
+            let (na, nb) = (scan(&a, &job, "a", &emit).await?, scan(&b, &job, "b", &emit).await?);
             save_state(&store, &job.id, &common(&na, &nb))?;
             plan.stats = Some((stats(&na), stats(&nb)));
         }
@@ -710,10 +762,10 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
         plan.conflicts = conflicts;
         delete(&a, &plan.delete_a, &ta).await?;
         delete(&b, &plan.delete_b, &tb).await?;
-        copy(&a, &b, &plan.copy_ab, &emit).await?;
-        copy(&b, &a, &plan.copy_ba, &emit).await?;
+        copy(&a, &b, &plan.copy_ab, &job, &emit).await?;
+        copy(&b, &a, &plan.copy_ba, &job, &emit).await?;
     }
-    let (na, nb) = (scan(&a, &job.excludes, "a", &emit).await?, scan(&b, &job.excludes, "b", &emit).await?);
+    let (na, nb) = (scan(&a, &job, "a", &emit).await?, scan(&b, &job, "b", &emit).await?);
     save_state(&store, &job.id, &common(&na, &nb))?;
     let names: BTreeSet<&String> = na.keys().chain(nb.keys()).filter(|p| conflict_original(p).is_some()).collect();
     plan.open_conflicts = names.len() as u32;
@@ -791,6 +843,9 @@ mod tests {
         assert_eq!(conflict_original("Makefile.sync-conflict-20261014-093015").as_deref(), Some("Makefile"));
         assert_eq!(conflict_original(&conflict_name("a/b.md")).as_deref(), Some("a/b.md"));
         assert!(conflict_original("notes.md").is_none());
+        let j = Job { keep_perms: true, follow_links: true, ..Default::default() };
+        assert_eq!(attr_flags(&j), ["-rLt", "-p"]);
+        assert_eq!(attr_flags(&Job::default()), ["-rlt"]);
     }
 }
 
@@ -908,6 +963,34 @@ mod e2e {
         write(&b.join("later.txt"), "from B");
         run(store.clone(), job.clone(), false, emit()).await.unwrap();
         assert_eq!(std::fs::read_to_string(a.join("later.txt")).unwrap(), "from B");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foldersync_e2e_attrs() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("kermius-fsa-{}", uuid::Uuid::new_v4()));
+        let a = tmp.join("a");
+        write(&a.join("script.sh"), "#!/bin/sh");
+        std::fs::set_permissions(a.join("script.sh"), std::fs::Permissions::from_mode(0o750)).unwrap();
+        std::os::unix::fs::symlink("script.sh", a.join("link.sh")).unwrap();
+        let store = Arc::new(Store::open(tmp.join("store")).unwrap());
+        let ep = |p: &Path| Endpoint { kind: "local".into(), path: p.to_string_lossy().into(), hosts: vec![] };
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        for (name, keep_perms, follow_links) in [("plain", false, false), ("perms", true, false), ("follow", false, true)] {
+            let b = tmp.join(name);
+            std::fs::create_dir_all(&b).unwrap();
+            let job = Job { id: name.into(), mode: "mirror".into(), a: ep(&a), b: ep(&b), keep_perms, follow_links, ..Default::default() };
+            run(store.clone(), job.clone(), false, emit()).await.unwrap();
+            let link = std::fs::symlink_metadata(b.join("link.sh")).unwrap();
+            assert_eq!(link.file_type().is_symlink(), !follow_links, "{name}");
+            if keep_perms {
+                assert_eq!(mode(&b.join("script.sh")), 0o750);
+            }
+            // A second run finds nothing to do (no endless re-copy of links).
+            assert_eq!(run(store.clone(), job, false, emit()).await.unwrap().0, "Up to date", "{name}");
+        }
         std::fs::remove_dir_all(tmp).unwrap();
     }
 

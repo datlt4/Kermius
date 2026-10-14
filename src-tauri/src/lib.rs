@@ -714,6 +714,11 @@ async fn fsync_raise_inotify_remote(app: tauri::AppHandle, state: State<'_, AppS
     Ok(())
 }
 
+#[tauri::command]
+fn fsync_import_stignore(dir: String) -> Res<(Vec<String>, usize)> {
+    foldersync::import_stignore(&dir)
+}
+
 /// Current watcher states, for UIs opened after the watchers started.
 #[tauri::command]
 fn fsync_watch_states(state: State<AppState>) -> HashMap<String, (String, String)> {
@@ -855,6 +860,7 @@ pub fn run() {
             fsync_delete,
             fsync_run,
             fsync_watch_states,
+            fsync_import_stignore,
             fsync_pause,
             fsync_raise_inotify,
             fsync_raise_inotify_remote,
