@@ -46,13 +46,39 @@ pub struct Job {
     pub last_result: String,
     /// Unresolved `.sync-conflict-` files after the last run (two-way only).
     pub conflicts: u32,
+    /// Paused jobs are not watched or scheduled.
+    pub paused: bool,
+    /// Contents of each side after the last run.
+    pub stats_a: Stats,
+    pub stats_b: Stats,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Stats {
+    pub files: u64,
+    pub dirs: u64,
+    pub bytes: u64,
+}
+
+fn stats(t: &Tree) -> Stats {
+    t.values().fold(Stats::default(), |mut s, m| {
+        if m.dir {
+            s.dirs += 1
+        } else {
+            s.files += 1;
+            s.bytes += m.size;
+        }
+        s
+    })
 }
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Event {
     Phase { phase: String, message: String },
-    Progress { done: u64, total: u64 },
+    /// `rate` in bytes/s; `dir` is "up" (to a remote), "down" (from a remote) or "local".
+    Progress { done: u64, total: u64, rate: u64, dir: String },
     /// Run finished (`ok` false: error or offline, see `summary`).
     Finished { ok: bool, summary: String },
     /// Change watcher state: "watching", "polling" (remote without inotifywait) or "offline".
@@ -255,6 +281,9 @@ pub struct Plan {
     /// Conflict copies present after the run.
     #[serde(skip)]
     pub open_conflicts: u32,
+    /// Side contents after the run (a, b).
+    #[serde(skip)]
+    pub stats: Option<(Stats, Stats)>,
 }
 
 impl Plan {
@@ -499,8 +528,18 @@ async fn copy(from: &Side, to: &Side, rels: &[String], emit: &Emit) -> Result<()
     }
     args.push(from.rsync_root());
     args.push(to.rsync_root());
+    let dir = match (from, to) {
+        (_, Side::Remote { .. }) => "up",
+        (Side::Remote { .. }, _) => "down",
+        _ => "local",
+    };
     let em = emit.clone();
-    let result = run_rsync(args, move |done, total| em(Event::Progress { done, total })).await;
+    let started = std::time::Instant::now();
+    let result = run_rsync(args, move |done, total| {
+        let secs = started.elapsed().as_secs_f64().max(0.001);
+        em(Event::Progress { done, total, rate: (done as f64 / secs) as u64, dir: dir.into() })
+    })
+    .await;
     let _ = std::fs::remove_file(list);
     result
 }
@@ -567,12 +606,14 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
 
     if job.mode == "mirror" {
         guard_empty(&a, &ta, &tb, job.last_run > 0)?;
-        let plan = mirror_plan(&ta, &tb, job.delete);
+        let mut plan = mirror_plan(&ta, &tb, job.delete);
         if !dry_run && !plan.is_empty() {
             phase(&emit, "syncing", "");
             delete(&b, &plan.delete_b, &tb).await?;
             copy(&a, &b, &plan.copy_ab, &emit).await?;
         }
+        let nb = if dry_run || plan.is_empty() { tb } else { scan(&b, &job.excludes).await? };
+        plan.stats = Some((stats(&ta), stats(&nb)));
         return Ok((summary(&plan), plan));
     }
 
@@ -585,7 +626,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
             return Err(format!("{} is empty; refusing to wipe {} (disk not mounted?)", src.label(), dst.label()));
         }
         let m = mirror_plan(tsrc, tdst, true);
-        let plan = if forward { m } else { Plan { copy_ba: m.copy_ab, delete_a: m.delete_b, dirs: m.dirs, ..Default::default() } };
+        let mut plan = if forward { m } else { Plan { copy_ba: m.copy_ab, delete_a: m.delete_b, dirs: m.dirs, ..Default::default() } };
         if !dry_run {
             phase(&emit, "syncing", "first sync");
             let (copies, dels) = if forward { (&plan.copy_ab, &plan.delete_b) } else { (&plan.copy_ba, &plan.delete_a) };
@@ -593,6 +634,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
             copy(src, dst, copies, &emit).await?;
             let (na, nb) = (scan(&a, &job.excludes).await?, scan(&b, &job.excludes).await?);
             save_state(&store, &job.id, &common(&na, &nb))?;
+            plan.stats = Some((stats(&na), stats(&nb)));
         }
         return Ok((summary(&plan), plan));
     }
@@ -600,6 +642,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
     guard_empty(&b, &tb, &ta, !state.is_empty())?;
     let mut plan = plan_twoway(&ta, &tb, &state);
     if dry_run {
+        plan.stats = Some((stats(&ta), stats(&tb)));
         return Ok((summary(&plan), plan));
     }
     if !plan.is_empty() {
@@ -623,6 +666,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
     save_state(&store, &job.id, &common(&na, &nb))?;
     let names: BTreeSet<&String> = na.keys().chain(nb.keys()).filter(|p| conflict_original(p).is_some()).collect();
     plan.open_conflicts = names.len() as u32;
+    plan.stats = Some((stats(&na), stats(&nb)));
     Ok((summary(&plan), plan))
 }
 
