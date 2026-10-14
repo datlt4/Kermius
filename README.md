@@ -52,7 +52,13 @@ Put it behind HTTPS (Caddy, Traefik, nginx…). In Kermius → Settings → Sync
 
 API: `GET /v1/vault` → blob + `x-version`; `PUT /v1/vault` with `x-base-version` (409 on conflict; the client re-pulls and merges per host by last update).
 
-## Folder Sync requirements
+## Folder Sync
+
+Two-way sync or one-way mirror between local disks and SSH hosts, with change watching, schedules, multiple routes per device and conflict resolution.
+
+![Folder Sync](docs/folder-sync.png)
+
+### Requirements
 
 Folder Sync (two-way sync / mirror between disks or with SSH hosts) uses rsync. Linux and macOS only.
 
