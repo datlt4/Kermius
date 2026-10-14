@@ -568,10 +568,6 @@ fn fsync_save(app: tauri::AppHandle, state: State<AppState>, mut job: foldersync
                     foldersync::forget_state(&state.store, &job.id);
                     job.last_run = 0;
                 }
-                // Excludes / link handling changed: rescan the mirror destination for real.
-                if (&old.excludes, old.follow_links) != (&job.excludes, job.follow_links) || !same_folders(old, &job) {
-                    foldersync::forget_index(&state.store, &job.id);
-                }
                 *old = job.clone();
             }
             None => st.folder_syncs.push(job.clone()),
@@ -757,12 +753,6 @@ async fn fsync_raise_inotify_remote(app: tauri::AppHandle, state: State<'_, AppS
     Ok(())
 }
 
-/// Drop the saved destination index so the next run scans both sides.
-#[tauri::command]
-fn fsync_full_rescan(state: State<AppState>, id: String) {
-    foldersync::forget_index(&state.store, &id);
-}
-
 #[tauri::command]
 fn fsync_import_stignore(dir: String) -> Res<(Vec<String>, usize)> {
     foldersync::import_stignore(&dir)
@@ -912,7 +902,6 @@ pub fn run() {
             fsync_run,
             fsync_watch_states,
             fsync_import_stignore,
-            fsync_full_rescan,
             fsync_pause,
             fsync_stop,
             fsync_raise_inotify,
