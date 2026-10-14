@@ -247,6 +247,8 @@ input, textarea { font: inherit; color: inherit; }
   width: 100%; background: #171a22; border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
+/* Checkboxes and radios keep their natural size inside form fields. */
+.field input[type="checkbox"], .field input[type="radio"] { width: auto; flex: none; padding: 0; margin: 0; box-shadow: none; accent-color: var(--accent); }
 .field input:focus, .field textarea:focus, .panel > textarea:focus, .tun-row input:focus, .tag-input:focus-within {
   border-color: rgba(91, 140, 255, 0.6); box-shadow: 0 0 0 3px rgba(91, 140, 255, 0.12);
 }
