@@ -129,7 +129,7 @@ mod tests {
         let mut a = host("a", "web 01", "Prod");
         a.port = 2222;
         a.key_id = "k".into();
-        a.tunnels = vec![Tunnel { bind_host: String::new(), source_port: 8080, endpoint_host: "localhost".into(), endpoint_port: 80 }];
+        a.tunnels = vec![Tunnel { source_port: 8080, endpoint_host: "localhost".into(), endpoint_port: 80, ..Default::default() }];
         vault.keys = vec![Key { id: "k".into(), private_key: "-----KEY-----".into(), ..Default::default() }];
         vault.hosts = vec![a, host("b", "web 01", "Prod"), host("c", "nas", ""), host("d", "skipped", "")];
         vault.hosts[1].password = "s3cret/".into();
