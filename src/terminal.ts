@@ -12,7 +12,7 @@ import "@fontsource/source-code-pro/700.css";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, Channel, emptyHost, type Host, type Status } from "./api";
 import { notify } from "./notify";
-import { contextMenu, esc, hue, icon, toast } from "./ui";
+import { contextMenu, esc, hue, icon, promptDialog, toast } from "./ui";
 
 export const termTheme = {
   background: "#14161d",
@@ -112,7 +112,8 @@ export class Session {
         <button data-t="password" title="Type password (e.g. for sudo)" disabled>${icon("key", 15)}</button>`
         : `<button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
         <button data-t="insert-path" title="Insert a file path">${icon("file", 15)}</button>
-        <button data-t="paste-img" title="Paste image from clipboard (saved to a temp file)">${icon("paste", 15)}</button>`
+        <button data-t="paste-img" title="Paste image from clipboard (saved to a temp file)">${icon("paste", 15)}</button>
+        <button data-t="password" title="Type this computer's password (e.g. for sudo)">${icon("key", 15)}</button>`
     }<div class="up-prog" hidden><div class="bar"><i></i></div><span></span></div></div><div class="overlay"></div>${
       coarse ? `<div class="keybar">${["Esc", "Tab", "Ctrl", "↑", "↓", "←", "→", "|", "/", "-", "~"].map((k) => `<button data-k="${k}">${k}</button>`).join("")}</div>` : ""
     }`;
@@ -226,8 +227,10 @@ export class Session {
         { label: "Copy", icon: "copy", action: () => this.copySelection() },
         { label: "Paste", icon: "import", action: () => this.paste() },
         { label: "Paste image", icon: "image", action: () => this.pasteImage() },
-        ...(this.local ? [] : [{ label: "Type password", icon: "key", action: () => this.sendPassword() }]),
-        ...(this.local ? [] : [{ label: "Copy password", icon: "key", action: () => this.copyPassword() }]),
+        { label: "Type password", icon: "key", action: () => this.sendPassword() },
+        ...(this.local
+          ? [{ label: "Change local password", icon: "key", action: () => this.askLocalPassword().then((ok) => ok && this.term.focus()) }]
+          : [{ label: "Copy password", icon: "key", action: () => this.copyPassword() }]),
         "-" as const,
         { label: "Clear", icon: "x", action: () => t.clear() },
       ]);
@@ -475,11 +478,26 @@ export class Session {
   /** Enable the password button only when the host (or its identity) has one. */
   private async refreshPasswordButton() {
     const b = this.el.querySelector<HTMLButtonElement>('[data-t="password"]');
-    if (b) b.disabled = !(await api.hostHasPassword(this.host.id).catch(() => false));
+    if (b && !this.local) b.disabled = !(await api.hostHasPassword(this.host.id).catch(() => false));
   }
 
-  sendPassword() {
+  /** Ask for this computer's password and save it (encrypted, this device only). */
+  private async askLocalPassword() {
+    const pw = await promptDialog("Local password", "Password of this computer (saved encrypted on this device only, never synced)", "", true);
+    if (!pw) return false;
+    await api.localSetPassword(pw).catch((e) => toast(String(e), "err"));
+    return true;
+  }
+
+  async sendPassword() {
     if (!this.sid || this.state !== "connected") return toast("Not connected", "err");
+    if (this.local) {
+      if (!(await api.localHasPassword()) && !(await this.askLocalPassword())) return this.term.focus();
+      return api.localSendPassword(this.sid).then(
+        () => this.term.focus(),
+        (e) => toast(String(e), "err"),
+      );
+    }
     api.sshSendPassword(this.sid, this.host.id).then(
       () => this.term.focus(),
       (e) => toast(String(e), "err"),
