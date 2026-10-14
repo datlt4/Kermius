@@ -36,6 +36,8 @@ const state = {
   active: "home" as string,
   editing: null as Host | null,
   tunnels: new Set<string>(),
+  /** Forwardings being started (spinning border). */
+  connecting: new Set<string>(),
   sync: null as SyncSettings | null,
   syncing: false,
   syncError: "",
@@ -513,7 +515,7 @@ function renderForwarding() {
   els.page.innerHTML = `
     <div class="toolbar">
       <label class="search fwd-search">${icon("search")}<input placeholder="Filter port forwarding rules…" value="${esc(state.query)}" spellcheck="false" /></label>
-      <button class="btn primary" data-new-rule>${icon("plus", 16)}<span>New rule</span></button>
+      <button class="btn primary" data-new-rule>${icon("plus", 16)}<span>New forwarding</span></button>
     </div>
     <div class="content"><div class="fwd-list"></div></div>`;
   api.tunnelList().then((l) => {
@@ -529,107 +531,148 @@ function renderForwardList() {
     .sort((a, b) => byName(a.name, b.name));
   const el = $(".fwd-list", els.page);
   if (!el) return;
-  el.innerHTML = rows.length
-    ? rows
-        .map(
-          (h) => `<div class="fwd-host"><div class="fwd-head"><div class="avatar sm" style="--h:${hue(h.folder || h.name)}">${icon("server", 14)}</div>
-            <b>${esc(h.name)}</b><span class="muted">${esc(h.username)}@${esc(h.address)}</span></div>
-            ${h.tunnels
-              .map((t, i) => {
-                const on = state.tunnels.has(`${h.id}:${i}`);
-                return `<div class="fwd-row ${on ? "on" : ""}">
-                  <span class="badge">Local</span>
-                  <code>${esc(t.bindHost || "127.0.0.1")}:${t.sourcePort}</code>${icon("chevron", 14)}<code>${esc(t.endpointHost || "localhost")}:${t.endpointPort}</code>
-                  <div class="grow"></div>
-                  ${on ? `<button class="icon-btn" data-open-url="http://localhost:${t.sourcePort}" title="Copy URL">${icon("copy", 15)}</button>` : ""}
-                  ${isWeb ? "" : `<button class="switch ${on ? "on" : ""}" data-tunnel="${h.id}:${i}" aria-label="toggle"><i></i></button>`}
-                  <button class="icon-btn danger" data-del-tunnel="${h.id}:${i}" title="Delete rule">${icon("trash", 15)}</button></div>`;
-              })
-              .join("")}</div>`,
-        )
-        .join("")
+  const cards = rows.flatMap((h) => h.tunnels.map((t, i) => ({ h, t, key: `${h.id}:${i}` })));
+  el.innerHTML = cards.length
+    ? `<div class="fwd-grid">${cards
+        .map(({ h, t, key }) => {
+          const st = state.connecting.has(key) ? "connecting" : state.tunnels.has(key) ? "on" : "";
+          const title = t.label || `${h.name} · ${t.sourcePort}`;
+          return `<div class="fwd-card ${st}" data-tunnel="${key}" title="${isWeb ? "" : st === "on" ? "Click to stop" : "Click to start"}">
+            <div class="fwd-avatar">L</div>
+            <div class="fwd-text"><b>${esc(title)}</b>
+              <span>Local:${t.sourcePort} → ${esc(h.name)} → ${esc(t.endpointHost || "localhost")}:${t.endpointPort}</span></div>
+            <button class="icon-btn fwd-edit" data-edit-tunnel="${key}" title="Edit">${icon("edit", 15)}</button></div>`;
+        })
+        .join("")}</div>`
     : `<div class="empty">${icon("forward", 40)}<h3>No port forwarding rules</h3><p>Forward a local port to a service reachable from one of your SSH hosts.</p>
-        <button class="btn primary" data-new-rule>New rule</button></div>`;
+        <button class="btn primary" data-new-rule>New forwarding</button></div>`;
 }
 
-/** New local forward: pick the SSH host it goes through, then the ports. */
-function newRuleDialog() {
+const splitKey = (key: string) => [key.slice(0, key.lastIndexOf(":")), +key.slice(key.lastIndexOf(":") + 1)] as const;
+
+/** New or edit a local forward: the SSH host it goes through (picked like in Folder Sync), then the ports. */
+function ruleDialog(key?: string) {
   const hosts = state.hosts.filter((h) => !h.protocol || h.protocol === "ssh").sort((a, b) => byName(a.name, b.name));
   if (!hosts.length) return toast("Add an SSH host first", "info");
+  const [hostId, idx] = key ? splitKey(key) : ["", -1];
+  const rule = state.hosts.find((h) => h.id === hostId)?.tunnels[idx];
+  if (key && state.tunnels.has(key)) return toast("Stop this forwarding before editing it", "info");
   const el = document.createElement("div");
   el.className = "modal-wrap";
-  el.innerHTML = `<form class="modal form-modal"><h3>New port forwarding rule</h3>
-    <label class="field"><span>Through host</span><select name="host">${hosts.map((h) => `<option value="${h.id}">${esc(h.name)} (${esc(h.username ? `${h.username}@` : "")}${esc(h.address)})</option>`).join("")}</select></label>
+  el.innerHTML = `<form class="modal form-modal fwd-modal"><h3>${rule ? "Edit" : "New"} port forwarding</h3>
+    <label class="field"><span>Label</span><input name="label" value="${esc(rule?.label ?? "")}" placeholder="e.g. Tensorboard" /></label>
+    <div class="field"><span>Through host</span>
+      ${rule ? "" : `<input class="fs-route-filter" placeholder="Filter by name, IP, group or tag…" spellcheck="false" />`}
+      <div class="fs-routes">${hosts
+        .filter((h) => !rule || h.id === hostId)
+        .map(
+          (h) => `<label class="fs-route" data-search="${esc([h.name, h.username, h.address, h.folder, ...h.tags].join(" ").toLowerCase())}">
+            <input type="radio" name="host" value="${h.id}" ${h.id === hostId ? "checked" : ""} ${rule ? "disabled" : ""} required />
+            <span>${esc(h.name)} <small class="muted">${esc(h.username ? `${h.username}@` : "")}${esc(h.address)}</small>
+              ${h.tags.map((t) => `<small class="mini-tag">${esc(t)}</small>`).join("")}</span></label>`,
+        )
+        .join("")}</div></div>
     <div class="field-row">
-      <label class="field grow"><span>Local address</span><input name="bind" value="127.0.0.1" spellcheck="false" /></label>
-      <label class="field" style="width:110px"><span>Local port</span><input name="sport" type="number" min="1" max="65535" placeholder="8080" required /></label>
+      <label class="field grow"><span>Local address</span><input name="bind" value="${esc(rule?.bindHost || "127.0.0.1")}" spellcheck="false" /></label>
+      <label class="field" style="width:110px"><span>Local port</span><input name="sport" type="number" min="1" max="65535" placeholder="8080" value="${rule?.sourcePort || ""}" required /></label>
     </div>
     <div class="field-row">
-      <label class="field grow"><span>Destination (as seen from the host)</span><input name="dhost" value="localhost" spellcheck="false" /></label>
-      <label class="field" style="width:110px"><span>Port</span><input name="dport" type="number" min="1" max="65535" placeholder="80" required /></label>
+      <label class="field grow"><span>Destination (as seen from the host)</span><input name="dhost" value="${esc(rule?.endpointHost || "localhost")}" spellcheck="false" /></label>
+      <label class="field" style="width:110px"><span>Port</span><input name="dport" type="number" min="1" max="65535" placeholder="80" value="${rule?.endpointPort || ""}" required /></label>
     </div>
-    <div class="modal-actions"><button type="button" class="btn ghost" data-m="close">Cancel</button><button class="btn primary">Add rule</button></div></form>`;
+    <div class="modal-actions">${rule ? `<button type="button" class="btn danger" data-m="delete">Delete</button><div class="grow"></div>` : ""}
+      <button type="button" class="btn ghost" data-m="close">Cancel</button><button class="btn primary">${rule ? "Save" : "Add"}</button></div></form>`;
   document.body.append(el);
   const f = el.querySelector("form")!;
-  const v = (n: string) => (f.elements.namedItem(n) as HTMLInputElement).value.trim();
-  (f.elements.namedItem("sport") as HTMLInputElement).focus();
+  const v = (n: string) => ((f.elements.namedItem(n) as HTMLInputElement | null)?.value ?? "").trim();
+  el.querySelector<HTMLInputElement>(rule ? '[name="label"]' : ".fs-route-filter")!.focus();
+  el.querySelector(".fs-route-filter")?.addEventListener("input", (e) => {
+    const q = (e.target as HTMLInputElement).value.trim().toLowerCase();
+    el.querySelectorAll<HTMLElement>(".fs-route").forEach((r) => (r.hidden = !!q && !r.dataset.search!.includes(q)));
+  });
   el.addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
     if (t === el || t.dataset.m === "close") el.remove();
+    else if (t.dataset.m === "delete") {
+      el.remove();
+      deleteRule(key!);
+    }
   });
   el.addEventListener("keydown", (e) => e.key === "Escape" && el.remove());
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const h = state.hosts.find((x) => x.id === v("host"))!;
-    const rule = { bindHost: v("bind") || "127.0.0.1", sourcePort: +v("sport"), endpointHost: v("dhost") || "localhost", endpointPort: +v("dport") };
+    const h = state.hosts.find((x) => x.id === (rule ? hostId : v("host")));
+    if (!h) return toast("Pick a host", "info");
+    const next = { label: v("label"), bindHost: v("bind") || "127.0.0.1", sourcePort: +v("sport"), endpointHost: v("dhost") || "localhost", endpointPort: +v("dport") };
     try {
-      // Appended, so indices of running tunnels stay valid.
-      await api.saveHost({ ...h, tunnels: [...h.tunnels, rule] });
+      // New rules are appended, so indices of running tunnels stay valid.
+      await api.saveHost({ ...h, tunnels: rule ? h.tunnels.map((t, i) => (i === idx ? next : t)) : [...h.tunnels, next] });
       el.remove();
       await reload();
       scheduleSync();
-      toast("Rule added", "ok");
+      toast(rule ? "Saved" : "Forwarding added", "ok");
     } catch (err) {
       toast(String(err), "err");
     }
   });
 }
 
-els.page.addEventListener("click", async (e) => {
-  const t = e.target as HTMLElement;
-  if (t.closest("[data-new-rule]")) return newRuleDialog();
-  const url = t.closest<HTMLElement>("[data-open-url]")?.dataset.openUrl;
-  if (url) return api.clipboardWrite(url).then(() => toast(`${url} copied`, "ok"));
-  const del = t.closest<HTMLElement>("[data-del-tunnel]")?.dataset.delTunnel;
-  if (del) {
-    const [id, idx] = [del.slice(0, del.lastIndexOf(":")), +del.slice(del.lastIndexOf(":") + 1)];
-    // Indices of running tunnels would shift, so require them stopped first.
-    if ([...state.tunnels].some((k) => k.startsWith(`${id}:`))) return toast("Stop this host's tunnels first", "err");
-    const h = state.hosts.find((x) => x.id === id);
-    if (!h) return;
-    await api.saveHost({ ...h, tunnels: h.tunnels.filter((_, i) => i !== idx) });
-    await reload();
-    scheduleSync();
-    return toast("Rule deleted", "ok");
-  }
-  const sw = t.closest<HTMLElement>("[data-tunnel]");
-  if (!sw) return;
-  const key = sw.dataset.tunnel!;
-  const [id, idx] = [key.slice(0, key.lastIndexOf(":")), +key.slice(key.lastIndexOf(":") + 1)];
+async function deleteRule(key: string) {
+  const [id, idx] = splitKey(key);
+  // Indices of running tunnels would shift, so require them stopped first.
+  if ([...state.tunnels].some((k) => k.startsWith(`${id}:`))) return toast("Stop this host's forwardings first", "err");
+  const h = state.hosts.find((x) => x.id === id);
+  if (!h) return;
+  await api.saveHost({ ...h, tunnels: h.tunnels.filter((_, i) => i !== idx) });
+  await reload();
+  scheduleSync();
+  toast("Forwarding deleted", "ok");
+}
+
+async function toggleRule(key: string) {
+  if (isWeb || state.connecting.has(key)) return;
+  const [id, idx] = splitKey(key);
   if (state.tunnels.has(key)) {
     await api.tunnelStop(id, idx);
     state.tunnels.delete(key);
-  } else {
-    sw.classList.add("busy");
-    try {
-      await api.tunnelStart(id, idx);
-      state.tunnels.add(key);
-      toast("Tunnel started", "ok");
-    } catch (err) {
-      toast(String(err), "err");
-    }
+    return renderForwardList();
   }
+  state.connecting.add(key);
   renderForwardList();
+  try {
+    await api.tunnelStart(id, idx);
+    state.tunnels.add(key);
+  } catch (err) {
+    toast(String(err), "err");
+  } finally {
+    state.connecting.delete(key);
+    renderForwardList();
+  }
+}
+
+els.page.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest("[data-new-rule]")) return ruleDialog();
+  const edit = t.closest<HTMLElement>("[data-edit-tunnel]")?.dataset.editTunnel;
+  if (edit) return ruleDialog(edit);
+  const key = t.closest<HTMLElement>(".fwd-card[data-tunnel]")?.dataset.tunnel;
+  if (key) toggleRule(key);
+});
+
+els.page.addEventListener("contextmenu", (e) => {
+  const key = (e.target as HTMLElement).closest<HTMLElement>(".fwd-card[data-tunnel]")?.dataset.tunnel;
+  if (!key) return;
+  e.preventDefault();
+  const [id, idx] = splitKey(key);
+  const port = state.hosts.find((h) => h.id === id)?.tunnels[idx]?.sourcePort;
+  const on = state.tunnels.has(key);
+  contextMenu(e.clientX, e.clientY, [
+    ...(isWeb ? [] : [{ label: on ? "Stop" : "Start", icon: on ? "stop" : "play", action: () => toggleRule(key) }]),
+    ...(on ? [{ label: "Copy URL", icon: "copy", action: () => api.clipboardWrite(`http://localhost:${port}`).then(() => toast(`http://localhost:${port} copied`, "ok")) }] : []),
+    { label: "Edit", icon: "edit", action: () => ruleDialog(key) },
+    "-" as const,
+    { label: "Delete", icon: "trash", danger: true, action: () => deleteRule(key) },
+  ]);
 });
 
 // ---------- keychain ----------
@@ -1098,7 +1141,7 @@ function readEditor() {
   h.notes = v("e-notes");
   h.tunnels = [...els.drawer.querySelectorAll<HTMLElement>(".tun-row")].map((r) => {
     const f = (k: string) => $<HTMLInputElement>(`[data-f="${k}"]`, r).value.trim();
-    return { bindHost: f("bindHost") || "127.0.0.1", sourcePort: +f("sourcePort") || 0, endpointHost: f("endpointHost"), endpointPort: +f("endpointPort") || 0 };
+    return { label: h.tunnels[+r.dataset.i!]?.label ?? "", bindHost: f("bindHost") || "127.0.0.1", sourcePort: +f("sourcePort") || 0, endpointHost: f("endpointHost"), endpointPort: +f("endpointPort") || 0 };
   });
   const pending = v("e-tag").trim();
   if (pending && !h.tags.includes(pending)) h.tags.push(pending);
