@@ -555,6 +555,7 @@ details .field + .field { margin-top: 10px; }
 .cf-diff { flex: 1; min-height: 120px; overflow: auto; background: #12141a; border: 1px solid var(--border); border-radius: 10px; }
 .cf-row { display: grid; grid-template-columns: 1fr 1fr; }
 .cf-row pre { margin: 0; padding: 1px 10px; font-family: "JetBrains Mono", monospace; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; min-height: 1.4em; }
+.cf-skip { padding: 2px 10px; font-size: 12px; color: var(--muted); background: rgba(255, 255, 255, 0.03); text-align: center; }
 .cf-row pre + pre { border-left: 1px solid var(--border); }
 .cf-row pre.del { background: rgba(255, 92, 114, 0.12); }
 .cf-row pre.add { background: rgba(74, 222, 128, 0.12); }
