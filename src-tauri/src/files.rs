@@ -440,7 +440,7 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
 /// Readable rsync failure: "N items failed: <first error>" plus every error line (one per line).
 fn rsync_error(stderr: &str) -> String {
     let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    let items: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("rsync:") || l.starts_with("rsync warning:")).collect();
+    let items: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("rsync:") || l.starts_with("rsync warning:") || l.starts_with("kermius:")).collect();
     let Some(first) = items.first() else {
         return lines.last().copied().unwrap_or("rsync failed").to_string();
     };
@@ -495,6 +495,16 @@ async fn rsync_copy(host: &Host, dir: Direction, sources: &[String], dest: &str,
 /// `kermius --ssh-bridge <host id> <ignored host> <command...>`: act as rsync's remote shell.
 pub async fn ssh_bridge(store: Arc<Store>, host: Host, command: String) -> Result<u32, String> {
     use russh::ChannelMsg;
+    // rsync may hand us non-blocking pipes; a full pipe would then fail with EAGAIN instead of waiting.
+    #[cfg(unix)]
+    for fd in [0, 1] {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+            }
+        }
+    }
     let handle = ssh::connect(store, &host, ssh::no_log()).await?;
     let ch = handle.channel_open_session().await.map_err(e)?;
     ch.exec(true, command).await.map_err(e)?;
