@@ -4,6 +4,7 @@ import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
 import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
+import { sshExportDialog } from "./sshexport";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
@@ -746,6 +747,10 @@ function renderSettings() {
         <div class="row"><button class="btn" data-set="import">Import</button></div>
       </div>
       <div class="panel">
+        <div class="panel-head">${icon("terminal")}<div><h3>Export to ~/.ssh/config</h3><p class="muted">Pick groups and hosts to use with the regular <code>ssh</code> command, scp, VS Code Remote…</p></div></div>
+        <div class="row"><button class="btn" data-set="ssh-export">Choose hosts…</button></div>
+      </div>
+      <div class="panel">
         <div class="panel-head">${icon("terminal")}<div><h3>Terminal</h3></div></div>
         <div class="font-row">
           <div class="font-pick">
@@ -797,6 +802,8 @@ els.page.addEventListener("click", async (e) => {
     state.sync = settings;
     if (settings.url) await runSync(true);
     renderSettings();
+  } else if (a === "ssh-export") {
+    sshExportDialog(state.hosts);
   } else if (a === "import") {
     try {
       const r = await api.importTermix(v("imp-path").trim());

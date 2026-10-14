@@ -200,6 +200,10 @@ const tauriApi = {
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
+  sshConfigPreview: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
+    invoke<string>("ssh_config_preview", { hostIds, withKeys, withPasswords }),
+  sshConfigExport: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
+    invoke<string>("ssh_config_export", { hostIds, withKeys, withPasswords }),
   fsyncInotifyCommand: () => invoke<string>("fsync_inotify_command"),
   clipboardRead: () => invoke<string>("clipboard_read"),
   sshConnect: (hostId: string, cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
