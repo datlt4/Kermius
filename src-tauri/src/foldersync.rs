@@ -846,7 +846,8 @@ async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&Strin
     .await?;
     let mut plan = parse_itemized(&out);
     let sa = parse_stats(&out);
-    plan.stats = Some((sa, if job.delete { sa } else { job.stats_b }));
+    // B holds everything in A (plus extras when not deleting, which rsync does not count).
+    plan.stats = Some((sa, sa));
     Ok((summary(&plan), plan))
 }
 

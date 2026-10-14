@@ -408,6 +408,8 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
     let (mut pending, mut out) = (String::new(), String::new());
     // rsync prints a progress line per folder too: tens of thousands per second would flood the UI.
     let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    // "ir-chk" (still listing files: the percentage is of a partial total) until "to-chk"; other lines carry neither.
+    let mut listing = false;
     let mut chunk = [0u8; 4096];
     loop {
         let n = stdout.read(&mut chunk).await.map_err(e)?;
@@ -417,14 +419,18 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
         pending.push_str(&String::from_utf8_lossy(&chunk[..n]));
         while let Some(i) = pending.find(['\r', '\n']) {
             let line: String = pending.drain(..=i).collect();
+            if line.contains("ir-chk") {
+                listing = true;
+            } else if line.contains("to-chk") {
+                listing = false;
+            }
             let mut parts = line.split_whitespace();
             if let (Some(bytes), Some(pct)) = (parts.next(), parts.next()) {
                 if let (Ok(b), Some(p)) = (bytes.replace(',', "").parse::<u64>(), pct.strip_suffix('%').and_then(|p| p.parse::<u64>().ok())) {
                     if last.elapsed() >= std::time::Duration::from_millis(250) {
                         last = std::time::Instant::now();
-                        // "ir-chk": rsync is still listing files, so its percentage is of a partial total.
-                        let total = if p > 0 && !line.contains("ir-chk") { b * 100 / p } else { 0 };
-                        progress(b, total.max(b));
+                        let total = if p > 0 && !listing { (b * 100 / p).max(b) } else { 0 };
+                        progress(b, total);
                     }
                     continue;
                 }
