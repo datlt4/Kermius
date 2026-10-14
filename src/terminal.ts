@@ -216,8 +216,9 @@ export class Session {
       // App shortcuts (handled globally) must not reach the shell.
       if (e.key === "Tab" || (!e.shiftKey && /^Digit[1-9]$/.test(e.code))) return false;
       if (!e.shiftKey) return true;
-      if (e.code === "KeyC") return this.copySelection(), false;
-      if (e.code === "KeyV") return this.paste(), false;
+      // preventDefault: WebKitGTK would otherwise also paste natively into xterm's textarea (pasting twice).
+      if (e.code === "KeyC") return e.preventDefault(), this.copySelection(), false;
+      if (e.code === "KeyV") return e.preventDefault(), this.paste(), false;
       return !["KeyK", "KeyT", "KeyW", "KeyF"].includes(e.code);
     });
     this.el.querySelector(".term")!.addEventListener("contextmenu", (e) => {
