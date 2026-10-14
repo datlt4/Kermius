@@ -729,17 +729,19 @@ fn fsync_pause(app: tauri::AppHandle, state: State<AppState>, ids: Vec<String>, 
 }
 
 const INOTIFY_CONF: &str = "fs.inotify.max_user_watches=1048576\nfs.inotify.max_user_instances=1024\n";
+/// Sorts after 99-sysctl.conf (= /etc/sysctl.conf), so a lower value there cannot override it at boot.
+const INOTIFY_FILE: &str = "/etc/sysctl.d/99-zz-kermius-inotify.conf";
 
 /// Shell that persists and applies higher inotify limits (run as root).
 fn inotify_fix_script() -> String {
-    format!("printf '{INOTIFY_CONF}' > /etc/sysctl.d/90-kermius-inotify.conf && sysctl -p /etc/sysctl.d/90-kermius-inotify.conf")
+    format!("rm -f /etc/sysctl.d/90-kermius-inotify.conf; printf '{INOTIFY_CONF}' > {INOTIFY_FILE} && sysctl -p {INOTIFY_FILE}")
 }
 
 /// Raise the local inotify limits (asks for the admin password via polkit), then restart watchers.
 #[tauri::command]
 async fn fsync_raise_inotify(app: tauri::AppHandle) -> Res<()> {
     let out = tokio::process::Command::new("pkexec").args(["sh", "-c", &inotify_fix_script()]).output().await.map_err(|err| {
-        format!("pkexec not available ({err}); run: echo -e '{INOTIFY_CONF}' | sudo tee /etc/sysctl.d/90-kermius-inotify.conf && sudo sysctl --system")
+        format!("pkexec not available ({err}); run: echo -e '{INOTIFY_CONF}' | sudo tee {INOTIFY_FILE} && sudo sysctl -p {INOTIFY_FILE}")
     })?;
     if !out.status.success() {
         return Err(format!("Not changed: {}", String::from_utf8_lossy(&out.stderr).trim()));

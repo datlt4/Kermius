@@ -75,7 +75,7 @@ Folder Sync (two-way sync / mirror between disks or with SSH hosts) uses rsync. 
 | Alpine | `sudo apk add rsync inotify-tools findutils` |
 | openSUSE | `sudo zypper install -y rsync inotify-tools` |
 
-Watching only runs while Kermius is open. On Linux, very large trees may hit the inotify watch limit; raise it with `echo fs.inotify.max_user_watches=524288 | sudo tee /etc/sysctl.d/90-inotify.conf && sudo sysctl --system`.
+Watching only runs while Kermius is open. On Linux, very large trees may hit the inotify watch limit; raise it with `echo fs.inotify.max_user_watches=1048576 | sudo tee /etc/sysctl.d/99-zz-inotify.conf && sudo sysctl -p /etc/sysctl.d/99-zz-inotify.conf` (the `99-zz-` name makes it win over a lower value in `/etc/sysctl.conf`).
 
 ## Keyboard shortcuts
 
