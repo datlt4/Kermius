@@ -147,6 +147,7 @@ export const webApi: Api = {
   fsyncSave: unsupported,
   fsyncDelete: unsupported,
   fsyncRun: unsupported,
+  fsyncWatchStates: async () => ({}),
   importTermix: unsupported,
   copyPassword: async (id: string) => {
     const h = live().find((x) => x.id === id);

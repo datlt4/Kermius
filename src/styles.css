@@ -504,6 +504,10 @@ details .field + .field { margin-top: 10px; }
 .fs-status.busy .dot-st { background: var(--accent); animation: pulse 1s infinite; }
 .fs-status.off .dot-st { background: var(--warn); }
 .fs-status.err { color: #ff9aa8; }
+.fs-status.poll .dot-st { background: var(--accent-2); }
+.fs-status > .i { color: var(--faint); }
+.check small { margin-left: 2px; }
+.check input { accent-color: var(--accent); }
 .fs-status.err .dot-st { background: var(--danger); }
 .fs-card .bar { height: 4px; border-radius: 4px; background: #343a49; overflow: hidden; }
 .fs-card .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.2s; }
@@ -521,5 +525,6 @@ details .field + .field { margin-top: 10px; }
 .fs-route input[type="checkbox"] { width: auto; flex: none; padding: 0; margin: 0; accent-color: var(--accent); }
 .fs-route-filter { padding: 6px 9px !important; font-size: 12.5px; }
 .fs-route[hidden] { display: none; }
+.fs-route .mini-tag { margin-left: 4px; font-size: 10.5px; padding: 0 6px; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .fs-plan { max-height: 180px; overflow-y: auto; font-family: "JetBrains Mono", monospace; font-size: 12px; padding: 6px 10px; background: #171a22; border-radius: 8px; margin-top: 6px; }

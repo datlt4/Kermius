@@ -37,6 +37,8 @@ pub struct Job {
     pub excludes: Vec<String>,
     /// Minutes between automatic runs while the app is open; 0 = manual.
     pub interval_min: u32,
+    /// Sync automatically when files change on either side (while the app is open).
+    pub watch: bool,
     pub last_run: i64,
     pub last_result: String,
 }
@@ -46,6 +48,10 @@ pub struct Job {
 pub enum Event {
     Phase { phase: String, message: String },
     Progress { done: u64, total: u64 },
+    /// Run finished (`ok` false: error or offline, see `summary`).
+    Finished { ok: bool, summary: String },
+    /// Change watcher state: "watching", "polling" (remote without inotifywait) or "offline".
+    Watch { side: String, state: String, message: String },
 }
 
 pub type Emit = Arc<dyn Fn(Event) + Send + Sync>;
@@ -77,7 +83,7 @@ type Tree = BTreeMap<String, Meta>;
 
 // ---------- endpoints ----------
 
-enum Side {
+pub(crate) enum Side {
     Local(PathBuf),
     Remote { handle: Arc<Handle<Client>>, host: Host, path: String },
 }
@@ -99,7 +105,7 @@ impl Side {
 }
 
 /// Single-quote for a POSIX shell.
-fn sh(s: &str) -> String {
+pub(crate) fn sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
@@ -118,7 +124,7 @@ async fn exec(handle: &Handle<Client>, command: &str) -> Result<(Vec<u8>, String
     Ok((out, String::from_utf8_lossy(&err).trim().to_string(), code))
 }
 
-async fn open_side(store: &Arc<Store>, vault: &Vault, ep: &Endpoint, emit: &Emit) -> Result<Side, String> {
+pub(crate) async fn open_side(store: &Arc<Store>, vault: &Vault, ep: &Endpoint, emit: &Emit) -> Result<Side, String> {
     if ep.kind != "remote" {
         let p = PathBuf::from(&ep.path);
         if !p.is_dir() {

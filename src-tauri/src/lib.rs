@@ -1,6 +1,7 @@
 mod crypto;
 mod files;
 mod foldersync;
+mod watch;
 #[cfg(not(target_os = "ios"))]
 mod local;
 mod model;
@@ -28,6 +29,7 @@ struct AppState {
     tunnels: tunnel::Tunnels,
     files: Arc<files::Files>,
     running_syncs: Mutex<std::collections::HashSet<String>>,
+    watchers: watch::Watchers,
 }
 
 type Res<T> = Result<T, String>;
@@ -535,7 +537,7 @@ fn fsync_list(state: State<AppState>) -> Vec<foldersync::Job> {
 }
 
 #[tauri::command]
-fn fsync_save(state: State<AppState>, mut job: foldersync::Job) -> Res<foldersync::Job> {
+fn fsync_save(app: tauri::AppHandle, state: State<AppState>, mut job: foldersync::Job) -> Res<foldersync::Job> {
     foldersync::validate(&job)?;
     if job.id.is_empty() {
         job.id = uuid::Uuid::new_v4().to_string();
@@ -555,14 +557,17 @@ fn fsync_save(state: State<AppState>, mut job: foldersync::Job) -> Res<foldersyn
         }
     }
     state.store.save().map_err(e)?;
+    state.watchers.restart(&app);
     Ok(job)
 }
 
 #[tauri::command]
-fn fsync_delete(state: State<AppState>, id: String) -> Res<()> {
+fn fsync_delete(app: tauri::AppHandle, state: State<AppState>, id: String) -> Res<()> {
     state.store.state.lock().folder_syncs.retain(|j| j.id != id);
     foldersync::forget_state(&state.store, &id);
-    state.store.save().map_err(e)
+    state.store.save().map_err(e)?;
+    state.watchers.restart(&app);
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -571,21 +576,27 @@ struct SyncOutcome {
     plan: foldersync::Plan,
 }
 
-/// Run or preview a Folder Sync job, streaming phases/progress to `on_event`.
-#[tauri::command]
-async fn fsync_run(
-    state: State<'_, AppState>,
+#[derive(Clone, serde::Serialize)]
+struct FsyncEvent {
     id: String,
-    dry_run: bool,
-    on_event: Channel<foldersync::Event>,
-) -> Res<SyncOutcome> {
+    #[serde(flatten)]
+    event: foldersync::Event,
+}
+
+pub(crate) fn emit_fsync(app: &tauri::AppHandle, id: &str, event: foldersync::Event) {
+    use tauri::Emitter;
+    let _ = app.emit("fsync", FsyncEvent { id: id.to_string(), event });
+}
+
+/// Run or preview a Folder Sync job; progress goes out as global `fsync` events.
+pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) -> Res<SyncOutcome> {
+    let state = app.state::<AppState>();
     let job = state.store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or("Job not found")?;
     if !state.running_syncs.lock().insert(id.clone()) {
         return Err("Already running".into());
     }
-    let emit: foldersync::Emit = Arc::new(move |ev| {
-        let _ = on_event.send(ev);
-    });
+    let (a, i) = (app.clone(), id.clone());
+    let emit: foldersync::Emit = Arc::new(move |ev| emit_fsync(&a, &i, ev));
     let result = foldersync::run(state.store.clone(), job, dry_run, emit).await;
     state.running_syncs.lock().remove(&id);
     if !dry_run {
@@ -603,7 +614,23 @@ async fn fsync_run(
         }
         state.store.save().map_err(e)?;
     }
+    let (ok, summary) = match &result {
+        Ok((s, _)) => (true, s.clone()),
+        Err(err) => (false, err.clone()),
+    };
+    emit_fsync(&app, &id, foldersync::Event::Finished { ok, summary });
     result.map(|(summary, plan)| SyncOutcome { summary, plan })
+}
+
+#[tauri::command]
+async fn fsync_run(app: tauri::AppHandle, id: String, dry_run: bool) -> Res<SyncOutcome> {
+    run_job(app, id, dry_run).await
+}
+
+/// Current watcher states, for UIs opened after the watchers started.
+#[tauri::command]
+fn fsync_watch_states(state: State<AppState>) -> HashMap<String, (String, String)> {
+    state.watchers.states()
 }
 
 fn cli_store() -> anyhow::Result<Store> {
@@ -639,6 +666,7 @@ pub fn cli_run_sync(id: &str) -> i32 {
         let emit: foldersync::Emit = Arc::new(|ev| match ev {
             foldersync::Event::Phase { phase, message } => eprintln!("{phase} {message}"),
             foldersync::Event::Progress { done, total } => eprint!("\r{done}/{total} bytes"),
+            _ => {}
         });
         let (summary, _) = tauri::async_runtime::block_on(foldersync::run(store, job, false, emit))?;
         Ok(summary)
@@ -677,7 +705,9 @@ pub fn run() {
                 tunnels: Default::default(),
                 files: Default::default(),
                 running_syncs: Default::default(),
+                watchers: Default::default(),
             });
+            app.state::<AppState>().watchers.restart(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -736,6 +766,7 @@ pub fn run() {
             fsync_save,
             fsync_delete,
             fsync_run,
+            fsync_watch_states,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kermius");
