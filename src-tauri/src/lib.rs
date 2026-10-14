@@ -560,12 +560,18 @@ fn fsync_save(app: tauri::AppHandle, state: State<AppState>, mut job: foldersync
         match st.folder_syncs.iter_mut().find(|j| j.id == job.id) {
             Some(old) => {
                 // Different folders or mode: the old two-way state no longer applies.
-                if (&old.a, &old.b, &old.mode) != (&job.a, &job.b, &job.mode) {
+                // Only a different folder pair or mode invalidates sync state (renaming or reordering routes does not).
+                let same_folders = |x: &foldersync::Job, y: &foldersync::Job| {
+                    x.mode == y.mode && x.a.kind == y.a.kind && x.a.path == y.a.path && x.b.kind == y.b.kind && x.b.path == y.b.path
+                };
+                if !same_folders(old, &job) {
                     foldersync::forget_state(&state.store, &job.id);
                     job.last_run = 0;
                 }
-                // Excludes / link handling may differ now: rescan the mirror destination for real.
-                foldersync::forget_index(&state.store, &job.id);
+                // Excludes / link handling changed: rescan the mirror destination for real.
+                if (&old.excludes, old.follow_links) != (&job.excludes, job.follow_links) || !same_folders(old, &job) {
+                    foldersync::forget_index(&state.store, &job.id);
+                }
                 *old = job.clone();
             }
             None => st.folder_syncs.push(job.clone()),

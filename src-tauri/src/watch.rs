@@ -52,7 +52,10 @@ fn report(app: &AppHandle, states: &States, id: &str, side: &str, state: &str, m
 fn start(app: AppHandle, job: Job, states: States) -> Vec<JoinHandle<()>> {
     let (tx, mut rx) = unbounded_channel::<()>();
     let mut tasks = Vec::new();
-    for (side, ep) in [("a", job.a.clone()), ("b", job.b.clone())] {
+    // A mirror's destination is written only by Kermius: watching it would just walk the whole tree again.
+    let sides: Vec<(&'static str, Endpoint)> =
+        if job.mode == "mirror" { vec![("a", job.a.clone())] } else { vec![("a", job.a.clone()), ("b", job.b.clone())] };
+    for (side, ep) in sides {
         let (app, tx, states, id) = (app.clone(), tx.clone(), states.clone(), job.id.clone());
         let w = Who { app, id, side, states };
         tasks.push(tauri::async_runtime::spawn(async move {
