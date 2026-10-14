@@ -240,11 +240,42 @@ impl ScanProgress<'_> {
     }
 }
 
+/// Set when the async side of a scan is dropped (job stopped/paused), so the blocking walk ends too.
+#[derive(Clone, Default)]
+struct Cancel(Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancel {
+    fn is_set(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+struct CancelOnDrop(Cancel);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0 .0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 fn scan_local(root: &Path, excludes: &[String], follow: bool, report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
+    scan_local_cancellable(root, excludes, follow, report, &Cancel::default())
+}
+
+fn scan_local_cancellable(
+    root: &Path,
+    excludes: &[String],
+    follow: bool,
+    report: &(dyn Fn(Stats) + Send + Sync),
+    cancel: &Cancel,
+) -> Result<Tree, String> {
     let mut tree = Tree::new();
     let mut progress = ScanProgress { report, stats: Stats::default(), last: std::time::Instant::now() };
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if cancel.is_set() {
+            return Err("Stopped".into());
+        }
         for d in std::fs::read_dir(&dir).map_err(e)? {
             let d = d.map_err(e)?;
             let p = d.path();
@@ -270,6 +301,9 @@ fn scan_local(root: &Path, excludes: &[String], follow: bool, report: &(dyn Fn(S
                 stack.push(p);
             }
         }
+    }
+    if cancel.is_set() {
+        return Err("Stopped".into());
     }
     (progress.report)(progress.stats);
     Ok(tree)
@@ -319,12 +353,19 @@ async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], f
 
 async fn scan(side: &Side, job: &Job, label: &str, emit: &Emit) -> Result<Tree, String> {
     let (excludes, follow) = (&job.excludes, job.follow_links);
-    let (em, label) = (emit.clone(), label.to_string());
-    let report = move |s: Stats| em(Event::Scan { side: label.clone(), files: s.files, dirs: s.dirs, bytes: s.bytes });
+    let cancel = Cancel::default();
+    let _guard = CancelOnDrop(cancel.clone());
+    let (em, label, c) = (emit.clone(), label.to_string(), cancel.clone());
+    // A stopped scan must not keep reporting numbers for the job.
+    let report = move |s: Stats| {
+        if !c.is_set() {
+            em(Event::Scan { side: label.clone(), files: s.files, dirs: s.dirs, bytes: s.bytes })
+        }
+    };
     match side {
         Side::Local(p) => {
             let (p, x) = (p.clone(), excludes.to_vec());
-            tokio::task::spawn_blocking(move || scan_local(&p, &x, follow, &report)).await.map_err(e)?
+            tokio::task::spawn_blocking(move || scan_local_cancellable(&p, &x, follow, &report, &cancel)).await.map_err(e)?
         }
         Side::Remote { handle, path, .. } => scan_remote(handle, path, excludes, follow, &report).await,
     }
@@ -1107,6 +1148,28 @@ mod e2e {
         job.delete = true;
         let (_, plan) = run(store.clone(), job.clone(), true, emit()).await.unwrap();
         assert_eq!(plan.delete_b, ["outside.txt"]);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn foldersync_scan_stops_when_dropped() {
+        let tmp = std::env::temp_dir().join(format!("kermius-fsc-{}", uuid::Uuid::new_v4()));
+        for i in 0..3000 {
+            write(&tmp.join(format!("d{}/f{i}", i % 300)), "x");
+        }
+        let side = Side::Local(tmp.clone());
+        let job = Job::default();
+        let events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ev = events.clone();
+        let em: Emit = Arc::new(move |_| {
+            ev.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        // Drop the scan almost immediately, like Pause does.
+        let _ = tokio::time::timeout(Duration::from_millis(1), scan(&side, &job, "b", &em)).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let after_stop = events.load(std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(events.load(std::sync::atomic::Ordering::Relaxed), after_stop, "a stopped scan kept reporting");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
