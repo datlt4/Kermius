@@ -513,6 +513,7 @@ function renderForwarding() {
   els.page.innerHTML = `
     <div class="toolbar">
       <label class="search fwd-search">${icon("search")}<input placeholder="Filter port forwarding rules…" value="${esc(state.query)}" spellcheck="false" /></label>
+      <button class="btn primary" data-new-rule>${icon("plus", 16)}<span>New rule</span></button>
     </div>
     <div class="content"><div class="fwd-list"></div></div>`;
   api.tunnelList().then((l) => {
@@ -547,11 +548,56 @@ function renderForwardList() {
               .join("")}</div>`,
         )
         .join("")
-    : `<div class="empty">${icon("forward", 40)}<h3>No port forwarding rules</h3><p>Add rules in a host's editor.</p></div>`;
+    : `<div class="empty">${icon("forward", 40)}<h3>No port forwarding rules</h3><p>Forward a local port to a service reachable from one of your SSH hosts.</p>
+        <button class="btn primary" data-new-rule>New rule</button></div>`;
+}
+
+/** New local forward: pick the SSH host it goes through, then the ports. */
+function newRuleDialog() {
+  const hosts = state.hosts.filter((h) => !h.protocol || h.protocol === "ssh").sort((a, b) => byName(a.name, b.name));
+  if (!hosts.length) return toast("Add an SSH host first", "info");
+  const el = document.createElement("div");
+  el.className = "modal-wrap";
+  el.innerHTML = `<form class="modal form-modal"><h3>New port forwarding rule</h3>
+    <label class="field"><span>Through host</span><select name="host">${hosts.map((h) => `<option value="${h.id}">${esc(h.name)} (${esc(h.username ? `${h.username}@` : "")}${esc(h.address)})</option>`).join("")}</select></label>
+    <div class="field-row">
+      <label class="field grow"><span>Local address</span><input name="bind" value="127.0.0.1" spellcheck="false" /></label>
+      <label class="field" style="width:110px"><span>Local port</span><input name="sport" type="number" min="1" max="65535" placeholder="8080" required /></label>
+    </div>
+    <div class="field-row">
+      <label class="field grow"><span>Destination (as seen from the host)</span><input name="dhost" value="localhost" spellcheck="false" /></label>
+      <label class="field" style="width:110px"><span>Port</span><input name="dport" type="number" min="1" max="65535" placeholder="80" required /></label>
+    </div>
+    <div class="modal-actions"><button type="button" class="btn ghost" data-m="close">Cancel</button><button class="btn primary">Add rule</button></div></form>`;
+  document.body.append(el);
+  const f = el.querySelector("form")!;
+  const v = (n: string) => (f.elements.namedItem(n) as HTMLInputElement).value.trim();
+  (f.elements.namedItem("sport") as HTMLInputElement).focus();
+  el.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t === el || t.dataset.m === "close") el.remove();
+  });
+  el.addEventListener("keydown", (e) => e.key === "Escape" && el.remove());
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const h = state.hosts.find((x) => x.id === v("host"))!;
+    const rule = { bindHost: v("bind") || "127.0.0.1", sourcePort: +v("sport"), endpointHost: v("dhost") || "localhost", endpointPort: +v("dport") };
+    try {
+      // Appended, so indices of running tunnels stay valid.
+      await api.saveHost({ ...h, tunnels: [...h.tunnels, rule] });
+      el.remove();
+      await reload();
+      scheduleSync();
+      toast("Rule added", "ok");
+    } catch (err) {
+      toast(String(err), "err");
+    }
+  });
 }
 
 els.page.addEventListener("click", async (e) => {
   const t = e.target as HTMLElement;
+  if (t.closest("[data-new-rule]")) return newRuleDialog();
   const url = t.closest<HTMLElement>("[data-open-url]")?.dataset.openUrl;
   if (url) return api.clipboardWrite(url).then(() => toast(`${url} copied`, "ok"));
   const del = t.closest<HTMLElement>("[data-del-tunnel]")?.dataset.delTunnel;
