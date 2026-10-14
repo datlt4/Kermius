@@ -586,6 +586,7 @@ details .field + .field { margin-top: 10px; }
 .fs-stats { display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
 .fs-stats span { display: inline-flex; align-items: center; gap: 4px; }
 .fs-stats .i { color: var(--faint); }
+.fs-side-tag { padding: 0 6px; margin-right: 2px; border-radius: 4px; font-size: 11px; line-height: 16px; color: var(--accent); background: rgba(91, 140, 255, 0.16); }
 .fs-rate { margin-left: 8px; color: var(--accent); font-variant-numeric: tabular-nums; }
 .fs-status.limit { color: #ffd27a; }
 .fs-status.limit .i { color: #ffd27a; }
