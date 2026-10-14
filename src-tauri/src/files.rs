@@ -381,7 +381,7 @@ pub fn bridge_shell(host_id: &str) -> Result<String, String> {
     Ok(format!("'{}' --ssh-bridge {}", exe.to_string_lossy().replace('\'', r"'\''"), host_id))
 }
 
-/// Run rsync (with `--info=progress2` in `args`), reporting (bytes done, estimated total).
+/// Run rsync (with `--info=progress2` in `args`), reporting (bytes done, estimated total; 0 = not known yet).
 /// Returns rsync's other stdout lines (itemized changes, --stats).
 pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("rsync");
@@ -422,7 +422,8 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
                 if let (Ok(b), Some(p)) = (bytes.replace(',', "").parse::<u64>(), pct.strip_suffix('%').and_then(|p| p.parse::<u64>().ok())) {
                     if last.elapsed() >= std::time::Duration::from_millis(250) {
                         last = std::time::Instant::now();
-                        let total = if p > 0 { b * 100 / p } else { 0 };
+                        // "ir-chk": rsync is still listing files, so its percentage is of a partial total.
+                        let total = if p > 0 && !line.contains("ir-chk") { b * 100 / p } else { 0 };
                         progress(b, total.max(b));
                     }
                     continue;
