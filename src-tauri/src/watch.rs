@@ -17,25 +17,38 @@ const DEBOUNCE: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub struct Watchers {
-    tasks: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
+    /// Per job: what its watchers were started for, and their tasks.
+    tasks: Mutex<HashMap<String, (Watched, Vec<JoinHandle<()>>)>>,
     states: Arc<Mutex<HashMap<String, (String, String)>>>,
 }
+
+/// The job settings a watcher depends on; other edits (name, schedule, results) keep it running.
+type Watched = (String, Endpoint, Endpoint);
 
 impl Watchers {
     pub fn states(&self) -> HashMap<String, (String, String)> {
         self.states.lock().clone()
     }
 
-    /// Stop all watchers and start one set per job that has `watch` on.
+    /// Bring watchers in line with the jobs: start new or changed ones, stop removed or paused ones.
+    /// Unchanged jobs keep their watchers (restarting would trigger a catch-up sync).
     pub fn restart(&self, app: &AppHandle) {
-        for (_, tasks) in self.tasks.lock().drain() {
-            tasks.iter().for_each(|t| t.abort());
-        }
-        self.states.lock().clear();
         let jobs: Vec<Job> = app.state::<AppState>().store.state.lock().folder_syncs.iter().filter(|j| j.watch && !j.paused).cloned().collect();
         let mut tasks = self.tasks.lock();
+        let wanted: HashMap<&String, Watched> = jobs.iter().map(|j| (&j.id, (j.mode.clone(), j.a.clone(), j.b.clone()))).collect();
+        tasks.retain(|id, (watched, handles)| {
+            let keep = wanted.get(id) == Some(watched);
+            if !keep {
+                handles.iter().for_each(|t| t.abort());
+                self.states.lock().retain(|k, _| !k.starts_with(&format!("{id}:")));
+            }
+            keep
+        });
         for job in jobs {
-            tasks.insert(job.id.clone(), start(app.clone(), job, self.states.clone()));
+            if !tasks.contains_key(&job.id) {
+                let watched = (job.mode.clone(), job.a.clone(), job.b.clone());
+                tasks.insert(job.id.clone(), (watched, start(app.clone(), job, self.states.clone())));
+            }
         }
     }
 }
