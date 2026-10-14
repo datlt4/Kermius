@@ -243,23 +243,33 @@ fn ssh_config_export(state: State<AppState>, host_ids: Vec<String>, with_keys: b
     sshconfig::write(&home.join(".ssh"), &ex).map_err(e)
 }
 
+/// Clipboard access off the UI thread, with a time limit: on X11 a read waits for the selection owner,
+/// which can be slow, hung, or our own window (then the UI would freeze).
+async fn with_clipboard<T: Send + 'static>(app: tauri::AppHandle, f: impl FnOnce(&tauri::AppHandle) -> Res<T> + Send + 'static) -> Res<T> {
+    let job = tauri::async_runtime::spawn_blocking(move || f(&app));
+    match tokio::time::timeout(std::time::Duration::from_secs(3), job).await {
+        Ok(r) => r.map_err(e)?,
+        Err(_) => Err("The clipboard did not respond".into()),
+    }
+}
+
 #[tauri::command]
-fn copy_password(app: tauri::AppHandle, state: State<AppState>, id: String) -> Res<()> {
+async fn copy_password(app: tauri::AppHandle, state: State<'_, AppState>, id: String) -> Res<()> {
     let host = state.host(&id)?;
     if host.password.is_empty() {
         return Err("This host has no password".into());
     }
-    app.clipboard().write_text(host.password).map_err(e)
+    with_clipboard(app, move |a| a.clipboard().write_text(host.password).map_err(e)).await
 }
 
 #[tauri::command]
-fn clipboard_write(app: tauri::AppHandle, text: String) -> Res<()> {
-    app.clipboard().write_text(text).map_err(e)
+async fn clipboard_write(app: tauri::AppHandle, text: String) -> Res<()> {
+    with_clipboard(app, move |a| a.clipboard().write_text(text).map_err(e)).await
 }
 
 #[tauri::command]
-fn clipboard_read(app: tauri::AppHandle) -> Res<String> {
-    app.clipboard().read_text().map_err(e)
+async fn clipboard_read(app: tauri::AppHandle) -> Res<String> {
+    with_clipboard(app, |a| a.clipboard().read_text().map_err(e)).await
 }
 
 #[tauri::command]
@@ -482,7 +492,7 @@ fn clipboard_png(app: &tauri::AppHandle) -> Res<Vec<u8>> {
 #[tauri::command]
 async fn ssh_paste_image(app: tauri::AppHandle, state: State<'_, AppState>, sid: String) -> Res<String> {
     #[cfg(desktop)]
-    return upload_to_session(&state, &sid, "png", clipboard_png(&app)?).await;
+    return upload_to_session(&state, &sid, "png", with_clipboard(app, clipboard_png).await?).await;
     #[cfg(mobile)]
     {
         let _ = (app, state, sid);
@@ -492,13 +502,14 @@ async fn ssh_paste_image(app: tauri::AppHandle, state: State<'_, AppState>, sid:
 
 /// Save the clipboard image to the local temp dir (for local terminals); returns its path.
 #[tauri::command]
-fn save_clipboard_image(app: tauri::AppHandle) -> Res<String> {
+async fn save_clipboard_image(app: tauri::AppHandle) -> Res<String> {
     #[cfg(desktop)]
     {
+        let png = with_clipboard(app, clipboard_png).await?;
         let dir = std::env::temp_dir().join("kermius-images");
         std::fs::create_dir_all(&dir).map_err(e)?;
         let path = dir.join(format!("{}.png", uuid::Uuid::new_v4()));
-        std::fs::write(&path, clipboard_png(&app)?).map_err(e)?;
+        std::fs::write(&path, png).map_err(e)?;
         Ok(path.to_string_lossy().into_owned())
     }
     #[cfg(mobile)]
