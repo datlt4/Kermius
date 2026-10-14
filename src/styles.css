@@ -661,3 +661,7 @@ details .field + .field { margin-top: 10px; }
 .vnc-screen > div { flex: 1; }
 .session.vnc .sess-tools button { width: auto; padding: 0 8px; font-size: 12px; }
 .session.vnc .sess-tools button.on { color: var(--accent); }
+.pause-btn { color: #ffb3bf; background: rgba(255, 92, 114, 0.12); border-color: rgba(255, 92, 114, 0.4); }
+.pause-btn:hover { background: rgba(255, 92, 114, 0.22); }
+.resume-btn { color: #9ff0bd; background: rgba(74, 222, 128, 0.12); border-color: rgba(74, 222, 128, 0.4); }
+.resume-btn:hover { background: rgba(74, 222, 128, 0.22); }

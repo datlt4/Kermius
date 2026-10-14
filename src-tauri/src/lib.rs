@@ -729,7 +729,8 @@ pub(crate) fn emit_fsync(app: &tauri::AppHandle, id: &str, event: foldersync::Ev
 }
 
 /// Run or preview a Folder Sync job; progress goes out as global `fsync` events.
-pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) -> Res<SyncOutcome> {
+/// `only`: paths the watchers saw change (relative to the job folders); None = full run.
+pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool, only: Option<Vec<String>>) -> Res<SyncOutcome> {
     let state = app.state::<AppState>();
     let job = state.store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or("Job not found")?;
     if !state.running_syncs.lock().insert(id.clone()) {
@@ -741,7 +742,12 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
     state.sync_stops.lock().insert(id.clone(), stop_tx);
     // Dropping the run future kills rsync; its --partial-dir keeps progress for the next run.
     let result = tokio::select! {
-        r = foldersync::run(state.store.clone(), job, dry_run, emit) => r,
+        r = async {
+            match only {
+                Some(paths) if !dry_run => foldersync::run_paths(state.store.clone(), job, paths, emit).await,
+                _ => foldersync::run(state.store.clone(), job, dry_run, emit).await,
+            }
+        } => r,
         _ = stop_rx => Err("Stopped".to_string()),
     };
     state.sync_stops.lock().remove(&id);
@@ -776,7 +782,7 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
 
 #[tauri::command]
 async fn fsync_run(app: tauri::AppHandle, id: String, dry_run: bool) -> Res<SyncOutcome> {
-    run_job(app, id, dry_run).await
+    run_job(app, id, dry_run, None).await
 }
 
 fn fsync_job(state: &AppState, id: &str) -> Res<foldersync::Job> {
@@ -799,7 +805,7 @@ fn fsync_read(state: State<AppState>, id: String, path: String) -> Res<String> {
 fn fsync_resolve(app: tauri::AppHandle, state: State<AppState>, id: String, path: String, action: String, merged: Option<String>) -> Res<()> {
     foldersync::resolve(&fsync_job(&state, &id)?, &path, &action, merged)?;
     tauri::async_runtime::spawn(async move {
-        let _ = run_job(app, id, false).await;
+        let _ = run_job(app, id, false, None).await;
     });
     Ok(())
 }

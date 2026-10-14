@@ -62,8 +62,14 @@ fn report(app: &AppHandle, states: &States, id: &str, side: &str, state: &str, m
     emit_fsync(app, id, Event::Watch { side: side.into(), state: state.into(), message });
 }
 
+/// What a watcher saw: one changed path (relative to the job folder) or "anything may have changed".
+enum Change {
+    Path(String),
+    Full,
+}
+
 fn start(app: AppHandle, job: Job, states: States) -> Vec<JoinHandle<()>> {
-    let (tx, mut rx) = unbounded_channel::<()>();
+    let (tx, mut rx) = unbounded_channel::<Change>();
     let mut tasks = Vec::new();
     // A mirror's destination is written only by Kermius: watching it would just walk the whole tree again.
     let sides: Vec<(&'static str, Endpoint)> =
@@ -75,14 +81,22 @@ fn start(app: AppHandle, job: Job, states: States) -> Vec<JoinHandle<()>> {
             if ep.kind == "remote" { watch_remote(w, ep, tx).await } else { watch_local(w, ep.path, tx).await }
         }));
     }
-    // Runner: sync after each burst of changes. No catch-up when the watcher starts (app start, resume):
-    // scheduled jobs catch up through their interval, manual ones wait for a change or "Sync now".
+    // Runner: a full catch-up when the watcher starts (app start, resume: the other side may have changed
+    // meanwhile), then after each burst of changes sync only the changed paths.
     let id = job.id.clone();
+    let _ = tx.send(Change::Full);
     tasks.push(tauri::async_runtime::spawn(async move {
-        while rx.recv().await.is_some() {
+        while let Some(first) = rx.recv().await {
             tokio::time::sleep(DEBOUNCE).await;
-            while rx.try_recv().is_ok() {}
-            while let Err(err) = run_job(app.clone(), id.clone(), false).await {
+            let mut paths: Option<Vec<String>> = Some(Vec::new());
+            for c in std::iter::once(first).chain(std::iter::from_fn(|| rx.try_recv().ok())) {
+                match (c, paths.as_mut()) {
+                    (Change::Path(p), Some(v)) => v.push(p),
+                    (Change::Full, _) => paths = None,
+                    _ => {}
+                }
+            }
+            while let Err(err) = run_job(app.clone(), id.clone(), false, paths.clone()).await {
                 if err != "Already running" {
                     break;
                 }
@@ -114,7 +128,7 @@ fn ignored(p: &Path) -> bool {
     p.components().any(|c| c.as_os_str() == ".rsync-partial")
 }
 
-async fn watch_local(w: Who, path: String, tx: UnboundedSender<()>) {
+async fn watch_local(w: Who, path: String, tx: UnboundedSender<Change>) {
     let mut was_offline = false;
     loop {
         if !Path::new(&path).is_dir() {
@@ -125,15 +139,28 @@ async fn watch_local(w: Who, path: String, tx: UnboundedSender<()>) {
         }
         if was_offline {
             // Disk came back: sync what changed meanwhile.
-            let _ = tx.send(());
+            let _ = tx.send(Change::Full);
             was_offline = false;
         }
-        let (ntx, mut nrx) = unbounded_channel::<()>();
+        let (ntx, mut nrx) = unbounded_channel::<Change>();
+        let root = std::path::PathBuf::from(&path);
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(ev) = res {
-                if !ev.kind.is_access() && !ev.paths.iter().all(|p| ignored(p)) {
-                    let _ = ntx.send(());
+            let Ok(ev) = res else {
+                // Lost events (queue overflow): only a full run can tell what changed.
+                let _ = ntx.send(Change::Full);
+                return;
+            };
+            if ev.kind.is_access() || ev.need_rescan() {
+                if ev.need_rescan() {
+                    let _ = ntx.send(Change::Full);
                 }
+                return;
+            }
+            for p in ev.paths.iter().filter(|p| !ignored(p)) {
+                let _ = ntx.send(match p.strip_prefix(&root) {
+                    Ok(rel) => Change::Path(rel.to_string_lossy().replace('\\', "/")),
+                    Err(_) => Change::Full,
+                });
             }
         });
         let mut watcher = match watcher {
@@ -152,13 +179,13 @@ async fn watch_local(w: Who, path: String, tx: UnboundedSender<()>) {
                 w.report("polling", format!("{path}: {err}; checking every minute"));
             }
             tokio::time::sleep(Duration::from_secs(60)).await;
-            let _ = tx.send(());
+            let _ = tx.send(Change::Full);
             continue;
         }
         w.report("watching", "");
         loop {
             tokio::select! {
-                Some(()) = nrx.recv() => { let _ = tx.send(()); }
+                Some(c) = nrx.recv() => { let _ = tx.send(c); }
                 _ = tokio::time::sleep(Duration::from_secs(15)) => {
                     if !Path::new(&path).is_dir() { break; }
                 }
@@ -167,7 +194,7 @@ async fn watch_local(w: Who, path: String, tx: UnboundedSender<()>) {
     }
 }
 
-async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
+async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<Change>) {
     let store = w.app.state::<AppState>().store.clone();
     let quiet: foldersync::Emit = Arc::new(|_| {});
     let mut backoff = 10;
@@ -185,14 +212,17 @@ async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
             }
         };
         backoff = 10;
-        // Reconnected (not the first connection): there may be changes we missed.
+        // Reconnected (not the first connection, the runner already starts with a full run): changes may be missed.
         if !std::mem::take(&mut first) {
-            let _ = tx.send(());
+            let _ = tx.send(Change::Full);
         }
+        // One changed path per line.
         let cmd = format!(
-            "command -v inotifywait >/dev/null 2>&1 || exit 127; exec inotifywait -m -r -q -e close_write,create,delete,move,attrib --exclude '/\\.rsync-partial(/|$)' --format x {}",
+            "command -v inotifywait >/dev/null 2>&1 || exit 127; exec inotifywait -m -r -q -e close_write,create,delete,move,attrib --exclude '/\\.rsync-partial(/|$)' --format '%w%f' {}",
             sh(&path)
         );
+        let root = format!("{}/", path.trim_end_matches('/'));
+        let mut pending = Vec::<u8>::new();
         let mut ch = match handle.channel_open_session().await {
             Ok(ch) => ch,
             Err(_) => continue,
@@ -204,8 +234,16 @@ async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
         let (mut missing_tool, mut stderr) = (false, Vec::new());
         while let Some(msg) = ch.wait().await {
             match msg {
-                ChannelMsg::Data { .. } => {
-                    let _ = tx.send(());
+                ChannelMsg::Data { data } => {
+                    pending.extend_from_slice(&data);
+                    while let Some(i) = pending.iter().position(|b| *b == b'\n') {
+                        let line: Vec<u8> = pending.drain(..=i).collect();
+                        let p = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
+                        let _ = tx.send(match p.strip_prefix(&root) {
+                            Some(rel) => Change::Path(rel.to_string()),
+                            None => Change::Full,
+                        });
+                    }
                 }
                 ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
                 ChannelMsg::ExitStatus { exit_status: 127 } => missing_tool = true,
@@ -223,7 +261,7 @@ async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
             let mut ready = false;
             while !handle.is_closed() {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                let _ = tx.send(());
+                let _ = tx.send(Change::Full);
                 // inotify-tools may have been installed (or the limit raised) meanwhile: switch back to instant watching.
                 if missing_tool && foldersync::exec(&handle, "command -v inotifywait").await.is_ok_and(|(_, _, code)| code == 0) {
                     ready = true;

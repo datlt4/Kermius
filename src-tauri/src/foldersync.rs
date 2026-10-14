@@ -271,9 +271,14 @@ fn scan_local_cancellable(
     report: &(dyn Fn(Stats) + Send + Sync),
     cancel: &Cancel,
 ) -> Result<Tree, String> {
+    walk(root, vec![root.to_path_buf()], excludes, follow, report, cancel)
+}
+
+/// Walk `start` folders (inside `root`); keys are relative to `root`, so excludes match the full path.
+fn walk(root: &Path, start: Vec<PathBuf>, excludes: &[String], follow: bool, report: &(dyn Fn(Stats) + Send + Sync), cancel: &Cancel) -> Result<Tree, String> {
     let mut tree = Tree::new();
     let mut progress = ScanProgress { report, stats: Stats::default(), last: std::time::Instant::now() };
-    let mut stack = vec![root.to_path_buf()];
+    let mut stack = start;
     while let Some(dir) = stack.pop() {
         if cancel.is_set() {
             return Err("Stopped".into());
@@ -314,6 +319,11 @@ fn scan_local_cancellable(
 /// GNU find streamed over SSH, so progress can be reported while the remote walks the tree.
 async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], follow: bool, report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
     let cmd = format!("cd {} && find {}. -mindepth 1 \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%P\\0'", sh(path), if follow { "-L " } else { "" });
+    remote_find(handle, &cmd, excludes, report).await
+}
+
+/// Run a `find -printf '%y\t%s\t%T@\t<path>\0'` command; paths may start with "./".
+async fn remote_find(handle: &Handle<Client>, cmd: &str, excludes: &[String], report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
     let mut ch = handle.channel_open_session().await.map_err(e)?;
     ch.exec(true, cmd).await.map_err(e)?;
     let mut tree = Tree::new();
@@ -323,6 +333,7 @@ async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], f
         let rec = String::from_utf8_lossy(rec);
         let mut f = rec.splitn(4, '\t');
         let (Some(kind), Some(size), Some(mtime), Some(rel)) = (f.next(), f.next(), f.next(), f.next()) else { return };
+        let rel = rel.strip_prefix("./").unwrap_or(rel);
         if excluded(rel, excludes) {
             return;
         }
@@ -784,20 +795,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
     }
     if !plan.is_empty() {
         phase(&emit, "syncing", "");
-        let conflicts = std::mem::take(&mut plan.conflicts);
-        for (p, winner) in &conflicts {
-            let (loser, list) = if winner == "a" { (&b, &mut plan.copy_ab) } else { (&a, &mut plan.copy_ba) };
-            let keep = conflict_name(p);
-            rename(loser, p, &keep).await?;
-            list.push(p.clone());
-            // The renamed copy travels to the other side on this run as well.
-            if winner == "a" { plan.copy_ba.push(keep) } else { plan.copy_ab.push(keep) }
-        }
-        plan.conflicts = conflicts;
-        delete(&a, &plan.delete_a, &ta).await?;
-        delete(&b, &plan.delete_b, &tb).await?;
-        copy(&a, &b, &plan.copy_ab, &job, &emit).await?;
-        copy(&b, &a, &plan.copy_ba, &job, &emit).await?;
+        execute_twoway(&a, &b, &ta, &tb, &mut plan, &job, &emit).await?;
     }
     let (na, nb) = (scan(&a, &job, "a", &emit).await?, scan(&b, &job, "b", &emit).await?);
     save_state(&store, &job.id, &common(&na, &nb))?;
@@ -909,6 +907,126 @@ fn parse_stats(out: &str) -> Stats {
     }
     st
 }
+
+/// Apply a two-way plan: keep conflict losers as `.sync-conflict-` copies, delete, then copy both ways.
+async fn execute_twoway(a: &Side, b: &Side, ta: &Tree, tb: &Tree, plan: &mut Plan, job: &Job, emit: &Emit) -> Result<(), String> {
+    let conflicts = std::mem::take(&mut plan.conflicts);
+    for (p, winner) in &conflicts {
+        let (loser, list) = if winner == "a" { (b, &mut plan.copy_ab) } else { (a, &mut plan.copy_ba) };
+        let keep = conflict_name(p);
+        rename(loser, p, &keep).await?;
+        list.push(p.clone());
+        // The renamed copy travels to the other side on this run as well.
+        if winner == "a" { plan.copy_ba.push(keep) } else { plan.copy_ab.push(keep) }
+    }
+    plan.conflicts = conflicts;
+    delete(a, &plan.delete_a, ta).await?;
+    delete(b, &plan.delete_b, tb).await?;
+    copy(a, b, &plan.copy_ab, job, emit).await?;
+    copy(b, a, &plan.copy_ba, job, emit).await
+}
+
+/// Changed paths reduced to their topmost entries ("a/b" covers "a/b/c"); "" stands for everything.
+fn collapse(paths: impl IntoIterator<Item = String>) -> Vec<String> {
+    let set: BTreeSet<String> = paths.into_iter().map(|p| p.trim_matches('/').to_string()).collect();
+    let mut out: Vec<String> = Vec::new();
+    for p in set {
+        if !out.iter().any(|q| q.is_empty() || p == *q || p.starts_with(&format!("{q}/"))) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn under(p: &str, prefixes: &[String]) -> bool {
+    prefixes.iter().any(|x| x.is_empty() || p == x || p.starts_with(&format!("{x}/")))
+}
+
+/// Entries at and below `prefixes` on one side (missing paths are simply absent).
+async fn scan_paths(side: &Side, job: &Job, prefixes: &[String]) -> Result<Tree, String> {
+    let (excludes, follow) = (job.excludes.clone(), job.follow_links);
+    match side {
+        Side::Local(root) => {
+            let (root, prefixes) = (root.clone(), prefixes.to_vec());
+            tokio::task::spawn_blocking(move || {
+                let (mut tree, mut dirs) = (Tree::new(), Vec::new());
+                for p in &prefixes {
+                    let full = root.join(p);
+                    let m = if follow { std::fs::metadata(&full) } else { std::fs::symlink_metadata(&full) };
+                    let Ok(m) = m else { continue };
+                    let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
+                    tree.insert(p.clone(), Meta { dir: m.is_dir(), size: if m.is_dir() { 0 } else { m.len() }, mtime });
+                    if m.is_dir() {
+                        dirs.push(full);
+                    }
+                }
+                tree.extend(walk(&root, dirs, &excludes, follow, &|_| {}, &Cancel::default())?);
+                Ok(tree)
+            })
+            .await
+            .map_err(e)?
+        }
+        Side::Remote { handle, path, .. } => {
+            let mut tree = Tree::new();
+            for chunk in prefixes.chunks(200) {
+                let args: Vec<String> = chunk.iter().map(|p| sh(&format!("./{p}"))).collect();
+                // Missing paths make find exit non-zero; whatever exists is still listed.
+                let cmd = format!(
+                    "cd {} && find {}{} \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%p\\0' 2>/dev/null; true",
+                    sh(path),
+                    if follow { "-L " } else { "" },
+                    args.join(" ")
+                );
+                tree.extend(remote_find(handle, &cmd, &excludes, &|_| {}).await?);
+            }
+            Ok(tree)
+        }
+    }
+}
+
+/// Sync only what changed below `changed` paths (from the watchers); falls back to a full run when
+/// the change set is unclear (the folder root, too many paths, or no two-way state yet).
+pub async fn run_paths(store: Arc<Store>, job: Job, changed: Vec<String>, emit: Emit) -> Result<(String, Plan), String> {
+    let prefixes = collapse(changed.into_iter().filter(|p| p.is_empty() || !excluded(p, &job.excludes)));
+    if prefixes.is_empty() {
+        return Ok(("Up to date".into(), Plan::default()));
+    }
+    let state = if job.mode == "mirror" { Tree::new() } else { load_state(&store, &job.id) };
+    if prefixes.len() > MAX_PATHS || prefixes.iter().any(|p| p.is_empty()) || (job.mode != "mirror" && state.is_empty()) {
+        return run(store, job, false, emit).await;
+    }
+    validate(&job)?;
+    let vault = store.state.lock().vault.clone();
+    phase(&emit, "connecting", "");
+    let a = open_side(&store, &vault, &job.a, &emit).await?;
+    let b = open_side(&store, &vault, &job.b, &emit).await?;
+    // An emptied source means an unmounted disk, not "delete what changed": let the full run's guard decide.
+    if job.mode == "mirror" && job.delete && is_empty_dir(&a).await? {
+        return run(store, job, false, emit).await;
+    }
+    phase(&emit, "syncing", format!("{} changed path{}", prefixes.len(), if prefixes.len() == 1 { "" } else { "s" }));
+    let (ta, tb) = (scan_paths(&a, &job, &prefixes).await?, scan_paths(&b, &job, &prefixes).await?);
+    if job.mode == "mirror" {
+        let plan = mirror_plan(&ta, &tb, job.delete);
+        delete(&b, &plan.delete_b, &tb).await?;
+        copy(&a, &b, &plan.copy_ab, &job, &emit).await?;
+        return Ok((summary(&plan), plan));
+    }
+    let sub: Tree = state.iter().filter(|(p, _)| under(p, &prefixes)).map(|(p, m)| (p.clone(), *m)).collect();
+    let mut plan = plan_twoway(&ta, &tb, &sub);
+    execute_twoway(&a, &b, &ta, &tb, &mut plan, &job, &emit).await?;
+    // Conflict copies sit next to the originals, possibly outside the prefixes: rescan them too.
+    let rescan = collapse(prefixes.iter().cloned().chain(plan.copy_ab.iter().cloned()).chain(plan.copy_ba.iter().cloned()));
+    let (na, nb) = (scan_paths(&a, &job, &rescan).await?, scan_paths(&b, &job, &rescan).await?);
+    let mut next: Tree = state.into_iter().filter(|(p, _)| !under(p, &rescan)).collect();
+    next.extend(common(&na, &nb));
+    save_state(&store, &job.id, &next)?;
+    plan.open_conflicts = job.conflicts + plan.conflicts.len() as u32;
+    Ok((summary(&plan), plan))
+}
+
+/// Above this many changed paths a full run is cheaper than stat-ing each one.
+const MAX_PATHS: usize = 2000;
 
 fn summary(p: &Plan) -> String {
     if p.is_empty() {
@@ -1197,6 +1315,62 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn foldersync_e2e_incremental() {
+        let tmp = std::env::temp_dir().join(format!("kermius-fsp-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(Store::open(tmp.join("store")).unwrap());
+        let ep = |p: &Path| Endpoint { kind: "local".into(), path: p.to_string_lossy().into(), hosts: vec![] };
+        let paths = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // Mirror: only the named paths are looked at.
+        let (a, b) = (tmp.join("ma"), tmp.join("mb"));
+        write(&a.join("keep.txt"), "k");
+        write(&a.join("gone.txt"), "g");
+        let mut job = Job { id: "pm".into(), mode: "mirror".into(), a: ep(&a), b: ep(&b), delete: true, ..Default::default() };
+        std::fs::create_dir_all(&b).unwrap();
+        run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        job.last_run = 1;
+        write(&a.join("new/deep/x.txt"), "x"); // new folder: copied with its contents
+        write(&a.join("unrelated.txt"), "u"); // not reported: left for the next full run
+        std::fs::remove_file(a.join("gone.txt")).unwrap();
+        let (s, _) = run_paths(store.clone(), job.clone(), paths(&["new", "gone.txt"]), emit()).await.unwrap();
+        assert_eq!(s, "1 copied, 1 deleted");
+        assert!(b.join("new/deep/x.txt").exists() && !b.join("gone.txt").exists() && b.join("keep.txt").exists());
+        assert!(!b.join("unrelated.txt").exists());
+        // The folder root (or too much) means a full run.
+        run_paths(store.clone(), job.clone(), paths(&[""]), emit()).await.unwrap();
+        assert!(b.join("unrelated.txt").exists());
+
+        // Two-way: edits, deletions and conflicts on the reported paths, state kept for the rest.
+        let (a, b) = (tmp.join("ta"), tmp.join("tb"));
+        write(&a.join("doc.txt"), "v1");
+        write(&a.join("dir/f.txt"), "f");
+        std::fs::create_dir_all(&b).unwrap();
+        let job = Job { id: "pt".into(), mode: "twoway".into(), a: ep(&a), b: ep(&b), last_run: 1, ..Default::default() };
+        run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        write(&b.join("doc.txt"), "v2-from-b");
+        touch_later(&b.join("doc.txt"), 10);
+        std::fs::remove_file(a.join("dir/f.txt")).unwrap();
+        let (s, _) = run_paths(store.clone(), job.clone(), paths(&["doc.txt", "dir/f.txt"]), emit()).await.unwrap();
+        assert_eq!(s, "1 copied, 1 deleted");
+        assert_eq!(std::fs::read_to_string(a.join("doc.txt")).unwrap(), "v2-from-b");
+        assert!(!b.join("dir/f.txt").exists());
+        // Both sides edited: the older one is kept as a conflict copy on both sides.
+        write(&a.join("doc.txt"), "edit-a");
+        touch_later(&a.join("doc.txt"), 20);
+        write(&b.join("doc.txt"), "edit-b");
+        touch_later(&b.join("doc.txt"), 30);
+        let (_, plan) = run_paths(store.clone(), job.clone(), paths(&["doc.txt"]), emit()).await.unwrap();
+        assert_eq!(plan.conflicts.len(), 1);
+        assert_eq!(std::fs::read_to_string(a.join("doc.txt")).unwrap(), "edit-b");
+        let copies = |d: &Path| std::fs::read_dir(d).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains("sync-conflict")).count();
+        assert_eq!((copies(&a), copies(&b)), (1, 1));
+        // Nothing left to do afterwards (state was updated for the touched paths only).
+        let (s, _) = run(store.clone(), job, true, emit()).await.unwrap();
+        assert_eq!(s, "Up to date");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[tokio::test]
     async fn foldersync_scan_stops_when_dropped() {
         let tmp = std::env::temp_dir().join(format!("kermius-fsc-{}", uuid::Uuid::new_v4()));
         for i in 0..3000 {
@@ -1253,9 +1427,15 @@ mod e2e {
         std::fs::create_dir_all(&m).unwrap();
         write(&m.join("extra.txt"), "x");
         let mirror = Job { id: "r2".into(), mode: "mirror".into(), a: job.b, b: Endpoint { kind: "local".into(), path: m.to_string_lossy().into(), hosts: vec![] }, delete: true, ..Default::default() };
-        let (_, plan) = run(store, mirror, false, emit()).await.unwrap();
+        let (_, plan) = run(store.clone(), mirror.clone(), false, emit()).await.unwrap();
         assert_eq!(plan.delete_b, ["extra.txt"]);
         let names = |p: &Path| { let mut v: Vec<_> = std::fs::read_dir(p).unwrap().map(|e| e.unwrap().file_name()).collect(); v.sort(); v };
         assert_eq!(names(&m), names(&b));
+        // Incremental: only the reported remote paths are listed (find over ssh) and copied.
+        write(&b.join("inc/one.txt"), "1");
+        write(&b.join("other.txt"), "o");
+        let (s, _) = run_paths(store, mirror, vec!["inc".into(), "missing.txt".into()], emit()).await.unwrap();
+        assert_eq!(s, "1 copied");
+        assert!(m.join("inc/one.txt").exists() && !m.join("other.txt").exists());
     }
 }
