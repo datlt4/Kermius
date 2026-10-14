@@ -205,7 +205,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
       ${
         rsyncLocal === false
           ? `<div class="fs-warn"><b>rsync is not installed on this computer.</b> Folder Sync needs rsync 3.1 or newer.
-              ${installList(mac ? [["macOS (Homebrew)", "brew install rsync"]] : INSTALL.map(([os, cmd]) => [os, cmd.replace(" inotify-tools", "").replace(" findutils", "")]))}</div>`
+              ${installList(mac ? [["macOS (Homebrew)", "brew install rsync"]] : INSTALL)}</div>`
           : ""
       }
       ${
@@ -441,16 +441,10 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
         <small class="muted">(remote side: instant with <code>inotify-tools</code>, otherwise checked every minute)</small></label>
       <details class="fs-req" ${rsyncLocal === false || draft.a.kind === "remote" || draft.b.kind === "remote" ? "open" : ""}>
         <summary>How to install rsync and inotify-tools</summary>
-        <p class="muted"><b>This computer</b> needs <b>rsync 3.1+</b> (watching local folders is built in, no inotify-tools needed)${
-          rsyncLocal === false ? ` — <span class="err">not found</span>` : rsyncLocal ? " — installed ✓" : ""
-        }.</p>
-        ${installList(
-          /Mac/.test(navigator.userAgent)
-            ? [["macOS (Homebrew)", "brew install rsync"]]
-            : INSTALL.map(([os, cmd]) => [os, cmd.replace(" inotify-tools", "").replace(" findutils", "")]),
-        )}
-        <p class="muted"><b>Remote hosts</b> (Linux) need <b>rsync</b> and GNU <b>find</b>; <b>inotify-tools</b> makes remote changes sync instantly. Run on each remote:</p>
-        ${installList(INSTALL)}
+        <p class="muted">Run on <b>this computer</b> and on <b>each remote host</b>. rsync 3.1+ is required
+          (this computer: ${rsyncLocal === false ? `<span class="err">not found</span>` : rsyncLocal ? "installed ✓" : "unknown"});
+          inotify-tools makes remote changes sync instantly.</p>
+        ${installList([...INSTALL, ["macOS (this computer only)", "brew install rsync"]])}
       </details>
       <div class="field-row"><label class="field grow"><span>Run automatically (while Kermius is open)</span><select name="interval">${INTERVALS.map(
         ([m, l]) => `<option value="${m}" ${m === draft.intervalMin ? "selected" : ""}>${l}</option>`,
