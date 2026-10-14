@@ -153,3 +153,30 @@ export function promptDialog(title: string, label: string, value = ""): Promise<
     el.addEventListener("keydown", (e) => e.key === "Escape" && done(null));
   });
 }
+
+/** Patch `target`'s children to match `html`, reusing existing nodes (keeps hover/focus/scroll). */
+export function morphHtml(target: HTMLElement, html: string) {
+  const next = document.createElement("div");
+  next.innerHTML = html;
+  morphChildren(target, next);
+}
+
+function morphChildren(a: Node, b: Node) {
+  const ca = [...a.childNodes];
+  const cb = [...b.childNodes];
+  cb.forEach((n, i) => (i < ca.length ? morphNode(ca[i], n) : a.appendChild(n)));
+  for (let i = cb.length; i < ca.length; i++) a.removeChild(ca[i]);
+}
+
+function morphNode(a: Node, b: Node) {
+  if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) return a.parentNode!.replaceChild(b, a);
+  if (a.nodeType !== Node.ELEMENT_NODE) {
+    if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue;
+    return;
+  }
+  const ea = a as Element;
+  const eb = b as Element;
+  for (const at of [...ea.attributes]) if (!eb.hasAttribute(at.name)) ea.removeAttribute(at.name);
+  for (const at of [...eb.attributes]) if (ea.getAttribute(at.name) !== at.value) ea.setAttribute(at.name, at.value);
+  morphChildren(a, b);
+}

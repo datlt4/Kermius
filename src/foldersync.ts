@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api, type FsEndpoint, type FsEvent, type FsJob, type FsPlan, type Host } from "./api";
 import { conflictsDialog } from "./conflicts";
 import { pickFolder } from "./folderpicker";
-import { confirmDialog, contextMenu, esc, icon, toast } from "./ui";
+import { confirmDialog, contextMenu, esc, icon, morphHtml, toast } from "./ui";
 
 export interface FolderSyncCtx {
   hosts(): Host[];
@@ -236,8 +236,8 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
   const watched = jobs.filter((j) => j.watch && !j.paused).length;
   const devices = remoteDevices(ctx);
   const allPaused = jobs.length > 0 && jobs.every((j) => j.paused);
-  root.innerHTML = `
-    <div class="toolbar"><div class="grow"></div>
+  const html = `
+    <div class="toolbar fs-toolbar"><div class="grow"></div>
       ${jobs.length ? `<button class="btn sm" data-fs="${allPaused ? "resume-all" : "pause-all"}">${icon(allPaused ? "play" : "stop", 14)} ${allPaused ? "Resume all" : "Pause all"}</button>
         <button class="btn sm" data-fs="rescan-all">${icon("sync", 14)} Rescan all</button>` : ""}
       <button class="btn primary" data-fs="new">${icon("plus", 16)}<span>New Sync</span></button></div>
@@ -299,6 +299,9 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
               <button class="btn primary" data-fs="new">New Sync</button></div>`
       }
     </div>`;
+  // Live updates arrive several times a second: patch in place so hover and scroll survive.
+  if (root.querySelector(":scope > .fs-toolbar")) morphHtml(root, html);
+  else root.innerHTML = html;
 }
 
 /** Run or preview; progress arrives through `listenFolderSync`. */
