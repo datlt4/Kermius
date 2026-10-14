@@ -308,7 +308,8 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                     ${
                       w
                         ? `<div class="fs-status ${w.cls}">${icon("eye", 13)}${esc(w.text)}
-                            ${w.limitHost ? `<button class="fs-conflicts" data-fs="raise" data-host="${esc(w.limitHost)}">Raise limit</button>` : ""}</div>`
+                            ${w.limitHost ? `<button class="fs-conflicts" data-fs="raise" data-host="${esc(w.limitHost)}">Raise limit</button>
+                              <button class="fs-conflicts" data-fs="raise-cmd" data-host="${esc(w.limitHost)}" title="Copy the command to run it yourself in a terminal">Copy command</button>` : ""}</div>`
                         : ""
                     }
                     ${l?.phase === "syncing" ? `<div class="bar ${l.pct < 0 ? "indeterminate" : ""}"><i style="width:${Math.max(0, l.pct)}%"></i></div>` : ""}
@@ -393,6 +394,17 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
         }
       }, 1500);
       return;
+    }
+    if (act === "raise-cmd") {
+      const host = t.closest<HTMLElement>("[data-host]")!.dataset.host!;
+      const where = host === "local" ? "a terminal on this computer" : `a terminal on ${ctx.hosts().find((h) => h.id === host)?.name ?? "the remote"}`;
+      return api
+        .fsyncInotifyCommand()
+        .then((cmd) => api.clipboardWrite(cmd))
+        .then(
+          () => toast(`Command copied; paste it into ${where}`, "ok"),
+          (x) => toast(String(x), "err"),
+        );
     }
     if (act === "raise") {
       const host = t.closest<HTMLElement>("[data-host]")!.dataset.host!;

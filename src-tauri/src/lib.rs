@@ -734,7 +734,15 @@ const INOTIFY_FILE: &str = "/etc/sysctl.d/99-zz-kermius-inotify.conf";
 
 /// Shell that persists and applies higher inotify limits (run as root).
 fn inotify_fix_script() -> String {
-    format!("rm -f /etc/sysctl.d/90-kermius-inotify.conf; printf '{INOTIFY_CONF}' > {INOTIFY_FILE} && sysctl -p {INOTIFY_FILE}")
+    // printf gets "\n" escapes so the command stays on one line when pasted.
+    let conf = INOTIFY_CONF.replace('\n', "\\n");
+    format!("rm -f /etc/sysctl.d/90-kermius-inotify.conf; printf '{conf}' > {INOTIFY_FILE} && sysctl -p {INOTIFY_FILE}")
+}
+
+/// The same fix as a command a user can paste into a terminal (sudo asks for the password).
+#[tauri::command]
+fn fsync_inotify_command() -> String {
+    format!("sudo sh -c {}", foldersync::sh(&inotify_fix_script()))
 }
 
 /// Raise the local inotify limits (asks for the admin password via polkit), then restart watchers.
@@ -932,6 +940,7 @@ pub fn run() {
             fsync_pause,
             fsync_stop,
             fsync_raise_inotify,
+            fsync_inotify_command,
             fsync_raise_inotify_remote,
             fsync_conflicts,
             fsync_read,
