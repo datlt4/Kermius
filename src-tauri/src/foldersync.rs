@@ -148,7 +148,7 @@ pub(crate) fn sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-async fn exec(handle: &Handle<Client>, command: &str) -> Result<(Vec<u8>, String, u32), String> {
+pub(crate) async fn exec(handle: &Handle<Client>, command: &str) -> Result<(Vec<u8>, String, u32), String> {
     let mut ch = handle.channel_open_session().await.map_err(e)?;
     ch.exec(true, command).await.map_err(e)?;
     let (mut out, mut err, mut code) = (Vec::new(), Vec::new(), 0);

@@ -201,9 +201,18 @@ async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
             } else {
                 w.report("polling", format!("via {}; install inotify-tools on the remote for instant sync", host.name));
             }
+            let mut ready = false;
             while !handle.is_closed() {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 let _ = tx.send(());
+                // inotify-tools may have been installed (or the limit raised) meanwhile: switch back to instant watching.
+                if missing_tool && foldersync::exec(&handle, "command -v inotifywait").await.is_ok_and(|(_, _, code)| code == 0) {
+                    ready = true;
+                    break;
+                }
+            }
+            if ready {
+                continue;
             }
         }
         w.report("offline", format!("lost connection to {}", host.name));
