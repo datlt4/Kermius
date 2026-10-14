@@ -328,6 +328,36 @@ fn serial_ports() -> Vec<String> {
     Vec::new()
 }
 
+/// Whether Kermius starts when the user logs in.
+#[tauri::command]
+fn autostart_get(app: tauri::AppHandle) -> bool {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        return app.autolaunch().is_enabled().unwrap_or(false);
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+#[tauri::command]
+fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Res<()> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let a = app.autolaunch();
+        return if enabled { a.enable() } else { a.disable() }.map_err(e);
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, enabled);
+        Err("Not available on this platform".into())
+    }
+}
+
 /// Shell command that grants serial port access (empty where none is needed or already done).
 #[tauri::command]
 fn serial_setup_command() -> String {
@@ -978,6 +1008,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
                 store: Arc::new(store),
@@ -1025,6 +1057,8 @@ pub fn run() {
             ssh_send_password,
             local_has_password,
             serial_ports,
+            autostart_get,
+            autostart_set,
             serial_setup_command,
             vnc_open,
             vnc_password,

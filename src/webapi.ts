@@ -188,6 +188,8 @@ export const webApi: Api = {
   vncPassword: unsupported,
   sessionWrite: unsupported,
   serialPorts: async () => [] as string[],
+  autostartGet: async () => false,
+  autostartSet: unsupported,
   serialSetupCommand: async () => "",
   trustNewHostKey: unsupported,
   tunnelStart: unsupported,
