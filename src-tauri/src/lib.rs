@@ -6,6 +6,7 @@ mod watch;
 mod local;
 mod model;
 mod ssh;
+mod sshconfig;
 mod store;
 mod sync;
 mod termix;
@@ -225,6 +226,20 @@ fn import_termix(state: State<AppState>, path: String) -> Res<termix::ImportRepo
     let report = termix::import(&mut state.store.state.lock().vault, &json).map_err(e)?;
     state.store.save().map_err(e)?;
     Ok(report)
+}
+
+/// Preview of the `~/.ssh/config` entries for these hosts.
+#[tauri::command]
+fn ssh_config_preview(state: State<AppState>, host_ids: Vec<String>, with_keys: bool, with_passwords: bool) -> String {
+    sshconfig::render(&state.store.state.lock().vault, &host_ids, with_keys, with_passwords).config
+}
+
+/// Write the hosts into `~/.ssh/config` (Kermius block) and their keys into `~/.ssh/kermius/`.
+#[tauri::command]
+fn ssh_config_export(state: State<AppState>, host_ids: Vec<String>, with_keys: bool, with_passwords: bool) -> Res<String> {
+    let ex = sshconfig::render(&state.store.state.lock().vault, &host_ids, with_keys, with_passwords);
+    let home = dirs::home_dir().ok_or("No home folder")?;
+    sshconfig::write(&home.join(".ssh"), &ex).map_err(e)
 }
 
 #[tauri::command]
@@ -880,6 +895,8 @@ pub fn run() {
             save_host,
             delete_host,
             import_termix,
+            ssh_config_preview,
+            ssh_config_export,
             list_snippets,
             save_snippet,
             delete_snippet,

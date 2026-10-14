@@ -627,3 +627,26 @@ details .field + .field { margin-top: 10px; }
 .note pre { max-height: 160px; overflow: auto; font-size: 11.5px; background: #171a22; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; }
 .fs-status.warn { color: #ffd27a; }
 .fs-status.warn .dot-st { background: var(--warn); }
+
+/* ssh config export */
+.sx-modal { width: min(960px, 94vw); height: min(640px, 90vh); display: flex; flex-direction: column; gap: 12px; }
+.sx-head { display: flex; align-items: center; }
+.sx-head h3 { margin: 0; }
+.sx-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 340px 1fr; gap: 14px; }
+.sx-left { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.sx-search { width: 100%; background: #171a22; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; outline: none; }
+.sx-search:focus { border-color: var(--accent); }
+.sx-tree { flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 6px; background: #12141a; }
+.sx-row, .sx-all, .sx-opt, .sx-host { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.sx-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; flex: 1; padding: 4px 2px; }
+.sx-host { padding: 3px 4px 3px 44px; border-radius: 6px; font-size: 13px; }
+.sx-host:hover, .sx-row:hover { background: rgba(255, 255, 255, 0.04); border-radius: 6px; }
+.sx-host .muted { margin-left: auto; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.sx-caret { display: grid; place-items: center; width: 20px; height: 20px; border: 0; background: none; color: var(--muted); cursor: pointer; transition: transform 0.12s; }
+.sx-caret.on { transform: rotate(90deg); }
+.sx-dot { width: 8px; height: 8px; border-radius: 50%; }
+.sx-all { padding: 2px 4px; }
+.sx-opt { font-size: 12.5px; color: var(--muted); }
+.sx-right { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.sx-note { font-size: 12px; }
+.sx-preview { flex: 1; margin: 0; overflow: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: #12141a; font-family: "JetBrains Mono", monospace; font-size: 12.5px; white-space: pre; }
