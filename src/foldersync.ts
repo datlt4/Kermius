@@ -18,7 +18,17 @@ interface Live {
   dir: string;
   /** Bytes already counted into the session totals for the current rsync step. */
   counted: number;
+  /** Scan progress per side and when the run started. */
+  scan: Partial<Record<"a" | "b", { files: number; dirs: number; bytes: number }>>;
+  started: number;
 }
+
+const newLive = (): Live => ({ phase: "connecting", message: "", pct: 0, rate: 0, dir: "", counted: 0, scan: {}, started: Date.now() });
+
+const elapsed = (since: number) => {
+  const s = Math.floor((Date.now() - since) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
 
 /** Bytes moved this session (up = to remotes, down = from remotes). */
 const totals = { up: 0, down: 0, local: 0 };
@@ -104,7 +114,17 @@ function sideLabel(ep: FsEndpoint, ctx: FolderSyncCtx) {
 
 function status(job: FsJob) {
   const l = live.get(job.id);
-  if (l) return { cls: "busy", text: l.phase === "syncing" ? `Syncing ${l.pct}%` : `${l.phase[0].toUpperCase()}${l.phase.slice(1)}… ${l.message}` };
+  if (l) {
+    const t = elapsed(l.started);
+    if (l.phase === "syncing") return { cls: "busy", text: `Syncing ${l.pct}% · ${t}` };
+    if (l.phase === "scanning") {
+      const sides = (["a", "b"] as const)
+        .filter((k) => l.scan[k])
+        .map((k) => `${k.toUpperCase()}: ${fmtNum(l.scan[k]!.files)} files, ${fmtNum(l.scan[k]!.dirs)} folders, ${fmtBytes(l.scan[k]!.bytes)}`);
+      return { cls: "busy", text: `Scanning ${l.message} · ${t}${sides.length ? ` · ${sides.join(" | ")}` : ""}` };
+    }
+    return { cls: "busy", text: `${l.phase[0].toUpperCase()}${l.phase.slice(1)}… ${l.message} · ${t}` };
+  }
   if (!job.lastResult) return { cls: "", text: "Never synced" };
   if (job.lastResult.startsWith(OFFLINE)) return { cls: "off", text: `Offline · ${job.lastResult.slice(OFFLINE.length)}` };
   const ok = /^Up to date$|copied|deleted|conflicts kept/.test(job.lastResult);
@@ -136,6 +156,8 @@ function watchStatus(job: FsJob) {
 
 /** Listen for run progress and watcher state from the backend (manual and automatic runs alike). */
 export async function listenFolderSync(ctx: FolderSyncCtx) {
+  // Keep elapsed times ticking while something runs.
+  setInterval(() => live.size && ctx.rerender(), 1000);
   for (const [k, [state, message]] of Object.entries(await api.fsyncWatchStates().catch(() => ({})))) watching.set(k, { state, message });
   await listen<FsEvent>("fsync", async ({ payload: ev }) => {
     if (ev.type === "watch") watching.set(`${ev.id}:${ev.side}`, { state: ev.state, message: ev.message });
@@ -143,8 +165,9 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
       live.delete(ev.id);
       await loadJobs();
     } else {
-      const l = live.get(ev.id) ?? { phase: "connecting", message: "", pct: 0, rate: 0, dir: "", counted: 0 };
-      if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message, rate: 0, counted: 0 });
+      const l = live.get(ev.id) ?? newLive();
+      if (ev.type === "scan") l.scan[ev.side] = { files: ev.files, dirs: ev.dirs, bytes: ev.bytes };
+      else if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message, rate: 0, counted: 0 });
       else {
         if (ev.done < l.counted) l.counted = 0; // next rsync step started
         totals[ev.dir] += ev.done - l.counted;
@@ -260,7 +283,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
 /** Run or preview; progress arrives through `listenFolderSync`. */
 export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, quiet = false) {
   if (live.has(id)) return;
-  live.set(id, { phase: "connecting", message: "", pct: 0, rate: 0, dir: "", counted: 0 });
+  live.set(id, newLive());
   ctx.rerender();
   try {
     const r = await api.fsyncRun(id, dryRun);
