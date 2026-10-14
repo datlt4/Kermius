@@ -607,8 +607,9 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
                     Ok((s, _)) => s.clone(),
                     Err(err) => err.clone(),
                 };
-                if result.is_ok() {
+                if let Ok((_, plan)) = &result {
                     j.last_run = now_ms();
+                    j.conflicts = plan.open_conflicts;
                 }
             }
         }
@@ -625,6 +626,31 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
 #[tauri::command]
 async fn fsync_run(app: tauri::AppHandle, id: String, dry_run: bool) -> Res<SyncOutcome> {
     run_job(app, id, dry_run).await
+}
+
+fn fsync_job(state: &AppState, id: &str) -> Res<foldersync::Job> {
+    state.store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or_else(|| "Job not found".into())
+}
+
+#[tauri::command]
+async fn fsync_conflicts(state: State<'_, AppState>, id: String) -> Res<Vec<foldersync::Conflict>> {
+    let job = fsync_job(&state, &id)?;
+    tauri::async_runtime::spawn_blocking(move || foldersync::list_conflicts(&job)).await.map_err(e)?
+}
+
+#[tauri::command]
+fn fsync_read(state: State<AppState>, id: String, path: String) -> Res<String> {
+    foldersync::read_text(&fsync_job(&state, &id)?, &path)
+}
+
+/// Resolve one conflict copy, then sync so the result reaches the other side.
+#[tauri::command]
+fn fsync_resolve(app: tauri::AppHandle, state: State<AppState>, id: String, path: String, action: String, merged: Option<String>) -> Res<()> {
+    foldersync::resolve(&fsync_job(&state, &id)?, &path, &action, merged)?;
+    tauri::async_runtime::spawn(async move {
+        let _ = run_job(app, id, false).await;
+    });
+    Ok(())
 }
 
 /// Current watcher states, for UIs opened after the watchers started.
@@ -767,6 +793,9 @@ pub fn run() {
             fsync_delete,
             fsync_run,
             fsync_watch_states,
+            fsync_conflicts,
+            fsync_read,
+            fsync_resolve,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kermius");

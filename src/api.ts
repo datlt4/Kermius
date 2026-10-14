@@ -90,6 +90,15 @@ export interface FsJob {
   watch: boolean;
   lastRun: number;
   lastResult: string;
+  conflicts: number;
+}
+
+export interface FsConflict {
+  path: string;
+  original: string;
+  originalExists: boolean;
+  size: number;
+  mtime: number;
 }
 
 export type FsEvent = { id: string } & (
@@ -162,6 +171,10 @@ const tauriApi = {
   fsyncSave: (job: FsJob) => invoke<FsJob>("fsync_save", { job }),
   fsyncDelete: (id: string) => invoke<void>("fsync_delete", { id }),
   fsyncRun: (id: string, dryRun: boolean) => invoke<{ summary: string; plan: FsPlan }>("fsync_run", { id, dryRun }),
+  fsyncConflicts: (id: string) => invoke<FsConflict[]>("fsync_conflicts", { id }),
+  fsyncRead: (id: string, path: string) => invoke<string>("fsync_read", { id, path }),
+  fsyncResolve: (id: string, path: string, action: "current" | "conflict" | "both" | "merged", merged?: string) =>
+    invoke<void>("fsync_resolve", { id, path, action, merged }),
   fsyncWatchStates: () => invoke<Record<string, [string, string]>>("fsync_watch_states"),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),

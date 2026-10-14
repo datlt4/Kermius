@@ -147,6 +147,9 @@ export const webApi: Api = {
   fsyncSave: unsupported,
   fsyncDelete: unsupported,
   fsyncRun: unsupported,
+  fsyncConflicts: unsupported,
+  fsyncRead: unsupported,
+  fsyncResolve: unsupported,
   fsyncWatchStates: async () => ({}),
   importTermix: unsupported,
   copyPassword: async (id: string) => {

@@ -41,6 +41,8 @@ pub struct Job {
     pub watch: bool,
     pub last_run: i64,
     pub last_result: String,
+    /// Unresolved `.sync-conflict-` files after the last run (two-way only).
+    pub conflicts: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -247,6 +249,9 @@ pub struct Plan {
     /// Folder entries in the lists above (summaries count files only).
     #[serde(skip)]
     pub dirs: BTreeSet<String>,
+    /// Conflict copies present after the run.
+    #[serde(skip)]
+    pub open_conflicts: u32,
 }
 
 impl Plan {
@@ -323,6 +328,99 @@ fn chrono_like_now() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+// ---------- conflict resolution ----------
+
+/// `dir/note.sync-conflict-20261014-093015.md` → `dir/note.md`.
+pub fn conflict_original(rel: &str) -> Option<String> {
+    let (dir, file) = rel.rsplit_once('/').map_or(("", rel), |(d, f)| (d, f));
+    let i = file.find(".sync-conflict-")?;
+    let rest = &file[i + ".sync-conflict-".len()..];
+    let ts = rest.get(..15)?;
+    if !ts.bytes().enumerate().all(|(k, b)| if k == 8 { b == b'-' } else { b.is_ascii_digit() }) {
+        return None;
+    }
+    let name = format!("{}{}", &file[..i], &rest[15..]);
+    Some(if dir.is_empty() { name } else { format!("{dir}/{name}") })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conflict {
+    pub path: String,
+    pub original: String,
+    pub original_exists: bool,
+    pub size: u64,
+    pub mtime: i64,
+}
+
+/// The job's local folder (conflict copies are synced to both sides, so one is enough).
+pub fn local_root(job: &Job) -> Option<PathBuf> {
+    [&job.a, &job.b].into_iter().find(|e| e.kind != "remote").map(|e| PathBuf::from(&e.path))
+}
+
+pub fn list_conflicts(job: &Job) -> Result<Vec<Conflict>, String> {
+    let root = local_root(job).ok_or("No local folder")?;
+    if !root.is_dir() {
+        return Err(format!("{OFFLINE}{} not found", root.to_string_lossy()));
+    }
+    let tree = scan_local(&root, &job.excludes)?;
+    Ok(tree
+        .iter()
+        .filter(|(_, m)| !m.dir)
+        .filter_map(|(p, m)| {
+            conflict_original(p).map(|o| Conflict { original_exists: tree.contains_key(&o), path: p.clone(), original: o, size: m.size, mtime: m.mtime })
+        })
+        .collect())
+}
+
+/// Resolve a path inside the job's local folder, refusing `..` escapes.
+pub fn local_file(job: &Job, rel: &str) -> Result<PathBuf, String> {
+    if rel.split('/').any(|c| c == ".." || c.is_empty()) || rel.starts_with('/') {
+        return Err("Invalid path".into());
+    }
+    Ok(local_root(job).ok_or("No local folder")?.join(rel))
+}
+
+/// Text content for the diff view (refuses large or binary files).
+pub fn read_text(job: &Job, rel: &str) -> Result<String, String> {
+    let p = local_file(job, rel)?;
+    let meta = std::fs::metadata(&p).map_err(e)?;
+    if meta.len() > 2 * 1024 * 1024 {
+        return Err("File is too large to compare here".into());
+    }
+    let bytes = std::fs::read(p).map_err(e)?;
+    if bytes.contains(&0) {
+        return Err("Binary file".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "Not a UTF-8 text file".into())
+}
+
+/// `current`: keep the original, drop the copy. `conflict`: the copy replaces the original.
+/// `both`: keep both under a normal name. `merged`: write `merged` to the original, drop the copy.
+pub fn resolve(job: &Job, rel: &str, action: &str, merged: Option<String>) -> Result<(), String> {
+    let copy = local_file(job, rel)?;
+    let original_rel = conflict_original(rel).ok_or("Not a conflict file")?;
+    let original = local_file(job, &original_rel)?;
+    match action {
+        "current" => std::fs::remove_file(&copy).map_err(e),
+        "conflict" => std::fs::rename(&copy, &original).map_err(e),
+        "both" => {
+            let ts = &rel[rel.find(".sync-conflict-").unwrap() + 15..][..15];
+            let name = original.file_name().unwrap().to_string_lossy().into_owned();
+            let kept = match name.rsplit_once('.') {
+                Some((stem, ext)) if !stem.is_empty() => format!("{stem} (conflict {ts}).{ext}"),
+                _ => format!("{name} (conflict {ts})"),
+            };
+            std::fs::rename(&copy, copy.with_file_name(kept)).map_err(e)
+        }
+        "merged" => {
+            std::fs::write(&original, merged.ok_or("Nothing to save")?).map_err(e)?;
+            std::fs::remove_file(&copy).map_err(e)
+        }
+        _ => Err("Unknown action".into()),
+    }
 }
 
 // ---------- executing ----------
@@ -496,6 +594,8 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
     }
     let (na, nb) = (scan(&a, &job.excludes).await?, scan(&b, &job.excludes).await?);
     save_state(&store, &job.id, &common(&na, &nb))?;
+    let names: BTreeSet<&String> = na.keys().chain(nb.keys()).filter(|p| conflict_original(p).is_some()).collect();
+    plan.open_conflicts = names.len() as u32;
     Ok((summary(&plan), plan))
 }
 
@@ -565,6 +665,10 @@ mod tests {
         assert!(conflict_name("dir/report.pdf").starts_with("dir/report.sync-conflict-"));
         assert!(conflict_name("dir/report.pdf").ends_with(".pdf"));
         assert_eq!(chrono_like_now().len(), 15);
+        assert_eq!(conflict_original("dir/report.sync-conflict-20261014-093015.pdf").as_deref(), Some("dir/report.pdf"));
+        assert_eq!(conflict_original("Makefile.sync-conflict-20261014-093015").as_deref(), Some("Makefile"));
+        assert_eq!(conflict_original(&conflict_name("a/b.md")).as_deref(), Some("a/b.md"));
+        assert!(conflict_original("notes.md").is_none());
     }
 }
 
@@ -632,6 +736,19 @@ mod e2e {
         let ep = |p: &Path| Endpoint { kind: "local".into(), path: p.to_string_lossy().into(), hosts: vec![] };
         let job = Job { id: "j1".into(), mode: "twoway".into(), a: ep(&a), b: ep(&b), ..Default::default() };
         scenario(store.clone(), job.clone(), a.clone(), b.clone()).await;
+
+        // Resolve the conflict with merged text; the next run spreads it and removes the copies.
+        let list = list_conflicts(&job).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].original, "docs/one.txt");
+        assert_eq!(read_text(&job, &list[0].path).unwrap(), "A edit");
+        assert!(local_file(&job, "../etc/passwd").is_err());
+        resolve(&job, &list[0].path, "merged", Some("merged text".into())).unwrap();
+        let (_, plan) = run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        assert_eq!(plan.open_conflicts, 0);
+        assert_eq!(std::fs::read_to_string(b.join("docs/one.txt")).unwrap(), "merged text");
+        assert!(list_conflicts(&job).unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(b.join("docs")).unwrap().count(), 1);
 
         // A side that is suddenly empty (unmounted disk) must not wipe the other side.
         std::fs::remove_dir_all(&b).unwrap();
