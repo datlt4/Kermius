@@ -14,7 +14,10 @@ class IpcChannel {
   private sid = "";
   /** Bytes received, and the latest TCP round-trip time (µs, 0 = unknown). */
   received = 0;
+  sent = 0;
   rtt = 0;
+  /** Called with the first bytes from the server (its protocol greeting). */
+  onFirstData: ((d: ArrayBuffer) => void) | null = null;
 
   /** Data that arrived before noVNC attached (servers greet immediately). */
   private early: ArrayBuffer[] = [];
@@ -39,6 +42,7 @@ class IpcChannel {
   async open(hostId: string, onEnd: (message: string) => void) {
     const data = new Channel<ArrayBuffer>();
     data.onmessage = (d) => {
+      if (!this.received) this.onFirstData?.(d);
       this.received += d.byteLength;
       if (this.handler && !this.early.length) this.handler(new MessageEvent("message", { data: d }));
       else this.early.push(d);
@@ -56,6 +60,7 @@ class IpcChannel {
   }
 
   send(d: ArrayBuffer | Uint8Array) {
+    this.sent += d.byteLength;
     // Copy: noVNC reuses its send buffer.
     if (this.sid) api.sessionWrite(this.sid, new Uint8Array(d instanceof Uint8Array ? d : new Uint8Array(d)));
   }
@@ -79,6 +84,8 @@ type RfbInternals = {
   _FBU?: { encoding: number };
   _fbWidth: number;
   _fbHeight: number;
+  _fbName?: string;
+  _rfbInitState?: string;
 };
 
 /** RFB encoding numbers → names (data rectangles only). */
@@ -135,6 +142,10 @@ export class VncTab {
       }
       const o = t.closest<HTMLElement>("[data-o]")?.dataset.o;
       if (o === "retry") this.connect();
+      else if (o === "logs") {
+        localStorage.setItem("kermius.showLogs", localStorage.getItem("kermius.showLogs") === "1" ? "" : "1");
+        this.setState(this.state, this.el.querySelector(".ov-card .err")?.textContent ?? "");
+      }
       else if (o === "close") this.onClose(this);
     });
   }
@@ -148,7 +159,10 @@ export class VncTab {
   async connect() {
     this.rfb?.disconnect();
     this.channel?.close();
+    clearInterval(this.stepTimer);
+    this.logs = [];
     this.setState("connecting");
+    this.addLog(`Connecting to ${this.host.address}:${this.host.port || 5900}`);
     const screen = this.el.querySelector<HTMLElement>(".vnc-screen")!;
     screen.innerHTML = "";
     try {
@@ -156,9 +170,18 @@ export class VncTab {
       const { default: RFB } = await import("@novnc/novnc");
       const channel = new IpcChannel();
       this.channel = channel;
-      await channel.open(this.host.id, (msg) => msg && this.setState("error", msg));
+      channel.onFirstData = (d) => {
+        const head = new TextDecoder().decode(new Uint8Array(d.slice(0, 12))).trim();
+        this.addLog(head.startsWith("RFB") ? `Server greeting: ${head}` : `Server sent ${d.byteLength} bytes that are not a VNC greeting`);
+      };
+      await channel.open(this.host.id, (msg) => {
+        this.addLog(msg ? `Connection error: ${msg}` : "Server closed the connection");
+        if (msg) this.setState("error", msg);
+      });
+      this.addLog("TCP connection open");
       const rfb = new RFB(screen, channel) as unknown as Rfb;
       this.rfb = rfb;
+      this.watchSteps(rfb as unknown as RfbInternals, channel);
       rfb.scaleViewport = this.el.querySelector('[data-v="scale"]')!.classList.contains("on");
       rfb.background = "#0b0d12";
       rfb.viewOnly = !this.el.querySelector('[data-v="control"]')!.classList.contains("on");
@@ -172,28 +195,82 @@ export class VncTab {
       }
       this.watchStats(rfb as unknown as RfbInternals, channel);
       rfb.addEventListener("connect", () => {
+        const r = rfb as unknown as RfbInternals;
+        this.addLog(`Connected: ${r._fbWidth}×${r._fbHeight}${r._fbName ? ` "${r._fbName}"` : ""}`);
         this.setState("connected");
         rfb.focus();
         this.sendClipboard();
       });
       rfb.addEventListener("disconnect", (e) => {
         if (this.rfb !== rfb) return;
+        this.addLog(e.detail?.clean ? "Disconnected" : "Connection lost");
         if (e.detail?.clean) this.setState("closed");
         else if (this.state !== "error") this.setState("error", "Connection lost");
       });
       rfb.addEventListener("credentialsrequired", async (e) => {
         const types: string[] = e.detail?.types ?? ["password"];
+        this.addLog(`Server asks for: ${types.join(", ")}`);
         const password = await api.vncPassword(this.host.id).catch(() => "");
         if (!password) return this.setState("error", "This VNC server needs a password: set it in the host's settings");
         rfb.sendCredentials({ password, ...(types.includes("username") ? { username: this.host.username } : {}) });
       });
-      rfb.addEventListener("securityfailure", (e) => this.setState("error", `Authentication failed${e.detail?.reason ? `: ${e.detail.reason}` : ""}`));
+      rfb.addEventListener("securityfailure", (e) => {
+        this.addLog(`Security failure${e.detail?.reason ? `: ${e.detail.reason}` : ""}`);
+        this.setState("error", `Authentication failed${e.detail?.reason ? `: ${e.detail.reason}` : ""}`);
+      });
     } catch (e) {
+      this.addLog(`Error: ${e}`);
       this.setState("error", String(e));
     }
   }
 
   private statsTimer = 0;
+  private stepTimer = 0;
+  private logs: string[] = [];
+
+  private addLog(line: string) {
+    const t = new Date().toLocaleTimeString();
+    this.logs.push(`${t}  ${line}`);
+    const list = this.el.querySelector(".logs");
+    if (list) {
+      list.insertAdjacentHTML("beforeend", `<div>${esc(this.logs[this.logs.length - 1])}</div>`);
+      list.scrollTop = list.scrollHeight;
+    }
+  }
+
+  private logsHtml() {
+    const open = localStorage.getItem("kermius.showLogs") === "1";
+    return `<button class="btn ghost sm" data-o="logs">${open ? "Hide logs" : "Show logs"}</button>
+      ${open ? `<div class="logs">${this.logs.map((l) => `<div>${esc(l)}</div>`).join("")}</div>` : ""}`;
+  }
+
+  /** Log handshake steps (noVNC 1.7 internal state) and, while stuck, the byte counts. */
+  private watchSteps(rfb: RfbInternals, channel: IpcChannel) {
+    const names: Record<string, string> = {
+      ProtocolVersion: "Exchanging protocol versions",
+      Security: "Choosing a security type",
+      Authentication: "Authenticating",
+      SecurityResult: "Waiting for the authentication result",
+      SecurityReason: "Server refused the connection",
+      ClientInitialisation: "Sending client settings",
+      ServerInitialisation: "Waiting for the desktop size and name",
+    };
+    let last = "";
+    let since = Date.now();
+    clearInterval(this.stepTimer);
+    this.stepTimer = window.setInterval(() => {
+      if (this.state !== "connecting") return clearInterval(this.stepTimer);
+      const step = rfb._rfbInitState ?? "";
+      if (step && step !== last) {
+        last = step;
+        since = Date.now();
+        this.addLog(names[step] ?? step);
+      } else if (Date.now() - since > 5000) {
+        since = Date.now();
+        this.addLog(`Still waiting (${names[last] ?? "starting"}): received ${channel.received} B, sent ${channel.sent} B`);
+      }
+    }, 200);
+  }
   private lastClip = "";
 
   /** Push the local clipboard to the remote if it changed since we last saw it. */
@@ -260,11 +337,13 @@ export class VncTab {
     const port = this.host.port || 5900;
     ov.innerHTML =
       s === "connecting"
-        ? `<div class="ov-card"><h3>${esc(this.host.name)}</h3><p class="muted">VNC · ${esc(this.host.address)}:${port}</p><div class="progress"><i></i></div></div>`
+        ? `<div class="ov-card"><h3>${esc(this.host.name)}</h3><p class="muted">VNC · ${esc(this.host.address)}:${port}</p><div class="progress"><i></i></div>
+            ${this.logsHtml()}</div>`
         : s === "connected"
           ? ""
           : `<div class="ov-card"><h3>${esc(this.host.name)}</h3><p class="${s === "error" ? "err" : "muted"}">${esc(message || "Disconnected")}</p>
-             <div class="row"><button class="btn primary" data-o="retry">Reconnect</button><button class="btn ghost" data-o="close">Close</button></div></div>`;
+             <div class="row"><button class="btn primary" data-o="retry">Reconnect</button><button class="btn ghost" data-o="close">Close</button></div>
+             ${this.logsHtml()}</div>`;
     this.onChange();
   }
 
@@ -293,6 +372,7 @@ export class VncTab {
 
   dispose() {
     clearInterval(this.statsTimer);
+    clearInterval(this.stepTimer);
     removeEventListener("focus", this.onFocus);
     const rfb = this.rfb;
     this.rfb = null;
