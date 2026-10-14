@@ -25,7 +25,7 @@ function diff(a: string[], b: string[]): Op[] {
 
 /** Side-by-side rows: changed blocks are paired line by line. */
 function rows(ops: Op[]) {
-  const out: { l: string | null; r: string | null; kind: string }[] = [];
+  const out: Row[] = [];
   for (let k = 0; k < ops.length; ) {
     if (ops[k].t === "same") {
       out.push({ l: ops[k].line, r: ops[k].line, kind: "same" });
@@ -37,7 +37,32 @@ function rows(ops: Op[]) {
     while (k < ops.length && ops[k].t !== "same") (ops[k].t === "del" ? dels : adds).push(ops[k++].line);
     for (let x = 0; x < Math.max(dels.length, adds.length); x++) out.push({ l: dels[x] ?? null, r: adds[x] ?? null, kind: "chg" });
   }
-  return out;
+  return collapse(out);
+}
+
+type Row = { l: string | null; r: string | null; kind: string };
+const CONTEXT = 3;
+const MAX_ROWS = 2000;
+
+/** Big files would freeze the page: show only changes with a little context, and at most MAX_ROWS rows. */
+function collapse(all: Row[]): Row[] {
+  const near = all.map(() => false);
+  all.forEach((r, i) => {
+    if (r.kind === "chg") for (let k = Math.max(0, i - CONTEXT); k <= Math.min(all.length - 1, i + CONTEXT); k++) near[k] = true;
+  });
+  const out: Row[] = [];
+  for (let i = 0; i < all.length; ) {
+    if (near[i]) {
+      out.push(all[i++]);
+      continue;
+    }
+    let n = 0;
+    while (i < all.length && !near[i]) n++, i++;
+    out.push({ l: null, r: null, kind: `skip:${n} unchanged line${n === 1 ? "" : "s"}` });
+  }
+  if (out.length <= MAX_ROWS) return out;
+  const rest = out.length - MAX_ROWS;
+  return [...out.slice(0, MAX_ROWS), { l: null, r: null, kind: `skip:${rest} more rows not shown` }];
 }
 
 const tsLabel = (path: string) => {
@@ -86,8 +111,10 @@ export async function conflictsDialog(job: FsJob, onDone: () => void) {
     const textual = typeof mine === "string" && typeof theirs === "string";
     const table = textual
       ? `<div class="cf-diff">${rows(diff(mine.split("\n"), theirs.split("\n")))
-          .map(
-            (r) => `<div class="cf-row ${r.kind}"><pre class="${r.l === null ? "gap" : r.kind === "chg" ? "del" : ""}">${r.l === null ? "" : esc(r.l) || " "}</pre>
+          .map((r) =>
+            r.kind.startsWith("skip:")
+              ? `<div class="cf-skip">⋯ ${esc(r.kind.slice(5))}</div>`
+              : `<div class="cf-row ${r.kind}"><pre class="${r.l === null ? "gap" : r.kind === "chg" ? "del" : ""}">${r.l === null ? "" : esc(r.l) || " "}</pre>
               <pre class="${r.r === null ? "gap" : r.kind === "chg" ? "add" : ""}">${r.r === null ? "" : esc(r.r) || " "}</pre></div>`,
           )
           .join("")}</div>`
