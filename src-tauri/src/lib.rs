@@ -324,26 +324,65 @@ async fn ssh_upload(state: State<'_, AppState>, request: tauri::ipc::Request<'_>
     upload_to_session(&state, &header("sid"), &header("ext"), data.clone()).await
 }
 
+/// Clipboard image encoded as PNG.
+#[cfg(desktop)]
+fn clipboard_png(app: &tauri::AppHandle) -> Res<Vec<u8>> {
+    let img = app.clipboard().read_image().map_err(|_| "No image in the clipboard".to_string())?;
+    let mut png_bytes = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut png_bytes, img.width(), img.height());
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().and_then(|mut w| w.write_image_data(img.rgba())).map_err(e)?;
+    }
+    Ok(png_bytes)
+}
+
 /// Upload the clipboard image (as PNG) to the session's host.
 #[tauri::command]
 async fn ssh_paste_image(app: tauri::AppHandle, state: State<'_, AppState>, sid: String) -> Res<String> {
     #[cfg(desktop)]
-    {
-        let img = app.clipboard().read_image().map_err(|_| "No image in the clipboard".to_string())?;
-        let mut png_bytes = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut png_bytes, img.width(), img.height());
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header().and_then(|mut w| w.write_image_data(img.rgba())).map_err(e)?;
-        }
-        upload_to_session(&state, &sid, "png", png_bytes).await
-    }
+    return upload_to_session(&state, &sid, "png", clipboard_png(&app)?).await;
     #[cfg(mobile)]
     {
         let _ = (app, state, sid);
         Err("Not available on mobile".into())
     }
+}
+
+/// Save the clipboard image to the local temp dir (for local terminals); returns its path.
+#[tauri::command]
+fn save_clipboard_image(app: tauri::AppHandle) -> Res<String> {
+    #[cfg(desktop)]
+    {
+        let dir = std::env::temp_dir().join("kermius-images");
+        std::fs::create_dir_all(&dir).map_err(e)?;
+        let path = dir.join(format!("{}.png", uuid::Uuid::new_v4()));
+        std::fs::write(&path, clipboard_png(&app)?).map_err(e)?;
+        Ok(path.to_string_lossy().into_owned())
+    }
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        Err("Not available on mobile".into())
+    }
+}
+
+/// Whether a host (incl. its identity) has a password to type.
+#[tauri::command]
+fn host_has_password(state: State<AppState>, host_id: String) -> bool {
+    state.host(&host_id).map(|h| !h.password.is_empty()).unwrap_or(false)
+}
+
+/// Type the host's password into the session (e.g. at a sudo prompt) without exposing it to the UI.
+#[tauri::command]
+fn ssh_send_password(state: State<AppState>, sid: String, host_id: String) -> Res<()> {
+    let password = state.host(&host_id)?.password;
+    if password.is_empty() {
+        return Err("This host has no password".into());
+    }
+    send_cmd(&state, &sid, ssh::Cmd::Data(password.into_bytes()));
+    Ok(())
 }
 
 #[tauri::command]
@@ -526,6 +565,7 @@ pub fn cli_import(path: &str) -> anyhow::Result<String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
@@ -561,7 +601,10 @@ pub fn run() {
             ssh_write,
             ssh_upload,
             ssh_paste_image,
+            save_clipboard_image,
             ssh_resize,
+            host_has_password,
+            ssh_send_password,
             ssh_close,
             trust_new_host_key,
             tunnel_start,

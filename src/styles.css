@@ -422,6 +422,7 @@ details .field + .field { margin-top: 10px; }
 .sess-tools:hover, .sess-tools:has(.up-prog:not([hidden])) { opacity: 1; }
 .sess-tools button { width: 28px; height: 26px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); }
 .sess-tools button:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.sess-tools button:disabled { opacity: 0.3; cursor: not-allowed; background: none; }
 .up-prog { display: flex; align-items: center; gap: 8px; padding: 0 8px; font-size: 12px; color: var(--muted); }
 .up-prog .bar { width: 90px; height: 4px; border-radius: 4px; background: #343a49; overflow: hidden; }
 .up-prog .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.1s; }
