@@ -363,7 +363,7 @@ export class Session {
         this.setState("connected");
         this.term.focus();
       } else if (s.type === "closed") this.setState("closed");
-      else this.fail(s.message);
+      else if (s.type === "error") this.fail(s.message);
     };
     try {
       const { cols, rows } = this.term;

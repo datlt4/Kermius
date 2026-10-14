@@ -145,6 +145,8 @@ pub enum Status {
     Log { message: String },
     /// Upload progress 0..1 for image/file uploads.
     Upload { progress: f64 },
+    /// Round-trip time of a raw TCP session (VNC), from the kernel's TCP stats.
+    Rtt { micros: u32 },
 }
 
 /// Terminal output flow control: the UI acks bytes it has rendered; past HIGH unacked bytes

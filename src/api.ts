@@ -148,7 +148,8 @@ export type Status =
   | { type: "closed" }
   | { type: "error"; message: string }
   | { type: "log"; message: string }
-  | { type: "upload"; progress: number };
+  | { type: "upload"; progress: number }
+  | { type: "rtt"; micros: number };
 
 export const emptyHost = (): Host => ({
   id: "", name: "", address: "", port: 22, username: "", password: "", privateKey: "",
