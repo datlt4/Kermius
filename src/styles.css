@@ -595,3 +595,10 @@ details .field + .field { margin-top: 10px; }
 .fs-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; padding: 8px 10px; background: #1a1d26; border: 1px solid var(--border); border-radius: 10px; }
 .fs-opts .check { font-size: 12.5px; }
 .fs-exc-btns { margin-top: -4px; }
+
+/* Folder Sync activity indicator on the sidebar icon */
+.nav-item { position: relative; }
+.nav-dot { position: absolute; left: 24px; top: 6px; width: 8px; height: 8px; border-radius: 50%; display: none; box-shadow: 0 0 0 2px var(--bg-side); }
+.nav-dot.scanning { display: block; background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.nav-dot.copying { display: block; background: var(--danger); animation: pulse 0.8s ease-in-out infinite; }
+.side-collapsed .nav-dot { left: 34px; }

@@ -1,4 +1,5 @@
-use crate::ssh::{Cmd, Status};
+use crate::ssh::{Cmd, Flow, Status};
+use std::sync::Arc;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -23,6 +24,7 @@ pub fn spawn(
     rows: u32,
     on_data: Channel<InvokeResponseBody>,
     on_status: Channel<Status>,
+    flow: Arc<Flow>,
 ) -> Result<mpsc::UnboundedSender<Cmd>, String> {
     let e = |err: anyhow::Error| err.to_string();
     let pair = native_pty_system().openpty(size(cols, rows)).map_err(e)?;
@@ -41,7 +43,13 @@ pub fn spawn(
     let status = on_status.clone();
     std::thread::spawn(move || {
         let mut buf = vec![0u8; 64 * 1024];
-        while let Ok(n @ 1..) = reader.read(&mut buf) {
+        loop {
+            // Stop reading while the UI is behind: the shell's writes then block (backpressure).
+            if flow.blocked() {
+                flow.wait_drained();
+            }
+            let Ok(n @ 1..) = reader.read(&mut buf) else { break };
+            flow.sent(n);
             if on_data.send(InvokeResponseBody::Raw(buf[..n].to_vec())).is_err() {
                 break;
             }

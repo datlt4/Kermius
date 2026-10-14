@@ -211,6 +211,7 @@ const tauriApi = {
   sshWrite: (sid: string, data: string) => invoke<void>("ssh_write", { sid, data }),
   hostHasPassword: (hostId: string) => invoke<boolean>("host_has_password", { hostId }),
   sshSendPassword: (sid: string, hostId: string) => invoke<void>("ssh_send_password", { sid, hostId }),
+  termAck: (sid: string, bytes: number) => invoke<void>("term_ack", { sid, bytes }),
   sshResize: (sid: string, cols: number, rows: number) => invoke<void>("ssh_resize", { sid, cols, rows }),
   sshClose: (sid: string) => invoke<void>("ssh_close", { sid }),
   trustNewHostKey: (hostId: string) => invoke<void>("trust_new_host_key", { hostId }),

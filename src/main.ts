@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
-import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, type FolderSyncCtx } from "./foldersync";
+import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
@@ -114,7 +114,12 @@ function renderSidebar() {
     ["settings", "settings", "Settings"],
   ];
   els.nav.innerHTML = nav
-    .map(([v, ic, label]) => `<button class="nav-item ${state.view === v && state.active === "home" ? "on" : ""}" data-view="${v}" title="${label}">${icon(ic)}<span>${label}</span></button>`)
+    .map(([v, ic, label]) => {
+      // Folder Sync indicator: yellow while scanning, red while copying.
+      const act = v === "foldersync" ? (syncActivity() ?? "") : null;
+      const dot = act === null ? "" : `<i class="nav-dot ${act}" data-act="${act}" title="${act ? `Folder Sync: ${act}` : ""}"></i>`;
+      return `<button class="nav-item ${state.view === v && state.active === "home" ? "on" : ""}" data-view="${v}" title="${label}">${icon(ic)}${dot}<span>${label}</span></button>`;
+    })
     .join("");
 
   const fs = folders();
@@ -581,6 +586,11 @@ const onFolderSync = () => state.view === "foldersync" && state.active === "home
 const folderSync: FolderSyncCtx = {
   hosts: () => state.hosts,
   rerender: () => onFolderSync() && renderFolderSync(els.page, folderSync),
+  activity: () => {
+    const act = syncActivity();
+    const dot = els.nav.querySelector<HTMLElement>('[data-view="foldersync"] .nav-dot');
+    if (dot && dot.dataset.act !== (act ?? "")) renderSidebar();
+  },
 };
 bindFolderSync(els.page, folderSync, onFolderSync);
 

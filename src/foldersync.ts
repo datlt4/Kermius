@@ -8,6 +8,15 @@ export interface FolderSyncCtx {
   hosts(): Host[];
   /** Re-render the page if it is showing. */
   rerender(): void;
+  /** Activity changed (sidebar indicator). */
+  activity(): void;
+}
+
+/** "copying" beats "scanning": drives the sidebar indicator (red / yellow). */
+export function syncActivity(): "copying" | "scanning" | null {
+  const phases = [...live.values()].map((l) => l.phase);
+  if (phases.includes("syncing")) return "copying";
+  return phases.length ? "scanning" : null;
 }
 
 interface Live {
@@ -183,6 +192,7 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
       live.set(ev.id, l);
     }
     ctx.rerender();
+    ctx.activity();
   });
 }
 
@@ -296,6 +306,7 @@ export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, qui
   if (live.has(id)) return;
   live.set(id, newLive());
   ctx.rerender();
+  ctx.activity();
   try {
     const r = await api.fsyncRun(id, dryRun);
     if (dryRun) previewDialog(jobs.find((j) => j.id === id)!, r.summary, r.plan);
