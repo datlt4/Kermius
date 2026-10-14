@@ -346,24 +346,20 @@ async fn sftp_copy(sftp: &SftpSession, dir: Direction, sources: &[String], dest:
     Ok(())
 }
 
-/// rsync with `-e "<kermius> --ssh-bridge <host id>"`, so it reuses the vault's credentials.
-async fn rsync_copy(host: &Host, dir: Direction, sources: &[String], dest: &str, events: &Channel<Event>) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(e)?;
-    let shell = format!("'{}' --ssh-bridge {}", exe.to_string_lossy().replace('\'', r"'\''"), host.id);
+/// rsync `-e` value that tunnels through `kermius --ssh-bridge`, reusing the vault's credentials.
+pub fn bridge_shell(host_id: &str) -> Result<String, String> {
+    // KERMIUS_BRIDGE_EXE: tests run from a test binary, so they point at the real app binary.
+    let exe = match std::env::var_os("KERMIUS_BRIDGE_EXE") {
+        Some(p) => PathBuf::from(p),
+        None => std::env::current_exe().map_err(e)?,
+    };
+    Ok(format!("'{}' --ssh-bridge {}", exe.to_string_lossy().replace('\'', r"'\''"), host_id))
+}
+
+/// Run rsync (with `--info=progress2` in `args`), reporting (bytes done, estimated total).
+pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new("rsync");
-    cmd.args(["-a", "-s", "--partial", "--info=progress2", "--no-inc-recursive", "-e", &shell]);
-    match dir {
-        Direction::Upload => {
-            cmd.args(sources);
-            cmd.arg(format!("kermius:{}/", dest.trim_end_matches('/')));
-        }
-        Direction::Download => {
-            for s in sources {
-                cmd.arg(format!("kermius:{}", s.trim_end_matches('/')));
-            }
-            cmd.arg(format!("{}/", dest.trim_end_matches('/')));
-        }
-    }
+    cmd.args(&args);
     // C locale: progress numbers use "," separators regardless of the user's locale.
     cmd.env("LC_ALL", "C").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|err| format!("rsync: {err}"))?;
@@ -389,7 +385,7 @@ async fn rsync_copy(host: &Host, dir: Direction, sources: &[String], dest: &str,
             if let (Some(bytes), Some(pct)) = (parts.next(), parts.next()) {
                 if let (Ok(b), Some(p)) = (bytes.replace(',', "").parse::<u64>(), pct.strip_suffix('%').and_then(|p| p.parse::<u64>().ok())) {
                     let total = if p > 0 { b * 100 / p } else { 0 };
-                    let _ = events.send(Event::Progress { done: b, total: total.max(b), file: String::new() });
+                    progress(b, total.max(b));
                 }
             }
         }
@@ -401,6 +397,26 @@ async fn rsync_copy(host: &Host, dir: Direction, sources: &[String], dest: &str,
     } else {
         Err(errors.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("rsync failed").to_string())
     }
+}
+
+async fn rsync_copy(host: &Host, dir: Direction, sources: &[String], dest: &str, events: &Channel<Event>) -> Result<(), String> {
+    let mut args: Vec<String> =
+        ["-a", "-s", "--partial", "--info=progress2", "--no-inc-recursive", "-e"].map(String::from).to_vec();
+    args.push(bridge_shell(&host.id)?);
+    match dir {
+        Direction::Upload => {
+            args.extend(sources.iter().cloned());
+            args.push(format!("kermius:{}/", dest.trim_end_matches('/')));
+        }
+        Direction::Download => {
+            args.extend(sources.iter().map(|s| format!("kermius:{}", s.trim_end_matches('/'))));
+            args.push(format!("{}/", dest.trim_end_matches('/')));
+        }
+    }
+    run_rsync(args, |done, total| {
+        let _ = events.send(Event::Progress { done, total, file: String::new() });
+    })
+    .await
 }
 
 /// `kermius --ssh-bridge <host id> <ignored host> <command...>`: act as rsync's remote shell.
