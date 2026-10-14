@@ -131,7 +131,7 @@ async fn watch_local(w: Who, path: String, tx: UnboundedSender<()>) {
         if let Err(err) = watcher.watch(Path::new(&path), RecursiveMode::Recursive) {
             // Out of inotify watches (huge trees): poll this side until the limit is raised.
             if matches!(err.kind, notify::ErrorKind::MaxFilesWatch) || err.to_string().contains("No space left") {
-                w.report("limit", "inotify watch limit reached on this computer; checking every minute");
+                w.report("limit", "inotify watch limit reached on this computer");
             } else {
                 w.report("polling", format!("{path}: {err}; checking every minute"));
             }

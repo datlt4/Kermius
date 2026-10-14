@@ -128,7 +128,7 @@ function watchStatus(job: FsJob) {
   if (w.state === "limit") {
     // Remote limits carry "<text>|<host id>"; local ones have no host.
     const [text, host] = w.message.split("|");
-    return { cls: "limit", text: `${text} — checking every minute instead`, limitHost: host ?? "local" };
+    return { cls: "limit", text: `${text}; checking every minute instead`, limitHost: host ?? "local" };
   }
   if (w.state === "polling") return { cls: "poll", text: `Checking every minute · ${w.message}`, limitHost: "" };
   return { cls: "ok", text: `Watching for changes${sides.map((x) => x.message).filter(Boolean).map((m) => ` · ${m}`).join("")}`, limitHost: "" };
