@@ -147,6 +147,51 @@ pub enum Status {
     Upload { progress: f64 },
 }
 
+/// Terminal output flow control: the UI acks bytes it has rendered; past HIGH unacked bytes
+/// we stop reading (the program or SSH server then blocks) until it drains below LOW.
+#[derive(Default)]
+pub struct Flow {
+    unacked: parking_lot::Mutex<u64>,
+    cv: parking_lot::Condvar,
+    notify: tokio::sync::Notify,
+}
+
+impl Flow {
+    const HIGH: u64 = 4 << 20;
+    const LOW: u64 = 1 << 20;
+
+    pub fn sent(&self, n: usize) {
+        *self.unacked.lock() += n as u64;
+    }
+
+    pub fn ack(&self, n: u64) {
+        let mut u = self.unacked.lock();
+        *u = u.saturating_sub(n);
+        if *u < Self::LOW {
+            self.cv.notify_all();
+            self.notify.notify_one();
+        }
+    }
+
+    pub fn blocked(&self) -> bool {
+        *self.unacked.lock() > Self::HIGH
+    }
+
+    /// For blocking reader threads: wait (re-checking every second) until drained.
+    pub fn wait_drained(&self) {
+        let mut u = self.unacked.lock();
+        while *u > Self::LOW {
+            self.cv.wait_for(&mut u, Duration::from_secs(1));
+        }
+    }
+
+    pub async fn drained(&self) {
+        while *self.unacked.lock() > Self::LOW {
+            self.notify.notified().await;
+        }
+    }
+}
+
 pub enum Cmd {
     Data(Vec<u8>),
     Resize(u32, u32),
@@ -186,6 +231,7 @@ pub fn spawn_shell(
     rows: u32,
     on_data: Channel<InvokeResponseBody>,
     on_status: Channel<Status>,
+    flow: Arc<Flow>,
 ) -> mpsc::UnboundedSender<Cmd> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     tauri::async_runtime::spawn(async move {
@@ -211,12 +257,14 @@ pub fn spawn_shell(
             let mut exited = false;
             loop {
                 tokio::select! {
-                    msg = ch.wait() => match msg {
+                    // Paused while the UI is behind; the SSH window then fills and the server stops sending.
+                    _ = flow.drained(), if flow.blocked() => {}
+                    msg = ch.wait(), if !flow.blocked() => match msg {
                         Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                             if buf.is_empty() { deadline = tokio::time::Instant::now() + flush_every; }
                             buf.extend_from_slice(&data);
                             if buf.len() >= 256 * 1024 {
-                                let _ = on_data.send(InvokeResponseBody::Raw(std::mem::take(&mut buf)));
+                                { flow.sent(buf.len()); let _ = on_data.send(InvokeResponseBody::Raw(std::mem::take(&mut buf))); }
                             }
                         }
                         Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::ExitSignal { .. }) => exited = true,
@@ -224,7 +272,7 @@ pub fn spawn_shell(
                         _ => {}
                     },
                     _ = tokio::time::sleep_until(deadline), if !buf.is_empty() => {
-                        let _ = on_data.send(InvokeResponseBody::Raw(std::mem::take(&mut buf)));
+                        { flow.sent(buf.len()); let _ = on_data.send(InvokeResponseBody::Raw(std::mem::take(&mut buf))); }
                     }
                     cmd = rx.recv() => match cmd {
                         Some(Cmd::Data(d)) => ch.data_bytes(d).await.map_err(|e| e.to_string())?,
@@ -240,6 +288,7 @@ pub fn spawn_shell(
                 }
             }
             if !buf.is_empty() {
+                flow.sent(buf.len());
                 let _ = on_data.send(InvokeResponseBody::Raw(buf));
             }
             if !exited {

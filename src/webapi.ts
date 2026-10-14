@@ -175,6 +175,7 @@ export const webApi: Api = {
   sshWrite: unsupported,
   hostHasPassword: async () => false,
   sshSendPassword: unsupported,
+  termAck: unsupported,
   sshResize: unsupported,
   sshClose: unsupported,
   trustNewHostKey: unsupported,

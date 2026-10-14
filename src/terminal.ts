@@ -298,8 +298,19 @@ export class Session {
     const gen = ++this.gen;
     this.setState("connecting");
     const onData = new Channel<ArrayBuffer>();
+    // Ack rendered bytes in ~256 KB batches so the backend keeps reading (flow control).
+    let pendingAck = 0;
+    const ack = (n: number) => {
+      pendingAck += n;
+      if (pendingAck >= 256 * 1024 && this.sid && gen === this.gen) {
+        api.termAck(this.sid, pendingAck).catch(() => {});
+        pendingAck = 0;
+      }
+    };
     onData.onmessage = (d) => {
-      if (gen === this.gen) this.term.write(d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(d as unknown as number[]));
+      if (gen !== this.gen) return;
+      const bytes = d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(d as unknown as number[]);
+      this.term.write(bytes, () => ack(bytes.length));
     };
     const onStatus = new Channel<Status>();
     onStatus.onmessage = (s) => {

@@ -26,7 +26,7 @@ pub const IDENTIFIER: &str = "com.koi.kermius";
 
 struct AppState {
     store: Arc<Store>,
-    sessions: Mutex<HashMap<String, UnboundedSender<ssh::Cmd>>>,
+    sessions: Mutex<HashMap<String, (UnboundedSender<ssh::Cmd>, Arc<ssh::Flow>)>>,
     tunnels: tunnel::Tunnels,
     files: Arc<files::Files>,
     running_syncs: Mutex<std::collections::HashSet<String>>,
@@ -256,9 +256,10 @@ fn ssh_connect(
     on_status: Channel<ssh::Status>,
 ) -> Res<String> {
     let host = state.host(&host_id)?;
-    let tx = ssh::spawn_shell(state.store.clone(), host, cols, rows, on_data, on_status);
+    let flow = Arc::new(ssh::Flow::default());
+    let tx = ssh::spawn_shell(state.store.clone(), host, cols, rows, on_data, on_status, flow.clone());
     let sid = uuid::Uuid::new_v4().to_string();
-    state.sessions.lock().insert(sid.clone(), tx);
+    state.sessions.lock().insert(sid.clone(), (tx, flow));
     Ok(sid)
 }
 
@@ -274,9 +275,10 @@ fn local_open(
     return Err("Local terminal is not available on iOS".into());
     #[cfg(not(target_os = "ios"))]
     {
-        let tx = local::spawn(cols, rows, on_data, on_status)?;
+        let flow = Arc::new(ssh::Flow::default());
+        let tx = local::spawn(cols, rows, on_data, on_status, flow.clone())?;
         let sid = uuid::Uuid::new_v4().to_string();
-        state.sessions.lock().insert(sid.clone(), tx);
+        state.sessions.lock().insert(sid.clone(), (tx, flow));
         Ok(sid)
     }
 }
@@ -304,7 +306,7 @@ async fn list_fonts() -> Vec<String> {
 }
 
 fn send_cmd(state: &AppState, sid: &str, cmd: ssh::Cmd) {
-    if let Some(tx) = state.sessions.lock().get(sid) {
+    if let Some((tx, _)) = state.sessions.lock().get(sid) {
         let _ = tx.send(cmd);
     }
 }
@@ -316,7 +318,7 @@ fn ssh_write(state: State<AppState>, sid: String, data: String) {
 
 async fn upload_to_session(state: &AppState, sid: &str, ext: &str, data: Vec<u8>) -> Res<String> {
     let (reply, rx) = tokio::sync::oneshot::channel();
-    let tx = state.sessions.lock().get(sid).cloned().ok_or("Session not found")?;
+    let tx = state.sessions.lock().get(sid).map(|(tx, _)| tx.clone()).ok_or("Session not found")?;
     tx.send(ssh::Cmd::Upload { ext: ext.into(), data, reply }).map_err(|_| "Session closed")?;
     rx.await.map_err(|_| "Session closed".to_string())?
 }
@@ -390,6 +392,14 @@ fn ssh_send_password(state: State<AppState>, sid: String, host_id: String) -> Re
     }
     send_cmd(&state, &sid, ssh::Cmd::Data(password.into_bytes()));
     Ok(())
+}
+
+/// The UI rendered `bytes` of terminal output (flow control).
+#[tauri::command]
+fn term_ack(state: State<AppState>, sid: String, bytes: u64) {
+    if let Some((_, flow)) = state.sessions.lock().get(&sid) {
+        flow.ack(bytes);
+    }
 }
 
 #[tauri::command]
@@ -855,6 +865,7 @@ pub fn run() {
             ssh_paste_image,
             save_clipboard_image,
             ssh_resize,
+            term_ack,
             host_has_password,
             ssh_send_password,
             ssh_close,
