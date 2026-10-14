@@ -1,5 +1,6 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, Channel, type FsEndpoint, type FsEvent, type FsJob, type FsPlan, type Host } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import { api, type FsEndpoint, type FsEvent, type FsJob, type FsPlan, type Host } from "./api";
 import { confirmDialog, contextMenu, esc, icon, toast } from "./ui";
 
 export interface FolderSyncCtx {
@@ -26,6 +27,8 @@ const INTERVALS: [number, string][] = [
 
 let jobs: FsJob[] = [];
 const live = new Map<string, Live>();
+/** Watcher state per "<job id>:<side>". */
+const watching = new Map<string, { state: string; message: string }>();
 
 const emptyJob = (): FsJob => ({
   id: "",
@@ -36,6 +39,7 @@ const emptyJob = (): FsJob => ({
   delete: false,
   excludes: [],
   intervalMin: 0,
+  watch: true,
   lastRun: 0,
   lastResult: "",
 });
@@ -67,6 +71,36 @@ export async function loadJobs() {
   jobs = await api.fsyncList().catch(() => []);
 }
 
+/** Worst watcher state across both sides of a job. */
+function watchStatus(job: FsJob) {
+  if (!job.watch) return null;
+  const sides = ["a", "b"].map((s) => watching.get(`${job.id}:${s}`)).filter(Boolean) as { state: string; message: string }[];
+  const pick = (st: string) => sides.find((x) => x.state === st);
+  const w = pick("offline") ?? pick("polling") ?? pick("watching");
+  if (!w) return { cls: "", text: "Starting watcher…" };
+  if (w.state === "offline") return { cls: "off", text: `Offline · ${w.message}` };
+  if (w.state === "polling") return { cls: "poll", text: `Checking every minute · ${w.message}` };
+  return { cls: "ok", text: `Watching for changes${sides.map((x) => x.message).filter(Boolean).map((m) => ` · ${m}`).join("")}` };
+}
+
+/** Listen for run progress and watcher state from the backend (manual and automatic runs alike). */
+export async function listenFolderSync(ctx: FolderSyncCtx) {
+  for (const [k, [state, message]] of Object.entries(await api.fsyncWatchStates().catch(() => ({})))) watching.set(k, { state, message });
+  await listen<FsEvent>("fsync", async ({ payload: ev }) => {
+    if (ev.type === "watch") watching.set(`${ev.id}:${ev.side}`, { state: ev.state, message: ev.message });
+    else if (ev.type === "finished") {
+      live.delete(ev.id);
+      await loadJobs();
+    } else {
+      const l = live.get(ev.id) ?? { phase: "connecting", message: "", pct: 0 };
+      if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message });
+      else l.pct = ev.total ? Math.min(100, Math.round((ev.done / ev.total) * 100)) : 0;
+      live.set(ev.id, l);
+    }
+    ctx.rerender();
+  });
+}
+
 export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
   root.innerHTML = `
     <div class="toolbar"><div class="grow"></div>
@@ -77,6 +111,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
           ? `<div class="fs-list">${jobs
               .map((j) => {
                 const st = status(j);
+                const w = watchStatus(j);
                 const l = live.get(j.id);
                 return `<div class="card fs-card" data-job="${j.id}">
                   <div class="fs-main">
@@ -84,6 +119,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                       ${j.intervalMin ? `<span class="muted fs-sched">${icon("sync", 12)} ${INTERVALS.find((i) => i[0] === j.intervalMin)?.[1] ?? `${j.intervalMin} min`}</span>` : ""}</div>
                     <div class="fs-path">${sideLabel(j.a, ctx)}<span class="fs-arrow">${j.mode === "mirror" ? "→" : "⇄"}</span>${sideLabel(j.b, ctx)}</div>
                     <div class="fs-status ${st.cls}"><span class="dot-st"></span>${esc(st.text)}</div>
+                    ${w ? `<div class="fs-status ${w.cls}">${icon("eye", 13)}${esc(w.text)}</div>` : ""}
                     ${l?.phase === "syncing" ? `<div class="bar"><i style="width:${l.pct}%"></i></div>` : ""}
                   </div>
                   <div class="fs-actions">
@@ -100,21 +136,13 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
     </div>`;
 }
 
-/** Run or preview; updates the live status and re-renders. */
+/** Run or preview; progress arrives through `listenFolderSync`. */
 export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, quiet = false) {
   if (live.has(id)) return;
   live.set(id, { phase: "connecting", message: "", pct: 0 });
   ctx.rerender();
-  const ch = new Channel<FsEvent>();
-  ch.onmessage = (ev) => {
-    const l = live.get(id);
-    if (!l) return;
-    if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message });
-    else l.pct = ev.total ? Math.min(100, Math.round((ev.done / ev.total) * 100)) : 0;
-    ctx.rerender();
-  };
   try {
-    const r = await api.fsyncRun(id, dryRun, ch);
+    const r = await api.fsyncRun(id, dryRun);
     if (dryRun) previewDialog(jobs.find((j) => j.id === id)!, r.summary, r.plan);
     else if (!quiet) toast(r.summary, "ok");
   } catch (e) {
@@ -208,14 +236,16 @@ function sideFields(key: "a" | "b", ep: FsEndpoint, ctx: FolderSyncCtx) {
     ${
       ep.kind === "remote"
         ? `<small class="muted">Tick the hosts that reach this machine; they are tried top to bottom (e.g. wired, Wi-Fi, VPN).</small>
-          <input class="fs-route-filter" placeholder="Filter hosts…" spellcheck="false" />
+          <input class="fs-route-filter" placeholder="Filter by name, IP, group or tag…" spellcheck="false" />
           <div class="fs-routes">
             ${order
               .map((id) => {
                 const h = hosts.find((x) => x.id === id);
                 return h
-                  ? `<label class="fs-route" data-id="${id}"><input type="checkbox" ${ep.hosts.includes(id) ? "checked" : ""} />
-                      <span>${esc(h.name)} <small class="muted">${esc(h.username)}@${esc(h.address)}</small></span>
+                  ? `<label class="fs-route" data-id="${id}" data-search="${esc([h.name, h.username, h.address, h.folder, ...h.tags].join(" ").toLowerCase())}">
+                      <input type="checkbox" ${ep.hosts.includes(id) ? "checked" : ""} />
+                      <span>${esc(h.name)} <small class="muted">${esc(h.username)}@${esc(h.address)}</small>
+                        ${h.tags.map((t) => `<small class="mini-tag">${esc(t)}</small>`).join("")}</span>
                       <button type="button" class="icon-btn" data-move="up">↑</button><button type="button" class="icon-btn" data-move="down">↓</button></label>`
                   : "";
               })
@@ -236,6 +266,7 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     draft.mode = v("mode") as FsJob["mode"];
     draft.intervalMin = +v("interval");
     draft.delete = (f.elements.namedItem("delete") as HTMLInputElement | null)?.checked ?? false;
+    draft.watch = (f.elements.namedItem("watch") as HTMLInputElement | null)?.checked ?? false;
     draft.excludes = v("excludes").split("\n").map((x) => x.trim()).filter(Boolean);
     for (const k of ["a", "b"] as const) {
       draft[k].path = v(`${k}-path`).trim();
@@ -254,6 +285,8 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
       <div class="field"><span>Folder A${draft.mode === "mirror" ? " (source)" : ""}</span>${sideFields("a", draft.a, ctx)}</div>
       <div class="field"><span>Folder B${draft.mode === "mirror" ? " (destination)" : ""}</span>${sideFields("b", draft.b, ctx)}</div>
       ${draft.mode === "mirror" ? `<label class="check"><input type="checkbox" name="delete" ${draft.delete ? "checked" : ""} /> Delete files in B that were removed from A</label>` : ""}
+      <label class="check"><input type="checkbox" name="watch" ${draft.watch ? "checked" : ""} /> Watch for changes and sync automatically
+        <small class="muted">(remote side: instant with <code>inotify-tools</code>, otherwise checked every minute)</small></label>
       <div class="field-row"><label class="field grow"><span>Run automatically (while Kermius is open)</span><select name="interval">${INTERVALS.map(
         ([m, l]) => `<option value="${m}" ${m === draft.intervalMin ? "selected" : ""}>${l}</option>`,
       ).join("")}</select></label></div>
@@ -289,7 +322,7 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     if (!t.classList.contains("fs-route-filter")) return;
     const q = t.value.trim().toLowerCase();
     t.closest(".fs-side")!.querySelectorAll<HTMLElement>(".fs-route").forEach((r) => {
-      r.hidden = !!q && !r.textContent!.toLowerCase().includes(q) && !r.querySelector("input")!.checked;
+      r.hidden = !!q && !q.split(/\s+/).every((w) => r.dataset.search!.includes(w)) && !r.querySelector("input")!.checked;
     });
   });
   el.addEventListener("change", (e) => {

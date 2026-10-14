@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
-import { bindFolderSync, loadJobs, renderFolderSync, runDueJobs, type FolderSyncCtx } from "./foldersync";
+import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
@@ -1153,6 +1153,7 @@ function webUnlock(): Promise<void> {
   setInterval(() => runSync(false), 60_000);
   if (!isWeb) {
     await loadJobs();
+    await listenFolderSync(folderSync);
     runDueJobs(folderSync);
     setInterval(() => runDueJobs(folderSync), 60_000);
   }

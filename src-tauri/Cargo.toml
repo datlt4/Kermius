@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "1.7.1"
+version = "1.8.0"
 edition = "2021"
 license = "MIT"
 
@@ -30,6 +30,7 @@ anyhow = "1"
 parking_lot = "0.12"
 png = "0.17"
 russh-sftp = "3"
+notify = "8"
 
 [profile.release]
 lto = true

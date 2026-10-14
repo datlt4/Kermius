@@ -87,11 +87,17 @@ export interface FsJob {
   delete: boolean;
   excludes: string[];
   intervalMin: number;
+  watch: boolean;
   lastRun: number;
   lastResult: string;
 }
 
-export type FsEvent = { type: "phase"; phase: string; message: string } | { type: "progress"; done: number; total: number };
+export type FsEvent = { id: string } & (
+  | { type: "phase"; phase: string; message: string }
+  | { type: "progress"; done: number; total: number }
+  | { type: "finished"; ok: boolean; summary: string }
+  | { type: "watch"; side: "a" | "b"; state: "watching" | "polling" | "offline"; message: string }
+);
 
 export interface FsPlan {
   copyAb: string[];
@@ -155,8 +161,8 @@ const tauriApi = {
   fsyncList: () => invoke<FsJob[]>("fsync_list"),
   fsyncSave: (job: FsJob) => invoke<FsJob>("fsync_save", { job }),
   fsyncDelete: (id: string) => invoke<void>("fsync_delete", { id }),
-  fsyncRun: (id: string, dryRun: boolean, onEvent: Channel<FsEvent>) =>
-    invoke<{ summary: string; plan: FsPlan }>("fsync_run", { id, dryRun, onEvent }),
+  fsyncRun: (id: string, dryRun: boolean) => invoke<{ summary: string; plan: FsPlan }>("fsync_run", { id, dryRun }),
+  fsyncWatchStates: () => invoke<Record<string, [string, string]>>("fsync_watch_states"),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
