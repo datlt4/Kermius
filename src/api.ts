@@ -58,6 +58,20 @@ export interface Snippet {
   deleted: boolean;
 }
 
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  isLink: boolean;
+  size: number;
+  mtime: number;
+}
+
+export type TransferEvent =
+  | { type: "progress"; done: number; total: number; file: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
 export interface SyncSettings {
   url: string;
   token: string;
@@ -93,6 +107,22 @@ const tauriApi = {
   keyInfo: (privateKey: string, passphrase: string) =>
     invoke<{ publicKey: string; fingerprint: string; algorithm: string }>("key_info", { privateKey, passphrase }),
   generateKey: (comment: string) => invoke<string>("generate_key", { comment }),
+  sftpOpen: (hostId: string) => invoke<string>("sftp_open", { hostId }),
+  sftpClose: (id: string) => invoke<void>("sftp_close", { id }),
+  sftpHome: (id: string) => invoke<string>("sftp_home", { id }),
+  sftpList: (id: string, path: string) => invoke<FileEntry[]>("sftp_list", { id, path }),
+  sftpMkdir: (id: string, path: string) => invoke<void>("sftp_mkdir", { id, path }),
+  sftpRename: (id: string, from: string, to: string) => invoke<void>("sftp_rename", { id, from, to }),
+  sftpRemove: (id: string, path: string) => invoke<void>("sftp_remove", { id, path }),
+  localHome: () => invoke<string>("local_home"),
+  localList: (path: string) => invoke<FileEntry[]>("local_list", { path }),
+  localMkdir: (path: string) => invoke<void>("local_mkdir", { path }),
+  localRename: (from: string, to: string) => invoke<void>("local_rename", { from, to }),
+  localRemove: (path: string) => invoke<void>("local_remove", { path }),
+  rsyncAvailable: () => invoke<boolean>("rsync_available"),
+  transferStart: (id: string, direction: "upload" | "download", mode: "sftp" | "rsync", sources: string[], dest: string, onEvent: Channel<TransferEvent>) =>
+    invoke<string>("transfer_start", { id, direction, mode, sources, dest, onEvent }),
+  transferCancel: (tid: string) => invoke<void>("transfer_cancel", { tid }),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),

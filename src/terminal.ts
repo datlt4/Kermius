@@ -59,6 +59,7 @@ const coarse = matchMedia("(pointer: coarse)").matches;
 export class Session {
   readonly id = crypto.randomUUID();
   readonly el = document.createElement("div");
+  readonly kind = "terminal";
   state: SessionState = "connecting";
   private sid: string | null = null;
   private term: Terminal;
@@ -99,6 +100,7 @@ export class Session {
     this.el.className = "session";
     this.el.innerHTML = `<div class="term"></div>${
       host ? `<div class="sess-tools">
+        <button data-t="files" title="Open SFTP file manager">${icon("folder", 15)}</button>
         <button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
         <button data-t="upload" title="Upload a file to the host">${icon("image", 15)}</button>
         <button data-t="paste-img" title="Paste image from clipboard">${icon("paste", 15)}</button>
@@ -233,7 +235,8 @@ export class Session {
     });
     this.el.querySelector(".sess-tools")?.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest<HTMLElement>("[data-t]")?.dataset.t;
-      if (a === "snippets") {
+      if (a === "files") this.el.dispatchEvent(new CustomEvent("kermius-files", { bubbles: true, detail: { host: this.host } }));
+      else if (a === "snippets") {
         const r = (e.target as HTMLElement).closest("button")!.getBoundingClientRect();
         this.el.dispatchEvent(new CustomEvent("kermius-snippets", { bubbles: true, detail: { session: this, x: r.left, y: r.bottom + 4 } }));
       } else if (a === "upload") this.pickAndUpload();

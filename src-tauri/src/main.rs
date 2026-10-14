@@ -3,6 +3,9 @@
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--ssh-bridge") {
+        std::process::exit(kermius_lib::cli_ssh_bridge(&args[2..]));
+    }
     if let [_, flag, path] = args.as_slice() {
         if flag == "--import-termix" {
             match kermius_lib::cli_import(path) {

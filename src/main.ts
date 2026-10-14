@@ -2,10 +2,14 @@ import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
+import { FilesTab } from "./files";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
+
+/** Open tabs: terminals (SSH / local) and SFTP file managers. */
+type Tab = Session | FilesTab;
 
 type View = "hosts" | "keychain" | "forwarding" | "snippets" | "settings";
 
@@ -24,7 +28,7 @@ const state = {
   /** Root view: folder cards, or every host in collapsible per-group sections. */
   mode: (localStorage.getItem("kermius.mode") as "groups" | "sections") || "groups",
   collapsed: new Set<string>(JSON.parse(localStorage.getItem("kermius.collapsed") || "[]")),
-  sessions: [] as Session[],
+  sessions: [] as Tab[],
   active: "home" as string,
   editing: null as Host | null,
   tunnels: new Set<string>(),
@@ -193,7 +197,7 @@ function renderTabs() {
     ${state.sessions
       .map(
         (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
-          <span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}</span>
+          ${s.kind === "files" ? icon("folder", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : ""}</span>
           <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
       )
       .join("")}
@@ -234,7 +238,8 @@ els.tabs.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   contextMenu(e.clientX, e.clientY, [
     ...(s.local ? [] : [{ label: "Retry", icon: "sync", action: () => s.connect() }]),
-    { label: "Duplicate", icon: "plus", action: () => openSession(s.local ? null : s.host) },
+    { label: "Duplicate", icon: "plus", action: () => (s.kind === "files" ? openFiles(s.host) : openSession(s.local ? null : s.host)) },
+    ...(s.local || s.kind === "files" ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(s.host) }]),
     ...(s.local ? [] : [{ label: "Copy password", icon: "key", action: () => s.copyPassword() }]),
     "-" as const,
     { label: "Close others", icon: "x", action: () => state.sessions.filter((x) => x !== s).forEach((x) => closeSession(x.id)) },
@@ -271,6 +276,15 @@ function openSession(h: Host | null) {
   els.shell.classList.remove("side-open");
   activate(s.id);
 }
+
+function openFiles(h: Host) {
+  const t = new FilesTab(h, renderTabs, (x) => closeSession(x.id));
+  state.sessions.push(t);
+  t.mount(els.terms);
+  activate(t.id);
+}
+
+els.terms.addEventListener("kermius-files", (e) => openFiles((e as CustomEvent).detail.host as Host));
 
 function closeSession(id: string) {
   const i = state.sessions.findIndex((s) => s.id === id);
@@ -444,6 +458,7 @@ els.page.addEventListener("contextmenu", (e) => {
     ...(isWeb ? [] : [{ label: "Connect", icon: "terminal", action: () => openSession(h) }]),
     { label: "Copy password", icon: "key", action: () => copyPassword(h) },
     { label: "Copy address", icon: "copy", action: () => api.clipboardWrite(h.address).then(() => toast("Address copied", "ok")) },
+    ...(isWeb ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(h) }]),
     { label: "Copy ssh command", icon: "copy", action: () => api.clipboardWrite(`ssh ${h.username ? h.username + "@" : ""}${h.address}${h.port !== 22 ? ` -p ${h.port}` : ""}`).then(() => toast("Command copied", "ok")) },
     "-",
     { label: "Edit", icon: "edit", action: () => openEditor(h) },
@@ -587,7 +602,7 @@ function renderSnippetList() {
         <button class="btn primary" data-snip="new">New Snippet</button></div>`;
 }
 
-function runSnippet(sn: Snippet, session = state.sessions.find((s) => s.id === state.lastSession) ?? state.sessions[state.sessions.length - 1]) {
+function runSnippet(sn: Snippet, session: Tab | undefined = state.sessions.find((s) => s.id === state.lastSession) ?? state.sessions[state.sessions.length - 1]) {
   if (!session) return toast("Open a terminal first", "err");
   activate(session.id);
   session.runText(sn.script);
@@ -659,7 +674,7 @@ els.page.addEventListener("input", (e) => {
 
 // Snippet picker from a terminal's toolbar.
 els.terms.addEventListener("kermius-snippets", (e) => {
-  const { session, x, y } = (e as CustomEvent).detail as { session: Session; x: number; y: number };
+  const { session, x, y } = (e as CustomEvent).detail as { session: Tab; x: number; y: number };
   if (!state.snippets.length) return toast("No snippets yet: add them in Snippets", "info");
   contextMenu(
     x,

@@ -1,4 +1,5 @@
 mod crypto;
+mod files;
 #[cfg(not(target_os = "ios"))]
 mod local;
 mod model;
@@ -24,6 +25,7 @@ struct AppState {
     store: Arc<Store>,
     sessions: Mutex<HashMap<String, UnboundedSender<ssh::Cmd>>>,
     tunnels: tunnel::Tunnels,
+    files: Arc<files::Files>,
 }
 
 type Res<T> = Result<T, String>;
@@ -402,10 +404,118 @@ async fn sync_now(state: State<'_, AppState>) -> Res<sync::SyncReport> {
     sync::sync(&state.store).await.map_err(e)
 }
 
+#[tauri::command]
+async fn sftp_open(state: State<'_, AppState>, host_id: String) -> Res<String> {
+    let host = state.host(&host_id)?;
+    state.files.open(state.store.clone(), host).await
+}
+
+#[tauri::command]
+fn sftp_close(state: State<AppState>, id: String) {
+    state.files.close(&id);
+}
+
+#[tauri::command]
+async fn sftp_home(state: State<'_, AppState>, id: String) -> Res<String> {
+    state.files.home(&id).await
+}
+
+#[tauri::command]
+async fn sftp_list(state: State<'_, AppState>, id: String, path: String) -> Res<Vec<files::Entry>> {
+    state.files.list(&id, &path).await
+}
+
+#[tauri::command]
+async fn sftp_mkdir(state: State<'_, AppState>, id: String, path: String) -> Res<()> {
+    state.files.mkdir(&id, &path).await
+}
+
+#[tauri::command]
+async fn sftp_rename(state: State<'_, AppState>, id: String, from: String, to: String) -> Res<()> {
+    state.files.rename(&id, &from, &to).await
+}
+
+#[tauri::command]
+async fn sftp_remove(state: State<'_, AppState>, id: String, path: String) -> Res<()> {
+    state.files.remove(&id, &path).await
+}
+
+#[tauri::command]
+fn local_home() -> String {
+    files::local_home()
+}
+
+#[tauri::command]
+async fn local_list(path: String) -> Res<Vec<files::Entry>> {
+    tauri::async_runtime::spawn_blocking(move || files::local_list(&path)).await.map_err(e)?
+}
+
+#[tauri::command]
+fn local_mkdir(path: String) -> Res<()> {
+    files::local_mkdir(&path)
+}
+
+#[tauri::command]
+fn local_rename(from: String, to: String) -> Res<()> {
+    files::local_rename(&from, &to)
+}
+
+#[tauri::command]
+fn local_remove(path: String) -> Res<()> {
+    files::local_remove(&path)
+}
+
+#[tauri::command]
+fn rsync_available() -> bool {
+    files::rsync_available()
+}
+
+#[tauri::command]
+fn transfer_start(
+    state: State<AppState>,
+    id: String,
+    direction: files::Direction,
+    mode: files::Mode,
+    sources: Vec<String>,
+    dest: String,
+    on_event: Channel<files::Event>,
+) -> Res<String> {
+    state.files.transfer(&id, direction, mode, sources, dest, on_event)
+}
+
+#[tauri::command]
+fn transfer_cancel(state: State<AppState>, tid: String) {
+    state.files.cancel(&tid);
+}
+
+fn cli_store() -> anyhow::Result<Store> {
+    Store::open(dirs::data_dir().ok_or_else(|| anyhow::anyhow!("no data dir"))?.join(IDENTIFIER))
+}
+
+/// `kermius --ssh-bridge <host id> <host> <command...>`: remote shell for rsync. Returns the exit code.
+pub fn cli_ssh_bridge(args: &[String]) -> i32 {
+    let run = || -> Result<u32, String> {
+        let [id, _host, command @ ..] = args else { return Err("usage: --ssh-bridge <host id> <host> <command>".into()) };
+        let store = Arc::new(cli_store().map_err(e)?);
+        let host = {
+            let st = store.state.lock();
+            let h = st.vault.hosts.iter().find(|h| &h.id == id && !h.deleted).cloned().ok_or("Host not found")?;
+            st.vault.resolve(h)
+        };
+        tauri::async_runtime::block_on(files::ssh_bridge(store, host, command.join(" ")))
+    };
+    match run() {
+        Ok(code) => code as i32,
+        Err(err) => {
+            eprintln!("kermius: {err}");
+            255
+        }
+    }
+}
+
 /// `kermius --import-termix <file>`: import without opening the UI.
 pub fn cli_import(path: &str) -> anyhow::Result<String> {
-    let dir = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("no data dir"))?.join(IDENTIFIER);
-    let store = Store::open(dir)?;
+    let store = cli_store()?;
     let json = std::fs::read_to_string(path)?;
     let report = termix::import(&mut store.state.lock().vault, &json)?;
     store.save()?;
@@ -422,6 +532,7 @@ pub fn run() {
                 store: Arc::new(store),
                 sessions: Default::default(),
                 tunnels: Default::default(),
+                files: Default::default(),
             });
             Ok(())
         })
@@ -459,6 +570,21 @@ pub fn run() {
             get_sync_settings,
             set_sync_settings,
             sync_now,
+            sftp_open,
+            sftp_close,
+            sftp_home,
+            sftp_list,
+            sftp_mkdir,
+            sftp_rename,
+            sftp_remove,
+            local_home,
+            local_list,
+            local_mkdir,
+            local_rename,
+            local_remove,
+            rsync_available,
+            transfer_start,
+            transfer_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kermius");
