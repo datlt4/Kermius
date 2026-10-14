@@ -558,3 +558,12 @@ details .field + .field { margin-top: 10px; }
 .cf-row pre.gap { background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255, 255, 255, 0.025) 6px 12px); }
 .cf-merge textarea { width: 100%; margin-top: 8px; background: #171a22; border: 1px solid var(--border); border-radius: 9px; padding: 10px; outline: none; }
 .cf-actions { display: flex; gap: 8px; align-items: center; }
+
+/* ---------- folder picker ---------- */
+.fp-modal { width: min(640px, 94vw); height: min(560px, 86vh); padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.fp-modal .fhead { padding: 10px; }
+.fp-list { flex: 1; }
+.fp-list .frow { grid-template-columns: 1fr; cursor: pointer; }
+.fp-foot { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.fp-choice { font-family: "JetBrains Mono", monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
+.fs-initial-note { color: var(--warn) !important; }

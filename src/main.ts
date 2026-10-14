@@ -109,7 +109,7 @@ function renderSidebar() {
     ["hosts", "server", "Hosts"],
     ["keychain", "key", "Keychain"],
     ["forwarding", "forward", "Port Forwarding"],
-    ...(isWeb ? [] : [["foldersync", "folders", "Folder Sync"] as [View, string, string]]),
+    ...(desktop ? [["foldersync", "folders", "Folder Sync"] as [View, string, string]] : []),
     ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
   ];
@@ -1151,7 +1151,7 @@ function webUnlock(): Promise<void> {
   activate("home");
   runSync(false);
   setInterval(() => runSync(false), 60_000);
-  if (!isWeb) {
+  if (desktop) {
     await loadJobs();
     await listenFolderSync(folderSync);
     runDueJobs(folderSync);

@@ -85,6 +85,7 @@ export interface FsJob {
   a: FsEndpoint;
   b: FsEndpoint;
   delete: boolean;
+  initial: "merge" | "a_to_b" | "b_to_a" | "";
   excludes: string[];
   intervalMin: number;
   watch: boolean;

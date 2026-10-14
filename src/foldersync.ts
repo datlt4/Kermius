@@ -1,7 +1,7 @@
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { api, type FsEndpoint, type FsEvent, type FsJob, type FsPlan, type Host } from "./api";
 import { conflictsDialog } from "./conflicts";
+import { pickFolder } from "./folderpicker";
 import { confirmDialog, contextMenu, esc, icon, toast } from "./ui";
 
 export interface FolderSyncCtx {
@@ -55,6 +55,7 @@ const emptyJob = (): FsJob => ({
   a: { kind: "local", path: "", hosts: [] },
   b: { kind: "local", path: "", hosts: [] },
   delete: false,
+  initial: "a_to_b",
   excludes: [],
   intervalMin: 0,
   watch: true,
@@ -264,7 +265,7 @@ function sideFields(key: "a" | "b", ep: FsEndpoint, ctx: FolderSyncCtx) {
     <div class="seg fs-kind"><button type="button" data-kind="local" class="${ep.kind === "local" ? "on" : ""}">This computer</button>
       <button type="button" data-kind="remote" class="${ep.kind === "remote" ? "on" : ""}">Remote (SSH)</button></div>
     <div class="input-group"><input name="${key}-path" value="${esc(ep.path)}" placeholder="${ep.kind === "local" ? "/media/you/Backup2TB/Photos" : "/home/user/Photos"}" spellcheck="false" />
-      ${ep.kind === "local" ? `<button type="button" class="btn sm" data-browse="${key}">Browse…</button>` : ""}</div>
+      <button type="button" class="btn sm" data-browse="${key}">Browse…</button></div>
     ${
       ep.kind === "remote"
         ? `<details class="fs-req"><summary>Requirements on the remote</summary>
@@ -302,6 +303,8 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     draft.intervalMin = +v("interval");
     draft.delete = (f.elements.namedItem("delete") as HTMLInputElement | null)?.checked ?? false;
     draft.watch = (f.elements.namedItem("watch") as HTMLInputElement | null)?.checked ?? false;
+    const initial = f.elements.namedItem("initial") as HTMLSelectElement | null;
+    if (initial) draft.initial = initial.value as FsJob["initial"];
     draft.excludes = v("excludes").split("\n").map((x) => x.trim()).filter(Boolean);
     for (const k of ["a", "b"] as const) {
       draft[k].path = v(`${k}-path`).trim();
@@ -320,6 +323,15 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
       <div class="field"><span>Folder A${draft.mode === "mirror" ? " (source)" : ""}</span>${sideFields("a", draft.a, ctx)}</div>
       <div class="field"><span>Folder B${draft.mode === "mirror" ? " (destination)" : ""}</span>${sideFields("b", draft.b, ctx)}</div>
       ${draft.mode === "mirror" ? `<label class="check"><input type="checkbox" name="delete" ${draft.delete ? "checked" : ""} /> Delete files in B that were removed from A</label>` : ""}
+      ${
+        draft.mode === "twoway" && !draft.lastRun
+          ? `<label class="field"><span>First sync</span><select name="initial">
+              <option value="a_to_b" ${draft.initial === "a_to_b" ? "selected" : ""}>A → B: make B identical to A (overwrite, delete files only in B)</option>
+              <option value="b_to_a" ${draft.initial === "b_to_a" ? "selected" : ""}>B → A: make A identical to B (overwrite, delete files only in A)</option>
+              <option value="merge" ${draft.initial === "merge" || !draft.initial ? "selected" : ""}>Merge both (copy what is missing, delete nothing)</option></select>
+              <small class="fs-initial-note">After the first sync, changes flow both ways. Identical files are never copied again. Use <b>Preview</b> to check what will be overwritten or deleted.</small></label>`
+          : ""
+      }
       <label class="check"><input type="checkbox" name="watch" ${draft.watch ? "checked" : ""} /> Watch for changes and sync automatically
         <small class="muted">(remote side: instant with <code>inotify-tools</code>, otherwise checked every minute)</small></label>
       <div class="field-row"><label class="field grow"><span>Run automatically (while Kermius is open)</span><select name="interval">${INTERVALS.map(
@@ -341,10 +353,14 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     }
     const cp = t.closest<HTMLElement>("[data-copy]")?.dataset.copy;
     if (cp) return api.clipboardWrite(cp).then(() => toast("Command copied", "ok"));
-    const browse = t.closest<HTMLElement>("[data-browse]")?.dataset.browse;
+    const browse = t.closest<HTMLElement>("[data-browse]")?.dataset.browse as "a" | "b" | undefined;
     if (browse) {
-      const dir = await openDialog({ directory: true }).catch(() => null);
-      if (typeof dir === "string") (el.querySelector(`[name="${browse}-path"]`) as HTMLInputElement).value = dir;
+      read();
+      const ep = draft[browse];
+      const host = ep.kind === "remote" ? ctx.hosts().find((h) => h.id === ep.hosts[0]) : undefined;
+      if (ep.kind === "remote" && !host) return toast("Tick a host first", "err");
+      const dir = await pickFolder({ hostId: host?.id, hostName: host?.name, start: ep.path });
+      if (dir) (el.querySelector(`[name="${browse}-path"]`) as HTMLInputElement).value = dir;
       return;
     }
     const move = t.closest<HTMLElement>("[data-move]")?.dataset.move;

@@ -34,6 +34,9 @@ pub struct Job {
     pub b: Endpoint,
     /// Mirror: delete files in b that no longer exist in a.
     pub delete: bool,
+    /// Two-way, first run only: "a_to_b" / "b_to_a" make the target identical to the source
+    /// (overwrite and delete extras); "merge" (or empty) unions both sides without deleting.
+    pub initial: String,
     pub excludes: Vec<String>,
     /// Minutes between automatic runs while the app is open; 0 = manual.
     pub interval_min: u32,
@@ -291,6 +294,16 @@ pub fn plan_twoway(a: &Tree, b: &Tree, state: &Tree) -> Plan {
     keep(&mut plan.delete_a, &plan.copy_ab);
     keep(&mut plan.delete_b, &plan.copy_ba);
     plan
+}
+
+/// Make `dst` match `src`: copy what differs, optionally delete what `src` lacks.
+fn mirror_plan(src: &Tree, dst: &Tree, delete: bool) -> Plan {
+    Plan {
+        dirs: src.iter().chain(dst.iter()).filter(|(_, m)| m.dir).map(|(p, _)| p.clone()).collect(),
+        copy_ab: src.iter().filter(|(p, m)| dst.get(*p).is_none_or(|n| !same(m, n))).map(|(p, _)| p.clone()).collect(),
+        delete_b: if delete { dst.keys().filter(|p| !src.contains_key(*p)).cloned().collect() } else { vec![] },
+        ..Default::default()
+    }
 }
 
 /// The two-way state after a sync: paths present and equal on both sides.
@@ -554,12 +567,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
 
     if job.mode == "mirror" {
         guard_empty(&a, &ta, &tb, job.last_run > 0)?;
-        let plan = Plan {
-            dirs: ta.iter().chain(tb.iter()).filter(|(_, m)| m.dir).map(|(p, _)| p.clone()).collect(),
-            copy_ab: ta.iter().filter(|(p, m)| tb.get(*p).is_none_or(|n| !same(m, n))).map(|(p, _)| p.clone()).collect(),
-            delete_b: if job.delete { tb.keys().filter(|p| !ta.contains_key(*p)).cloned().collect() } else { vec![] },
-            ..Default::default()
-        };
+        let plan = mirror_plan(&ta, &tb, job.delete);
         if !dry_run && !plan.is_empty() {
             phase(&emit, "syncing", "");
             delete(&b, &plan.delete_b, &tb).await?;
@@ -569,6 +577,25 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
     }
 
     let state = load_state(&store, &job.id);
+    // First two-way run with a forced direction: make the target identical, then sync both ways from then on.
+    if state.is_empty() && (job.initial == "a_to_b" || job.initial == "b_to_a") {
+        let forward = job.initial == "a_to_b";
+        let (src, dst, tsrc, tdst) = if forward { (&a, &b, &ta, &tb) } else { (&b, &a, &tb, &ta) };
+        if tsrc.is_empty() && !tdst.is_empty() {
+            return Err(format!("{} is empty; refusing to wipe {} (disk not mounted?)", src.label(), dst.label()));
+        }
+        let m = mirror_plan(tsrc, tdst, true);
+        let plan = if forward { m } else { Plan { copy_ba: m.copy_ab, delete_a: m.delete_b, dirs: m.dirs, ..Default::default() } };
+        if !dry_run {
+            phase(&emit, "syncing", "first sync");
+            let (copies, dels) = if forward { (&plan.copy_ab, &plan.delete_b) } else { (&plan.copy_ba, &plan.delete_a) };
+            delete(dst, dels, tdst).await?;
+            copy(src, dst, copies, &emit).await?;
+            let (na, nb) = (scan(&a, &job.excludes).await?, scan(&b, &job.excludes).await?);
+            save_state(&store, &job.id, &common(&na, &nb))?;
+        }
+        return Ok((summary(&plan), plan));
+    }
     guard_empty(&a, &ta, &tb, !state.is_empty())?;
     guard_empty(&b, &tb, &ta, !state.is_empty())?;
     let mut plan = plan_twoway(&ta, &tb, &state);
@@ -759,6 +786,33 @@ mod e2e {
         // Missing folder: offline, not an error.
         std::fs::remove_dir_all(&b).unwrap();
         assert!(run(store, job, false, emit()).await.unwrap_err().starts_with(OFFLINE));
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn foldersync_e2e_initial_force() {
+        let tmp = std::env::temp_dir().join(format!("kermius-fsi-{}", uuid::Uuid::new_v4()));
+        let (a, b) = (tmp.join("a"), tmp.join("b"));
+        write(&a.join("keep.txt"), "from A");
+        write(&a.join("same.txt"), "same");
+        write(&b.join("keep.txt"), "old B version");
+        write(&b.join("only_b.txt"), "extra");
+        std::fs::copy(a.join("same.txt"), b.join("same.txt")).unwrap();
+        let t = std::fs::metadata(a.join("same.txt")).unwrap().modified().unwrap();
+        std::fs::File::options().write(true).open(b.join("same.txt")).unwrap().set_modified(t).unwrap();
+        let store = Arc::new(Store::open(tmp.join("store")).unwrap());
+        let ep = |p: &Path| Endpoint { kind: "local".into(), path: p.to_string_lossy().into(), hosts: vec![] };
+        let job = Job { id: "i1".into(), mode: "twoway".into(), initial: "a_to_b".into(), a: ep(&a), b: ep(&b), ..Default::default() };
+        let (_, plan) = run(store.clone(), job.clone(), true, emit()).await.unwrap();
+        assert_eq!(plan.copy_ab, ["keep.txt"]); // identical file is not copied again
+        assert_eq!(plan.delete_b, ["only_b.txt"]);
+        run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(b.join("keep.txt")).unwrap(), "from A");
+        assert!(!b.join("only_b.txt").exists());
+        // Afterwards it is a normal two-way sync: a new file on B comes back to A.
+        write(&b.join("later.txt"), "from B");
+        run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(a.join("later.txt")).unwrap(), "from B");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
