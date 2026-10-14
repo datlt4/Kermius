@@ -33,6 +33,10 @@ pub struct Host {
     pub protocol: String,
     /// Serial only; 0 = 115200.
     pub baud: u32,
+    /// VNC only: watch without sending mouse/keyboard input.
+    pub view_only: bool,
+    /// VNC only: do not sync the clipboard with the remote desktop.
+    pub no_clipboard: bool,
     pub updated_at: i64,
     /// Tombstone so deletions propagate through sync.
     pub deleted: bool,

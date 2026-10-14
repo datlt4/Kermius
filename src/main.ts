@@ -1038,8 +1038,29 @@ function protoNote(proto: string) {
   if (proto === "serial")
     return `<div class="proto-note serial-note" hidden>Opening serial ports needs the <code>dialout</code> group:
       <button class="btn ghost sm" data-ed="copy-serial">Copy command</button> then log out and back in.</div>`;
-  if (proto === "vnc") return `<div class="proto-note">Opens the remote desktop in a tab (port 5900 + display number, e.g. :1 = 5901).</div>`;
+  if (proto === "vnc") {
+    const h = state.editing!;
+    const steps = [
+      ["Install x11vnc on the remote", "sudo apt install -y x11vnc"],
+      ...(h.password ? [["Save the same VNC password there", "x11vnc -storepasswd ~/.vnc/passwd"]] : []),
+      ["Share the desktop (add -clip xinerama0 for the first monitor only)", x11vncCommand(h)],
+    ];
+    return `<div class="proto-note">Opens the remote desktop in a tab (port 5900 + display number, e.g. :1 = 5901).
+      ${steps.map(([t, c]) => `<div class="vnc-step"><span>${esc(t)}</span><div class="input-group"><code>${esc(c)}</code>
+        <button type="button" class="btn ghost sm" data-ed="copy-cmd" data-cmd="${esc(c)}">${icon("copy", 13)} Copy</button></div></div>`).join("")}
+      ${h.password ? "" : `<small class="muted">Without a password anyone who reaches the port can connect: set one below, or add <code>-localhost</code> and use a port forwarding.</small>`}</div>`;
+  }
   return "";
+}
+
+/** x11vnc command matching the host settings (port, password, view-only). */
+function x11vncCommand(h: Host) {
+  return [
+    "x11vnc -display :0",
+    h.password ? "-rfbauth ~/.vnc/passwd" : "-nopw",
+    h.viewOnly ? "-viewonly" : "",
+    `-shared -forever -rfbport ${h.port || 5900} -xkb -repeat -bg -nocursorshape -cursor most -fixscreen V=1`,
+  ].filter(Boolean).join(" ");
 }
 
 /** Fill the serial port suggestions and the setup hint (async, desktop only). */
@@ -1097,6 +1118,10 @@ function renderEditor() {
           <label class="field" style="width:96px"><span>${proto === "mosh" ? "SSH port" : "Port"}</span><input id="e-port" type="number" value="${h.port}" /></label>
         </div>
         <div ${isSsh(h) ? "" : "hidden"}>${credentialPickers(h.identityId, h.keyId, keychain)}</div>
+        <div class="vnc-opts" ${proto === "vnc" ? "" : "hidden"}>
+          <label class="check"><input type="checkbox" id="e-vnc-control" ${h.viewOnly ? "" : "checked"} /> Allow control (mouse and keyboard)</label>
+          <label class="check"><input type="checkbox" id="e-vnc-clip" ${h.noClipboard ? "" : "checked"} /> Share clipboard</label>
+        </div>
         <label class="field" ${proto === "serial" ? "hidden" : ""}><span>${proto === "vnc" ? "VNC password" : "Password"}</span>
           <div class="input-group"><input id="e-pass" type="password" value="${esc(h.password)}" autocomplete="off" />
             <button class="icon-btn" data-ed="toggle-pass" title="Show">${icon("eye", 16)}</button>
@@ -1134,6 +1159,8 @@ function readEditor() {
   h.username = v("e-user").trim();
   h.port = +v("e-port") || DEFAULT_PORT[h.protocol || "ssh"];
   h.baud = +v("e-baud") || 115200;
+  h.viewOnly = !$<HTMLInputElement>("#e-vnc-control", els.drawer).checked;
+  h.noClipboard = !$<HTMLInputElement>("#e-vnc-clip", els.drawer).checked;
   h.password = v("e-pass");
   h.privateKey = v("e-key");
   h.keyPassphrase = v("e-keypass");
@@ -1194,6 +1221,15 @@ els.drawer.addEventListener("click", async (e) => {
     case "save":
       readEditor();
       if (await saveEditor()) closeEditor();
+  }
+});
+
+// The x11vnc guide follows the control/password settings.
+els.drawer.addEventListener("change", (e) => {
+  const id = (e.target as HTMLElement).id;
+  if (state.editing?.protocol === "vnc" && ["e-vnc-control", "e-pass", "e-port"].includes(id)) {
+    readEditor();
+    renderEditor();
   }
 });
 

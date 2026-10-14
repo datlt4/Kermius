@@ -676,3 +676,8 @@ details .field + .field { margin-top: 10px; }
 .fwd-modal .fs-route input[type="radio"] { width: auto; flex: none; margin: 0; accent-color: var(--accent); }
 .vnc-stats { position: absolute; top: 10px; left: 12px; z-index: 5; display: flex; gap: 12px; padding: 5px 10px; font: 12px "JetBrains Mono", monospace; color: #c8cdd8; background: rgba(11, 13, 18, 0.72); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; pointer-events: none; }
 .vnc-stats b { color: #fff; font-weight: 600; }
+.vnc-step { margin-top: 8px; }
+.vnc-step span { display: block; margin-bottom: 4px; }
+.vnc-step code { flex: 1; min-width: 0; padding: 6px 8px; font-size: 11.5px; color: var(--text); background: #171a22; border-radius: 6px; overflow-x: auto; white-space: nowrap; }
+.vnc-opts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.session.vnc:not(.live) .vnc-stats { display: none; }
