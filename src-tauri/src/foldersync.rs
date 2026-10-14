@@ -665,6 +665,37 @@ fn save_state(store: &Store, id: &str, tree: &Tree) -> Result<(), String> {
 
 pub fn forget_state(store: &Store, id: &str) {
     let _ = std::fs::remove_file(state_path(store, id));
+    forget_index(store, id);
+}
+
+const INDEX_MAX_AGE_MS: i64 = 24 * 3600 * 1000;
+
+/// Saved listing of a mirror's destination; `verified` = when it last came from a real scan.
+#[derive(Serialize, Deserialize)]
+struct Index {
+    verified: i64,
+    tree: Tree,
+}
+
+fn index_path(store: &Store, id: &str) -> PathBuf {
+    store.dir().join("foldersync").join(format!("{id}.dest.json"))
+}
+
+fn load_index(store: &Store, id: &str) -> Option<Index> {
+    serde_json::from_slice(&std::fs::read(index_path(store, id)).ok()?).ok()
+}
+
+fn save_index(store: &Store, id: &str, ix: &Index) -> Result<(), String> {
+    let p = index_path(store, id);
+    std::fs::create_dir_all(p.parent().unwrap()).map_err(e)?;
+    let tmp = p.with_extension("tmp");
+    std::fs::write(&tmp, serde_json::to_vec(ix).map_err(e)?).map_err(e)?;
+    std::fs::rename(tmp, p).map_err(e)
+}
+
+/// Next mirror run scans the destination for real.
+pub fn forget_index(store: &Store, id: &str) {
+    let _ = std::fs::remove_file(index_path(store, id));
 }
 
 /// Refuse to propagate "everything was deleted" when one side looks unmounted or wiped.
@@ -705,7 +736,24 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
         })
         .collect();
     phase(&emit, "scanning", via.first().map(|v| format!("via {v}")).unwrap_or_default());
-    let (ta, tb) = (scan(&a, &job, "a", &emit).await?, scan(&b, &job, "b", &emit).await?);
+    let ta = scan(&a, &job, "a", &emit).await?;
+    // Mirror: only Kermius writes B, so reuse the saved index of B instead of rescanning it
+    // (slow disks); a real scan still happens once a day to catch outside changes.
+    let index = if job.mode == "mirror" { load_index(&store, &job.id).filter(|ix| now_ms() - ix.verified < INDEX_MAX_AGE_MS) } else { None };
+    let tb = match &index {
+        Some(ix) => {
+            phase(&emit, "scanning", "destination from saved index (full check daily)");
+            ix.tree.clone()
+        }
+        None => {
+            let t = scan(&b, &job, "b", &emit).await?;
+            // Save right away: an interrupted copy then never forces this scan again.
+            if job.mode == "mirror" && !dry_run {
+                save_index(&store, &job.id, &Index { verified: now_ms(), tree: t.clone() })?;
+            }
+            t
+        }
+    };
 
     if job.mode == "mirror" {
         guard_empty(&a, &ta, &tb, job.last_run > 0)?;
@@ -715,10 +763,23 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
             delete(&b, &plan.delete_b, &tb).await?;
             copy(&a, &b, &plan.copy_ab, &job, &emit).await?;
         }
-        let nb = if dry_run || plan.is_empty() { tb } else { scan(&b, &job, "b", &emit).await? };
+        // B after this run = old B minus deletions plus what was copied from A.
+        let mut nb = tb;
+        if !dry_run {
+            for p in &plan.delete_b {
+                nb.remove(p);
+            }
+            for p in &plan.copy_ab {
+                if let Some(m) = ta.get(p) {
+                    nb.insert(p.clone(), *m);
+                }
+            }
+            save_index(&store, &job.id, &Index { verified: index.as_ref().map_or(now_ms(), |ix| ix.verified), tree: nb.clone() })?;
+        }
         plan.stats = Some((stats(&ta), stats(&nb)));
         return Ok((summary(&plan), plan));
     }
+    let tb = tb;
 
     let state = load_state(&store, &job.id);
     // First two-way run with a forced direction: make the target identical, then sync both ways from then on.
@@ -1020,6 +1081,32 @@ mod e2e {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(rsyncs(), 0, "rsync still running after stop");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn foldersync_e2e_mirror_index() {
+        let tmp = std::env::temp_dir().join(format!("kermius-fsx-{}", uuid::Uuid::new_v4()));
+        let (a, b) = (tmp.join("a"), tmp.join("b"));
+        write(&a.join("one.txt"), "1");
+        std::fs::create_dir_all(&b).unwrap();
+        let store = Arc::new(Store::open(tmp.join("store")).unwrap());
+        let ep = |p: &Path| Endpoint { kind: "local".into(), path: p.to_string_lossy().into(), hosts: vec![] };
+        let mut job = Job { id: "m1".into(), mode: "mirror".into(), a: ep(&a), b: ep(&b), ..Default::default() };
+        run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        job.last_run = 1;
+        assert!(load_index(&store, "m1").is_some());
+        // A file added behind Kermius' back in B is not noticed (index used), but new files in A are copied.
+        write(&b.join("outside.txt"), "x");
+        write(&a.join("two.txt"), "2");
+        let (_, plan) = run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        assert_eq!(plan.copy_ab, ["two.txt"]);
+        assert_eq!(std::fs::read_to_string(b.join("two.txt")).unwrap(), "2");
+        // Full rescan sees B as it really is.
+        forget_index(&store, "m1");
+        job.delete = true;
+        let (_, plan) = run(store.clone(), job.clone(), true, emit()).await.unwrap();
+        assert_eq!(plan.delete_b, ["outside.txt"]);
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
