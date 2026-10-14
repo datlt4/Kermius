@@ -752,6 +752,7 @@ pub fn cli_run_sync(id: &str) -> i32 {
         let job = store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or("Job not found")?;
         let emit: foldersync::Emit = Arc::new(|ev| match ev {
             foldersync::Event::Phase { phase, message } => eprintln!("{phase} {message}"),
+            foldersync::Event::Scan { side, files, dirs, .. } => eprint!("\rscanning {side}: {files} files, {dirs} folders"),
             foldersync::Event::Progress { done, total, rate, .. } => eprint!("\r{done}/{total} bytes, {rate} B/s"),
             _ => {}
         });

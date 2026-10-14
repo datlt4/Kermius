@@ -81,6 +81,8 @@ pub enum Event {
     Progress { done: u64, total: u64, rate: u64, dir: String },
     /// Run finished (`ok` false: error or offline, see `summary`).
     Finished { ok: bool, summary: String },
+    /// Scan progress for one side ("a"/"b"): entries counted so far.
+    Scan { side: String, files: u64, dirs: u64, bytes: u64 },
     /// Change watcher state: "watching", "polling" (remote without inotifywait) or "offline".
     Watch { side: String, state: String, message: String },
 }
@@ -210,8 +212,31 @@ fn excluded(rel: &str, excludes: &[String]) -> bool {
         })
 }
 
-fn scan_local(root: &Path, excludes: &[String]) -> Result<Tree, String> {
+/// Throttled scan-progress reporter (about 4 updates per second).
+struct ScanProgress<'a> {
+    report: &'a (dyn Fn(Stats) + Send + Sync),
+    stats: Stats,
+    last: std::time::Instant,
+}
+
+impl ScanProgress<'_> {
+    fn add(&mut self, m: &Meta) {
+        if m.dir {
+            self.stats.dirs += 1
+        } else {
+            self.stats.files += 1;
+            self.stats.bytes += m.size;
+        }
+        if self.last.elapsed() >= Duration::from_millis(250) {
+            self.last = std::time::Instant::now();
+            (self.report)(self.stats);
+        }
+    }
+}
+
+fn scan_local(root: &Path, excludes: &[String], report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
     let mut tree = Tree::new();
+    let mut progress = ScanProgress { report, stats: Stats::default(), last: std::time::Instant::now() };
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for d in std::fs::read_dir(&dir).map_err(e)? {
@@ -224,43 +249,69 @@ fn scan_local(root: &Path, excludes: &[String]) -> Result<Tree, String> {
             let m = std::fs::symlink_metadata(&p).map_err(e)?;
             let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
             let dir_ = m.is_dir();
-            tree.insert(rel, Meta { dir: dir_, size: if dir_ { 0 } else { m.len() }, mtime });
+            let meta = Meta { dir: dir_, size: if dir_ { 0 } else { m.len() }, mtime };
+            progress.add(&meta);
+            tree.insert(rel, meta);
             if dir_ {
                 stack.push(p);
             }
         }
     }
+    (progress.report)(progress.stats);
     Ok(tree)
 }
 
-async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String]) -> Result<Tree, String> {
+/// GNU find streamed over SSH, so progress can be reported while the remote walks the tree.
+async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
     let cmd = format!("cd {} && find . -mindepth 1 \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%P\\0'", sh(path));
-    let (out, err, code) = exec(handle, &cmd).await?;
-    if code != 0 {
-        return Err(format!("remote scan failed (GNU find required): {err}"));
-    }
+    let mut ch = handle.channel_open_session().await.map_err(e)?;
+    ch.exec(true, cmd).await.map_err(e)?;
     let mut tree = Tree::new();
-    for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+    let mut progress = ScanProgress { report, stats: Stats::default(), last: std::time::Instant::now() };
+    let (mut pending, mut err, mut code) = (Vec::<u8>::new(), Vec::new(), 0);
+    let take = |rec: &[u8], tree: &mut Tree, progress: &mut ScanProgress| {
         let rec = String::from_utf8_lossy(rec);
         let mut f = rec.splitn(4, '\t');
-        let (Some(kind), Some(size), Some(mtime), Some(rel)) = (f.next(), f.next(), f.next(), f.next()) else { continue };
+        let (Some(kind), Some(size), Some(mtime), Some(rel)) = (f.next(), f.next(), f.next(), f.next()) else { return };
         if excluded(rel, excludes) {
-            continue;
+            return;
         }
         let dir = kind == "d";
         let mtime = mtime.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        tree.insert(rel.to_string(), Meta { dir, size: if dir { 0 } else { size.parse().unwrap_or(0) }, mtime });
+        let meta = Meta { dir, size: if dir { 0 } else { size.parse().unwrap_or(0) }, mtime };
+        progress.add(&meta);
+        tree.insert(rel.to_string(), meta);
+    };
+    while let Some(msg) = ch.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => {
+                pending.extend_from_slice(&data);
+                while let Some(i) = pending.iter().position(|b| *b == 0) {
+                    let rec: Vec<u8> = pending.drain(..=i).collect();
+                    take(&rec[..rec.len() - 1], &mut tree, &mut progress);
+                }
+            }
+            ChannelMsg::ExtendedData { data, .. } => err.extend_from_slice(&data),
+            ChannelMsg::ExitStatus { exit_status } => code = exit_status,
+            _ => {}
+        }
     }
+    if code != 0 {
+        return Err(format!("remote scan failed (GNU find required): {}", String::from_utf8_lossy(&err).trim()));
+    }
+    (progress.report)(progress.stats);
     Ok(tree)
 }
 
-async fn scan(side: &Side, excludes: &[String]) -> Result<Tree, String> {
+async fn scan(side: &Side, excludes: &[String], label: &str, emit: &Emit) -> Result<Tree, String> {
+    let (em, label) = (emit.clone(), label.to_string());
+    let report = move |s: Stats| em(Event::Scan { side: label.clone(), files: s.files, dirs: s.dirs, bytes: s.bytes });
     match side {
         Side::Local(p) => {
             let (p, x) = (p.clone(), excludes.to_vec());
-            tokio::task::spawn_blocking(move || scan_local(&p, &x)).await.map_err(e)?
+            tokio::task::spawn_blocking(move || scan_local(&p, &x, &report)).await.map_err(e)?
         }
-        Side::Remote { handle, path, .. } => scan_remote(handle, path, excludes).await,
+        Side::Remote { handle, path, .. } => scan_remote(handle, path, excludes, &report).await,
     }
 }
 
@@ -407,7 +458,7 @@ pub fn list_conflicts(job: &Job) -> Result<Vec<Conflict>, String> {
     if !root.is_dir() {
         return Err(format!("{OFFLINE}{} not found", root.to_string_lossy()));
     }
-    let tree = scan_local(&root, &job.excludes)?;
+    let tree = scan_local(&root, &job.excludes, &|_| {})?;
     Ok(tree
         .iter()
         .filter(|(_, m)| !m.dir)
@@ -602,7 +653,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
         })
         .collect();
     phase(&emit, "scanning", via.first().map(|v| format!("via {v}")).unwrap_or_default());
-    let (ta, tb) = (scan(&a, &job.excludes).await?, scan(&b, &job.excludes).await?);
+    let (ta, tb) = (scan(&a, &job.excludes, "a", &emit).await?, scan(&b, &job.excludes, "b", &emit).await?);
 
     if job.mode == "mirror" {
         guard_empty(&a, &ta, &tb, job.last_run > 0)?;
@@ -612,7 +663,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
             delete(&b, &plan.delete_b, &tb).await?;
             copy(&a, &b, &plan.copy_ab, &emit).await?;
         }
-        let nb = if dry_run || plan.is_empty() { tb } else { scan(&b, &job.excludes).await? };
+        let nb = if dry_run || plan.is_empty() { tb } else { scan(&b, &job.excludes, "b", &emit).await? };
         plan.stats = Some((stats(&ta), stats(&nb)));
         return Ok((summary(&plan), plan));
     }
@@ -632,7 +683,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
             let (copies, dels) = if forward { (&plan.copy_ab, &plan.delete_b) } else { (&plan.copy_ba, &plan.delete_a) };
             delete(dst, dels, tdst).await?;
             copy(src, dst, copies, &emit).await?;
-            let (na, nb) = (scan(&a, &job.excludes).await?, scan(&b, &job.excludes).await?);
+            let (na, nb) = (scan(&a, &job.excludes, "a", &emit).await?, scan(&b, &job.excludes, "b", &emit).await?);
             save_state(&store, &job.id, &common(&na, &nb))?;
             plan.stats = Some((stats(&na), stats(&nb)));
         }
@@ -662,7 +713,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
         copy(&a, &b, &plan.copy_ab, &emit).await?;
         copy(&b, &a, &plan.copy_ba, &emit).await?;
     }
-    let (na, nb) = (scan(&a, &job.excludes).await?, scan(&b, &job.excludes).await?);
+    let (na, nb) = (scan(&a, &job.excludes, "a", &emit).await?, scan(&b, &job.excludes, "b", &emit).await?);
     save_state(&store, &job.id, &common(&na, &nb))?;
     let names: BTreeSet<&String> = na.keys().chain(nb.keys()).filter(|p| conflict_original(p).is_some()).collect();
     plan.open_conflicts = names.len() as u32;
