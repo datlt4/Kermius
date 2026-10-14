@@ -995,6 +995,35 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn foldersync_e2e_stop_kills_rsync() {
+        let tmp = std::env::temp_dir().join(format!("kermius-fss-{}", uuid::Uuid::new_v4()));
+        let (a, b) = (tmp.join("a"), tmp.join("b"));
+        std::fs::create_dir_all(&b).unwrap();
+        write(&a.join("seed"), "x");
+        for i in 0..3 {
+            let f = std::fs::File::create(a.join(format!("big{i}"))).unwrap();
+            f.set_len(1_500_000_000).unwrap(); // sparse, but rsync still copies 1.5 GB each
+        }
+        let store = Arc::new(Store::open(tmp.join("store")).unwrap());
+        let ep = |p: &Path| Endpoint { kind: "local".into(), path: p.to_string_lossy().into(), hosts: vec![] };
+        let job = Job { id: "s1".into(), mode: "mirror".into(), a: ep(&a), b: ep(&b), ..Default::default() };
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let em: Emit = Arc::new(move |ev| {
+            if matches!(ev, Event::Progress { .. }) {
+                let _ = started_tx.send(());
+            }
+        });
+        let rsyncs = || std::process::Command::new("pgrep").args(["-f", &format!("rsync.*{}", b.to_string_lossy())]).output().unwrap().stdout.len();
+        tokio::select! {
+            _ = run(store, job, false, em) => panic!("finished before it could be stopped"),
+            _ = started_rx.recv() => {} // dropping `run` here = Stop
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(rsyncs(), 0, "rsync still running after stop");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[tokio::test]
     async fn foldersync_e2e_remote() {
         let (Ok(cfg), Ok(_)) = (std::env::var("KERMIUS_TEST_SSH"), std::env::var("KERMIUS_BRIDGE_EXE")) else { return };
         let [port, user, key] = cfg.split('|').collect::<Vec<_>>()[..] else { panic!() };

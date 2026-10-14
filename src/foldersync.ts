@@ -133,6 +133,7 @@ function status(job: FsJob) {
   }
   if (!job.lastResult) return { cls: "", text: "Never synced" };
   if (job.lastResult.startsWith(OFFLINE)) return { cls: "off", text: `Offline · ${job.lastResult.slice(OFFLINE.length)}` };
+  if (job.lastResult === "Stopped") return { cls: "", text: `Stopped · ${job.paused ? "paused" : "will resume on the next run"}` };
   const ok = /^Up to date$|copied|deleted|conflicts kept/.test(job.lastResult);
   return ok ? { cls: "ok", text: `${job.lastResult} · ${ago(job.lastRun)}` } : { cls: "err", text: job.lastResult };
 }
@@ -273,8 +274,12 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                   </div>
                   <div class="fs-actions">
                     <button class="icon-btn" data-fs="${j.paused ? "resume" : "pause"}" title="${j.paused ? "Resume" : "Pause"}">${icon(j.paused ? "play" : "stop", 15)}</button>
-                    <button class="btn sm" data-fs="preview" ${l ? "disabled" : ""}>${icon("eye", 14)} Preview</button>
-                    <button class="btn primary sm" data-fs="run" ${l ? "disabled" : ""}>${icon("sync", 14)} Sync now</button>
+                    <button class="btn sm" data-fs="preview" ${l ? `disabled title="Busy: wait for the current sync or stop it"` : `title="List what would be copied or deleted, without changing anything"`}>${icon("eye", 14)} Preview</button>
+                    ${
+                      l
+                        ? `<button class="btn danger sm" data-fs="stop" title="Stop now; the next run resumes partial files">${icon("stop", 14)} Stop</button>`
+                        : `<button class="btn primary sm" data-fs="run">${icon("sync", 14)} Sync now</button>`
+                    }
                     <button class="icon-btn" data-fs="edit" title="Edit">${icon("edit", 15)}</button>
                   </div></div>`;
               })
@@ -331,6 +336,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     if (act === "rescan-all") return jobs.filter((j) => !j.paused).forEach((j) => runJob(j.id, ctx, false, true));
     if (!job) return;
     if (act === "pause" || act === "resume") return pause([job.id], act === "pause");
+    if (act === "stop") return api.fsyncStop(job.id);
     if (act === "raise") {
       const host = t.closest<HTMLElement>("[data-host]")!.dataset.host!;
       toast(host === "local" ? "Asking for the admin password…" : "Raising the limit on the remote…", "info");

@@ -190,6 +190,7 @@ const tauriApi = {
   fsyncRead: (id: string, path: string) => invoke<string>("fsync_read", { id, path }),
   fsyncResolve: (id: string, path: string, action: "current" | "conflict" | "both" | "merged", merged?: string) =>
     invoke<void>("fsync_resolve", { id, path, action, merged }),
+  fsyncStop: (id: string) => invoke<void>("fsync_stop", { id }),
   fsyncPause: (ids: string[], paused: boolean) => invoke<void>("fsync_pause", { ids, paused }),
   fsyncRaiseInotify: () => invoke<void>("fsync_raise_inotify"),
   fsyncRaiseInotifyRemote: (hostId: string) => invoke<void>("fsync_raise_inotify_remote", { hostId }),
