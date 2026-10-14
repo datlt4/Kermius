@@ -9,8 +9,10 @@ import "@fontsource/fira-code/400.css";
 import "@fontsource/fira-code/700.css";
 import "@fontsource/source-code-pro/400.css";
 import "@fontsource/source-code-pro/700.css";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, Channel, emptyHost, type Host, type Status } from "./api";
-import { contextMenu, esc, hue, icon, toast } from "./ui";
+import { notify } from "./notify";
+import { contextMenu, esc, hue, icon, promptDialog, toast } from "./ui";
 
 export const termTheme = {
   background: "#14161d",
@@ -52,6 +54,9 @@ export const loadFont = (p: TermPrefs) =>
 // WebKitGTK's WebGL text is grayscale-AA and looks blurry next to native text; use DOM there.
 const useWebgl = !/Linux/.test(navigator.userAgent) || /Android/.test(navigator.userAgent);
 
+/** Single-quote for POSIX shells. */
+const quote = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
+
 export type SessionState = "connecting" | "connected" | "closed" | "error";
 
 const coarse = matchMedia("(pointer: coarse)").matches;
@@ -59,6 +64,7 @@ const coarse = matchMedia("(pointer: coarse)").matches;
 export class Session {
   readonly id = crypto.randomUUID();
   readonly el = document.createElement("div");
+  readonly kind = "terminal";
   state: SessionState = "connecting";
   private sid: string | null = null;
   private term: Terminal;
@@ -97,13 +103,18 @@ export class Session {
       theme: termTheme,
     });
     this.el.className = "session";
-    this.el.innerHTML = `<div class="term"></div>${
-      host ? `<div class="sess-tools">
+    this.el.innerHTML = `<div class="term"></div><div class="sess-tools">${
+      host
+        ? `<button data-t="files" title="Open SFTP file manager">${icon("folder", 15)}</button>
         <button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
         <button data-t="upload" title="Upload a file to the host">${icon("image", 15)}</button>
         <button data-t="paste-img" title="Paste image from clipboard">${icon("paste", 15)}</button>
-        <div class="up-prog" hidden><div class="bar"><i></i></div><span></span></div></div>` : ""
-    }<div class="overlay"></div>${
+        <button data-t="password" title="Type password (e.g. for sudo)" disabled>${icon("key", 15)}</button>`
+        : `<button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
+        <button data-t="insert-path" title="Insert a file path">${icon("file", 15)}</button>
+        <button data-t="paste-img" title="Paste image from clipboard (saved to a temp file)">${icon("paste", 15)}</button>
+        <button data-t="password" title="Type this computer's password (e.g. for sudo)">${icon("key", 15)}</button>`
+    }<div class="up-prog" hidden><div class="bar"><i></i></div><span></span></div></div><div class="overlay"></div>${
       coarse ? `<div class="keybar">${["Esc", "Tab", "Ctrl", "↑", "↓", "←", "→", "|", "/", "-", "~"].map((k) => `<button data-k="${k}">${k}</button>`).join("")}</div>` : ""
     }`;
     this.overlay = this.el.querySelector(".overlay")!;
@@ -205,8 +216,9 @@ export class Session {
       // App shortcuts (handled globally) must not reach the shell.
       if (e.key === "Tab" || (!e.shiftKey && /^Digit[1-9]$/.test(e.code))) return false;
       if (!e.shiftKey) return true;
-      if (e.code === "KeyC") return this.copySelection(), false;
-      if (e.code === "KeyV") return this.paste(), false;
+      // preventDefault: WebKitGTK would otherwise also paste natively into xterm's textarea (pasting twice).
+      if (e.code === "KeyC") return e.preventDefault(), this.copySelection(), false;
+      if (e.code === "KeyV") return e.preventDefault(), this.paste(), false;
       return !["KeyK", "KeyT", "KeyW", "KeyF"].includes(e.code);
     });
     this.el.querySelector(".term")!.addEventListener("contextmenu", (e) => {
@@ -215,8 +227,11 @@ export class Session {
       contextMenu(ev.clientX, ev.clientY, [
         { label: "Copy", icon: "copy", action: () => this.copySelection() },
         { label: "Paste", icon: "import", action: () => this.paste() },
-        ...(this.local ? [] : [{ label: "Paste image", icon: "image", action: () => this.pasteImage() }]),
-        ...(this.local ? [] : [{ label: "Copy password", icon: "key", action: () => this.copyPassword() }]),
+        { label: "Paste image", icon: "image", action: () => this.pasteImage() },
+        { label: "Type password", icon: "key", action: () => this.sendPassword() },
+        ...(this.local
+          ? [{ label: "Change local password", icon: "key", action: () => this.askLocalPassword().then((ok) => ok && this.term.focus()) }]
+          : [{ label: "Copy password", icon: "key", action: () => this.copyPassword() }]),
         "-" as const,
         { label: "Clear", icon: "x", action: () => t.clear() },
       ]);
@@ -233,11 +248,14 @@ export class Session {
     });
     this.el.querySelector(".sess-tools")?.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest<HTMLElement>("[data-t]")?.dataset.t;
-      if (a === "snippets") {
+      if (a === "files") this.el.dispatchEvent(new CustomEvent("kermius-files", { bubbles: true, detail: { host: this.host } }));
+      else if (a === "snippets") {
         const r = (e.target as HTMLElement).closest("button")!.getBoundingClientRect();
         this.el.dispatchEvent(new CustomEvent("kermius-snippets", { bubbles: true, detail: { session: this, x: r.left, y: r.bottom + 4 } }));
       } else if (a === "upload") this.pickAndUpload();
       else if (a === "paste-img") this.pasteImage();
+      else if (a === "password") this.sendPassword();
+      else if (a === "insert-path") this.insertPath();
     });
     this.overlay.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest("button")?.dataset.a;
@@ -285,8 +303,19 @@ export class Session {
     const gen = ++this.gen;
     this.setState("connecting");
     const onData = new Channel<ArrayBuffer>();
+    // Ack rendered bytes in ~256 KB batches so the backend keeps reading (flow control).
+    let pendingAck = 0;
+    const ack = (n: number) => {
+      pendingAck += n;
+      if (pendingAck >= 256 * 1024 && this.sid && gen === this.gen) {
+        api.termAck(this.sid, pendingAck).catch(() => {});
+        pendingAck = 0;
+      }
+    };
     onData.onmessage = (d) => {
-      if (gen === this.gen) this.term.write(d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(d as unknown as number[]));
+      if (gen !== this.gen) return;
+      const bytes = d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(d as unknown as number[]);
+      this.term.write(bytes, () => ack(bytes.length));
     };
     const onStatus = new Channel<Status>();
     onStatus.onmessage = (s) => {
@@ -295,6 +324,7 @@ export class Session {
       if (s.type === "upload") return this.showProgress(s.progress);
       if (s.type === "connected") {
         this.retryStep = 0;
+        this.refreshPasswordButton();
         this.setState("connected");
         this.term.focus();
       } else if (s.type === "closed") this.setState("closed");
@@ -311,6 +341,8 @@ export class Session {
   }
 
   private fail(message: string) {
+    // A dropped live session is worth a notification (the tab may be in the background).
+    if (this.state === "connected" && !this.local) notify("warn", `SSH · ${this.host.name}`, message, "");
     this.error = message;
     this.addLog(`Error: ${message}`);
     // Host key changes need a decision from the user; never retry those automatically.
@@ -388,7 +420,7 @@ export class Session {
   private async paste() {
     const text = await api.clipboardRead().catch(() => "");
     if (text) this.term.paste(text);
-    else if (!this.local) this.pasteImage();
+    else this.pasteImage();
   }
 
   private showProgress(p: number | null) {
@@ -424,7 +456,53 @@ export class Session {
   }
 
   pasteImage() {
+    if (this.local) {
+      return api.saveClipboardImage().then(
+        (path) => this.insertText(quote(path)),
+        (e) => toast(String(e), "err"),
+      );
+    }
     return this.upload((sid) => api.sshPasteImage(sid));
+  }
+
+  private insertText(text: string) {
+    this.term.paste(text);
+    this.term.focus();
+  }
+
+  private async insertPath() {
+    const picked = await openDialog({ multiple: true }).catch(() => null);
+    const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+    if (paths.length) this.insertText(paths.map(quote).join(" "));
+  }
+
+  /** Enable the password button only when the host (or its identity) has one. */
+  private async refreshPasswordButton() {
+    const b = this.el.querySelector<HTMLButtonElement>('[data-t="password"]');
+    if (b && !this.local) b.disabled = !(await api.hostHasPassword(this.host.id).catch(() => false));
+  }
+
+  /** Ask for this computer's password and save it (encrypted, this device only). */
+  private async askLocalPassword() {
+    const pw = await promptDialog("Local password", "Password of this computer (saved encrypted on this device only, never synced)", "", true);
+    if (!pw) return false;
+    await api.localSetPassword(pw).catch((e) => toast(String(e), "err"));
+    return true;
+  }
+
+  async sendPassword() {
+    if (!this.sid || this.state !== "connected") return toast("Not connected", "err");
+    if (this.local) {
+      if (!(await api.localHasPassword()) && !(await this.askLocalPassword())) return this.term.focus();
+      return api.localSendPassword(this.sid).then(
+        () => this.term.focus(),
+        (e) => toast(String(e), "err"),
+      );
+    }
+    api.sshSendPassword(this.sid, this.host.id).then(
+      () => this.term.focus(),
+      (e) => toast(String(e), "err"),
+    );
   }
 
   private pickAndUpload() {

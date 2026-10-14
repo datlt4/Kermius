@@ -2,12 +2,19 @@ import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
+import { FilesTab } from "./files";
+import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
+import { sshExportDialog } from "./sshexport";
+import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 
-type View = "hosts" | "keychain" | "forwarding" | "snippets" | "settings";
+/** Open tabs: terminals (SSH / local) and SFTP file managers. */
+type Tab = Session | FilesTab;
+
+type View = "hosts" | "keychain" | "forwarding" | "foldersync" | "snippets" | "settings";
 
 const state = {
   hosts: [] as Host[],
@@ -24,7 +31,7 @@ const state = {
   /** Root view: folder cards, or every host in collapsible per-group sections. */
   mode: (localStorage.getItem("kermius.mode") as "groups" | "sections") || "groups",
   collapsed: new Set<string>(JSON.parse(localStorage.getItem("kermius.collapsed") || "[]")),
-  sessions: [] as Session[],
+  sessions: [] as Tab[],
   active: "home" as string,
   editing: null as Host | null,
   tunnels: new Set<string>(),
@@ -104,11 +111,17 @@ function renderSidebar() {
     ["hosts", "server", "Hosts"],
     ["keychain", "key", "Keychain"],
     ["forwarding", "forward", "Port Forwarding"],
+    ...(desktop ? [["foldersync", "folders", "Folder Sync"] as [View, string, string]] : []),
     ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
   ];
   els.nav.innerHTML = nav
-    .map(([v, ic, label]) => `<button class="nav-item ${state.view === v && state.active === "home" ? "on" : ""}" data-view="${v}" title="${label}">${icon(ic)}<span>${label}</span></button>`)
+    .map(([v, ic, label]) => {
+      // Folder Sync indicator: yellow while scanning, red while copying.
+      const act = v === "foldersync" ? (syncActivity() ?? "") : null;
+      const dot = act === null ? "" : `<i class="nav-dot ${act}" data-act="${act}" title="${act ? `Folder Sync: ${act}` : ""}"></i>`;
+      return `<button class="nav-item ${state.view === v && state.active === "home" ? "on" : ""}" data-view="${v}" title="${label}">${icon(ic)}${dot}<span>${label}</span></button>`;
+    })
     .join("");
 
   const fs = folders();
@@ -193,13 +206,14 @@ function renderTabs() {
     ${state.sessions
       .map(
         (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
-          <span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}</span>
+          ${s.kind === "files" ? icon("folder", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : ""}</span>
           <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
       )
       .join("")}
     ${isWeb ? "" : `<button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>`}
     <div class="grow" data-tauri-drag-region></div>
     ${state.sessions.some((s) => s.id === state.active && !s.local) ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
+    ${bellButton()}
     ${desktop ? `<div class="win-ctl">
       <button data-win="min" title="Minimize">${icon("min", 15)}</button>
       <button data-win="max" title="Maximize">${icon("max", 13)}</button>
@@ -222,8 +236,18 @@ els.tabs.addEventListener("click", (e) => {
   const act = t.closest<HTMLElement>("[data-act]")?.dataset.act;
   if (act === "menu") return els.shell.classList.toggle("side-open");
   if (act === "local") return openSession(null);
+  if (act === "notes")
+    return toggleNotesPanel(t.closest<HTMLElement>("[data-act]")!, (v) => {
+      state.view = v as View;
+      goHome();
+    });
   if (act === "copy-pass") return state.sessions.find((s) => s.id === state.active)?.copyPassword();
   const tab = t.closest<HTMLElement>("[data-tab]");
+  if (tab?.dataset.tab === "home") {
+    // Vault always lands on the host list.
+    state.view = "hosts";
+    return goHome();
+  }
   if (tab) activate(tab.dataset.tab!);
 });
 
@@ -234,7 +258,8 @@ els.tabs.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   contextMenu(e.clientX, e.clientY, [
     ...(s.local ? [] : [{ label: "Retry", icon: "sync", action: () => s.connect() }]),
-    { label: "Duplicate", icon: "plus", action: () => openSession(s.local ? null : s.host) },
+    { label: "Duplicate", icon: "plus", action: () => (s.kind === "files" ? openFiles(s.host) : openSession(s.local ? null : s.host)) },
+    ...(s.local || s.kind === "files" ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(s.host) }]),
     ...(s.local ? [] : [{ label: "Copy password", icon: "key", action: () => s.copyPassword() }]),
     "-" as const,
     { label: "Close others", icon: "x", action: () => state.sessions.filter((x) => x !== s).forEach((x) => closeSession(x.id)) },
@@ -272,6 +297,15 @@ function openSession(h: Host | null) {
   activate(s.id);
 }
 
+function openFiles(h: Host) {
+  const t = new FilesTab(h, renderTabs, (x) => closeSession(x.id));
+  state.sessions.push(t);
+  t.mount(els.terms);
+  activate(t.id);
+}
+
+els.terms.addEventListener("kermius-files", (e) => openFiles((e as CustomEvent).detail.host as Host));
+
 function closeSession(id: string) {
   const i = state.sessions.findIndex((s) => s.id === id);
   if (i < 0) return;
@@ -281,6 +315,8 @@ function closeSession(id: string) {
   else renderTabs();
 }
 
+onNotesChange(renderTabs);
+
 // ---------- pages ----------
 
 function renderPage() {
@@ -288,6 +324,7 @@ function renderPage() {
   else if (state.view === "forwarding") renderForwarding();
   else if (state.view === "snippets") renderSnippets();
   else if (state.view === "keychain") renderKeychain(els.page, keychain);
+  else if (state.view === "foldersync") renderFolderSync(els.page, folderSync);
   else renderSettings();
 }
 
@@ -444,6 +481,7 @@ els.page.addEventListener("contextmenu", (e) => {
     ...(isWeb ? [] : [{ label: "Connect", icon: "terminal", action: () => openSession(h) }]),
     { label: "Copy password", icon: "key", action: () => copyPassword(h) },
     { label: "Copy address", icon: "copy", action: () => api.clipboardWrite(h.address).then(() => toast("Address copied", "ok")) },
+    ...(isWeb ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(h) }]),
     { label: "Copy ssh command", icon: "copy", action: () => api.clipboardWrite(`ssh ${h.username ? h.username + "@" : ""}${h.address}${h.port !== 22 ? ` -p ${h.port}` : ""}`).then(() => toast("Command copied", "ok")) },
     "-",
     { label: "Edit", icon: "edit", action: () => openEditor(h) },
@@ -552,6 +590,20 @@ const onKeychain = () => state.view === "keychain" && state.active === "home";
 bindKeychain(els.page, keychain, onKeychain);
 bindKeychainMenu(els.page, keychain, onKeychain);
 
+// ---------- folder sync ----------
+
+const onFolderSync = () => state.view === "foldersync" && state.active === "home";
+const folderSync: FolderSyncCtx = {
+  hosts: () => state.hosts,
+  rerender: () => onFolderSync() && renderFolderSync(els.page, folderSync),
+  activity: () => {
+    const act = syncActivity();
+    const dot = els.nav.querySelector<HTMLElement>('[data-view="foldersync"] .nav-dot');
+    if (dot && dot.dataset.act !== (act ?? "")) renderSidebar();
+  },
+};
+bindFolderSync(els.page, folderSync, onFolderSync);
+
 // ---------- snippets ----------
 
 function renderSnippets() {
@@ -587,7 +639,7 @@ function renderSnippetList() {
         <button class="btn primary" data-snip="new">New Snippet</button></div>`;
 }
 
-function runSnippet(sn: Snippet, session = state.sessions.find((s) => s.id === state.lastSession) ?? state.sessions[state.sessions.length - 1]) {
+function runSnippet(sn: Snippet, session: Tab | undefined = state.sessions.find((s) => s.id === state.lastSession) ?? state.sessions[state.sessions.length - 1]) {
   if (!session) return toast("Open a terminal first", "err");
   activate(session.id);
   session.runText(sn.script);
@@ -659,7 +711,7 @@ els.page.addEventListener("input", (e) => {
 
 // Snippet picker from a terminal's toolbar.
 els.terms.addEventListener("kermius-snippets", (e) => {
-  const { session, x, y } = (e as CustomEvent).detail as { session: Session; x: number; y: number };
+  const { session, x, y } = (e as CustomEvent).detail as { session: Tab; x: number; y: number };
   if (!state.snippets.length) return toast("No snippets yet: add them in Snippets", "info");
   contextMenu(
     x,
@@ -693,6 +745,10 @@ function renderSettings() {
         <div class="panel-head">${icon("import")}<div><h3>Import from Termix</h3><p class="muted">Termix → Host Manager → Export (JSON). Existing hosts are updated, not duplicated.</p></div></div>
         <label class="field"><span>Export file path</span><input id="imp-path" placeholder="/home/you/termix-hosts.json" /></label>
         <div class="row"><button class="btn" data-set="import">Import</button></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">${icon("terminal")}<div><h3>Export to ~/.ssh/config</h3><p class="muted">Pick groups and hosts to use with the regular <code>ssh</code> command, scp, VS Code Remote…</p></div></div>
+        <div class="row"><button class="btn" data-set="ssh-export">Choose hosts…</button></div>
       </div>
       <div class="panel">
         <div class="panel-head">${icon("terminal")}<div><h3>Terminal</h3></div></div>
@@ -746,6 +802,8 @@ els.page.addEventListener("click", async (e) => {
     state.sync = settings;
     if (settings.url) await runSync(true);
     renderSettings();
+  } else if (a === "ssh-export") {
+    sshExportDialog(state.hosts);
   } else if (a === "import") {
     try {
       const r = await api.importTermix(v("imp-path").trim());
@@ -1124,5 +1182,11 @@ function webUnlock(): Promise<void> {
   activate("home");
   runSync(false);
   setInterval(() => runSync(false), 60_000);
+  if (desktop) {
+    await loadJobs();
+    await listenFolderSync(folderSync);
+    runDueJobs(folderSync);
+    setInterval(() => runDueJobs(folderSync), 60_000);
+  }
   setInterval(renderSyncFoot, 30_000);
 })();

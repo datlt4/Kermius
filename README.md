@@ -52,6 +52,37 @@ Put it behind HTTPS (Caddy, Traefik, nginx…). In Kermius → Settings → Sync
 
 API: `GET /v1/vault` → blob + `x-version`; `PUT /v1/vault` with `x-base-version` (409 on conflict; the client re-pulls and merges per host by last update).
 
+## Folder Sync
+
+Two-way sync or one-way mirror between local disks and SSH hosts, with change watching, schedules, multiple routes per device and conflict resolution.
+
+![Folder Sync](docs/folder-sync.png)
+
+### Requirements
+
+Folder Sync (two-way sync / mirror between disks or with SSH hosts) uses rsync. Linux and macOS only.
+
+**This computer** needs rsync 3.1+:
+
+| OS | Command |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install rsync` |
+| Fedora / RHEL | `sudo dnf install rsync` |
+| Arch | `sudo pacman -S rsync` |
+| macOS | `brew install rsync` (the bundled rsync/openrsync is too old) |
+
+**Remote hosts** (Linux) need rsync and GNU find; **inotify-tools** makes remote changes sync instantly (otherwise Kermius checks every minute). Nothing else is installed on the remote.
+
+| OS | Command |
+| --- | --- |
+| Debian / Ubuntu / Raspberry Pi OS | `sudo apt install -y rsync inotify-tools` |
+| Fedora / RHEL / Rocky | `sudo dnf install -y rsync inotify-tools` |
+| Arch / Manjaro | `sudo pacman -S --needed rsync inotify-tools` |
+| Alpine | `sudo apk add rsync inotify-tools findutils` |
+| openSUSE | `sudo zypper install -y rsync inotify-tools` |
+
+Watching only runs while Kermius is open. On Linux, very large trees may hit the inotify watch limit; raise it with `echo fs.inotify.max_user_watches=1048576 | sudo tee /etc/sysctl.d/99-zz-inotify.conf && sudo sysctl -p /etc/sysctl.d/99-zz-inotify.conf` (the `99-zz-` name makes it win over a lower value in `/etc/sysctl.conf`).
+
 ## Keyboard shortcuts
 
 | Keys | Action |

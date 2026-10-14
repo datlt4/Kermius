@@ -58,6 +58,80 @@ export interface Snippet {
   deleted: boolean;
 }
 
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  isLink: boolean;
+  size: number;
+  mtime: number;
+}
+
+export type TransferEvent =
+  | { type: "progress"; done: number; total: number; file: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export interface FsEndpoint {
+  kind: "local" | "remote";
+  path: string;
+  hosts: string[];
+}
+
+export interface FsJob {
+  id: string;
+  name: string;
+  mode: "twoway" | "mirror";
+  a: FsEndpoint;
+  b: FsEndpoint;
+  delete: boolean;
+  initial: "merge" | "a_to_b" | "b_to_a" | "";
+  excludes: string[];
+  keepPerms: boolean;
+  keepOwner: boolean;
+  keepSpecials: boolean;
+  followLinks: boolean;
+  intervalMin: number;
+  watch: boolean;
+  lastRun: number;
+  lastAttempt: number;
+  lastResult: string;
+  conflicts: number;
+  paused: boolean;
+  statsA: FsStats;
+  statsB: FsStats;
+}
+
+export interface FsStats {
+  files: number;
+  dirs: number;
+  bytes: number;
+}
+
+export interface FsConflict {
+  path: string;
+  original: string;
+  originalExists: boolean;
+  size: number;
+  mtime: number;
+}
+
+export type FsEvent = { id: string } & (
+  | { type: "phase"; phase: string; message: string }
+  | { type: "progress"; done: number; total: number; rate: number; dir: "up" | "down" | "local" }
+  | { type: "finished"; ok: boolean; summary: string }
+  | { type: "scan"; side: "a" | "b"; files: number; dirs: number; bytes: number }
+  | { type: "watch"; side: "a" | "b"; state: "watching" | "polling" | "offline" | "limit"; message: string }
+);
+
+export interface FsPlan {
+  copyAb: string[];
+  copyBa: string[];
+  deleteA: string[];
+  deleteB: string[];
+  conflicts: [string, string][];
+}
+
 export interface SyncSettings {
   url: string;
   token: string;
@@ -93,9 +167,44 @@ const tauriApi = {
   keyInfo: (privateKey: string, passphrase: string) =>
     invoke<{ publicKey: string; fingerprint: string; algorithm: string }>("key_info", { privateKey, passphrase }),
   generateKey: (comment: string) => invoke<string>("generate_key", { comment }),
+  sftpOpen: (hostId: string) => invoke<string>("sftp_open", { hostId }),
+  sftpClose: (id: string) => invoke<void>("sftp_close", { id }),
+  sftpHome: (id: string) => invoke<string>("sftp_home", { id }),
+  sftpList: (id: string, path: string) => invoke<FileEntry[]>("sftp_list", { id, path }),
+  sftpMkdir: (id: string, path: string) => invoke<void>("sftp_mkdir", { id, path }),
+  sftpRename: (id: string, from: string, to: string) => invoke<void>("sftp_rename", { id, from, to }),
+  sftpRemove: (id: string, path: string) => invoke<void>("sftp_remove", { id, path }),
+  localHome: () => invoke<string>("local_home"),
+  localList: (path: string) => invoke<FileEntry[]>("local_list", { path }),
+  localMkdir: (path: string) => invoke<void>("local_mkdir", { path }),
+  localRename: (from: string, to: string) => invoke<void>("local_rename", { from, to }),
+  localRemove: (path: string) => invoke<void>("local_remove", { path }),
+  rsyncAvailable: () => invoke<boolean>("rsync_available"),
+  transferStart: (id: string, direction: "upload" | "download", mode: "sftp" | "rsync", sources: string[], dest: string, onEvent: Channel<TransferEvent>) =>
+    invoke<string>("transfer_start", { id, direction, mode, sources, dest, onEvent }),
+  transferCancel: (tid: string) => invoke<void>("transfer_cancel", { tid }),
+  fsyncList: () => invoke<FsJob[]>("fsync_list"),
+  fsyncSave: (job: FsJob) => invoke<FsJob>("fsync_save", { job }),
+  fsyncDelete: (id: string) => invoke<void>("fsync_delete", { id }),
+  fsyncRun: (id: string, dryRun: boolean) => invoke<{ summary: string; plan: FsPlan }>("fsync_run", { id, dryRun }),
+  fsyncConflicts: (id: string) => invoke<FsConflict[]>("fsync_conflicts", { id }),
+  fsyncRead: (id: string, path: string) => invoke<string>("fsync_read", { id, path }),
+  fsyncResolve: (id: string, path: string, action: "current" | "conflict" | "both" | "merged", merged?: string) =>
+    invoke<void>("fsync_resolve", { id, path, action, merged }),
+  fsyncStop: (id: string) => invoke<void>("fsync_stop", { id }),
+  fsyncPause: (ids: string[], paused: boolean) => invoke<void>("fsync_pause", { ids, paused }),
+  fsyncRaiseInotify: () => invoke<void>("fsync_raise_inotify"),
+  fsyncRaiseInotifyRemote: (hostId: string) => invoke<void>("fsync_raise_inotify_remote", { hostId }),
+  fsyncImportStignore: (dir: string) => invoke<[string[], number]>("fsync_import_stignore", { dir }),
+  fsyncWatchStates: () => invoke<Record<string, [string, string]>>("fsync_watch_states"),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
+  sshConfigPreview: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
+    invoke<string>("ssh_config_preview", { hostIds, withKeys, withPasswords }),
+  sshConfigExport: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
+    invoke<string>("ssh_config_export", { hostIds, withKeys, withPasswords }),
+  fsyncInotifyCommand: () => invoke<string>("fsync_inotify_command"),
   clipboardRead: () => invoke<string>("clipboard_read"),
   sshConnect: (hostId: string, cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
     invoke<string>("ssh_connect", { hostId, cols, rows, onData, onStatus }),
@@ -103,8 +212,15 @@ const tauriApi = {
     invoke<string>("local_open", { cols, rows, onData, onStatus }),
   listFonts: () => invoke<string[]>("list_fonts"),
   sshUpload: (sid: string, ext: string, bytes: Uint8Array) => invoke<string>("ssh_upload", bytes, { headers: { sid, ext } }),
+  saveClipboardImage: () => invoke<string>("save_clipboard_image"),
   sshPasteImage: (sid: string) => invoke<string>("ssh_paste_image", { sid }),
   sshWrite: (sid: string, data: string) => invoke<void>("ssh_write", { sid, data }),
+  hostHasPassword: (hostId: string) => invoke<boolean>("host_has_password", { hostId }),
+  sshSendPassword: (sid: string, hostId: string) => invoke<void>("ssh_send_password", { sid, hostId }),
+  localHasPassword: () => invoke<boolean>("local_has_password"),
+  localSetPassword: (password: string) => invoke<void>("local_set_password", { password }),
+  localSendPassword: (sid: string) => invoke<void>("local_send_password", { sid }),
+  termAck: (sid: string, bytes: number) => invoke<void>("term_ack", { sid, bytes }),
   sshResize: (sid: string, cols: number, rows: number) => invoke<void>("ssh_resize", { sid, cols, rows }),
   sshClose: (sid: string) => invoke<void>("ssh_close", { sid }),
   trustNewHostKey: (hostId: string) => invoke<void>("trust_new_host_key", { hostId }),

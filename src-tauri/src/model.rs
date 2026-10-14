@@ -106,6 +106,10 @@ pub struct SyncSettings {
 pub struct LocalState {
     pub vault: Vault,
     pub sync: SyncSettings,
+    /// Folder Sync jobs (paths are device-specific, so never synced).
+    pub folder_syncs: Vec<crate::foldersync::Job>,
+    /// This computer's password for the local terminal's "Type password" (never synced).
+    pub local_password: String,
 }
 
 pub fn now_ms() -> i64 {

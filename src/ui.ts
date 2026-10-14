@@ -11,6 +11,9 @@ const P: Record<string, string> = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   code: '<path d="M8 4C6 4 6 5 6 7v2c0 1.5-1 3-2 3 1 0 2 1.5 2 3v2c0 2 0 3 2 3M16 4c2 0 2 1 2 3v2c0 1.5 1 3 2 3-1 0-2 1.5-2 3v2c0 2 0 3-2 3"/>',
+  folders: '<path d="M8 17H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2"/><rect x="9" y="10" width="12" height="10" rx="2"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
   paste: '<rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
@@ -123,4 +126,58 @@ export function confirmDialog(title: string, body: string, ok = "Delete"): Promi
       resolve(r === "1");
     });
   });
+}
+
+export function promptDialog(title: string, label: string, value = "", password = false): Promise<string | null> {
+  return new Promise((resolve) => {
+    const el = document.createElement("div");
+    el.className = "modal-wrap";
+    el.innerHTML = `<form class="modal"><h3>${esc(title)}</h3>
+      <label class="field"><span>${esc(label)}</span><input name="v" type="${password ? "password" : "text"}" value="${esc(value)}" spellcheck="false" /></label>
+      <div class="modal-actions" style="margin-top:16px"><button type="button" class="btn ghost" data-r="0">Cancel</button><button type="submit" class="btn primary">OK</button></div></form>`;
+    document.body.append(el);
+    const input = el.querySelector("input")!;
+    input.focus();
+    input.select();
+    const done = (v: string | null) => {
+      el.remove();
+      resolve(v);
+    };
+    el.querySelector("form")!.addEventListener("submit", (e) => {
+      e.preventDefault();
+      done(input.value.trim() || null);
+    });
+    el.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement;
+      if (t.dataset.r === "0" || t === el) done(null);
+    });
+    el.addEventListener("keydown", (e) => e.key === "Escape" && done(null));
+  });
+}
+
+/** Patch `target`'s children to match `html`, reusing existing nodes (keeps hover/focus/scroll). */
+export function morphHtml(target: HTMLElement, html: string) {
+  const next = document.createElement("div");
+  next.innerHTML = html;
+  morphChildren(target, next);
+}
+
+function morphChildren(a: Node, b: Node) {
+  const ca = [...a.childNodes];
+  const cb = [...b.childNodes];
+  cb.forEach((n, i) => (i < ca.length ? morphNode(ca[i], n) : a.appendChild(n)));
+  for (let i = cb.length; i < ca.length; i++) a.removeChild(ca[i]);
+}
+
+function morphNode(a: Node, b: Node) {
+  if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) return a.parentNode!.replaceChild(b, a);
+  if (a.nodeType !== Node.ELEMENT_NODE) {
+    if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue;
+    return;
+  }
+  const ea = a as Element;
+  const eb = b as Element;
+  for (const at of [...ea.attributes]) if (!eb.hasAttribute(at.name)) ea.removeAttribute(at.name);
+  for (const at of [...eb.attributes]) if (ea.getAttribute(at.name) !== at.value) ea.setAttribute(at.name, at.value);
+  morphChildren(a, b);
 }
