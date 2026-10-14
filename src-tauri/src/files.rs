@@ -428,7 +428,41 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
     if status.success() {
         Ok(())
     } else {
-        Err(errors.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("rsync failed").to_string())
+        Err(rsync_error(&errors))
+    }
+}
+
+/// Readable rsync failure: "N items failed: <first error>" plus every error line (one per line).
+fn rsync_error(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let items: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("rsync:") || l.starts_with("rsync warning:")).collect();
+    let Some(first) = items.first() else {
+        return lines.last().copied().unwrap_or("rsync failed").to_string();
+    };
+    let hint = if items.iter().any(|l| l.contains("Invalid argument (22)")) {
+        " (names with : ? * \" < > | are not allowed on NTFS/exFAT/FAT disks)"
+    } else if items.iter().any(|l| l.contains("Permission denied (13)")) {
+        " (no permission to read or write some files)"
+    } else {
+        ""
+    };
+    let mut msg = format!("{} item{} failed{hint}: {first}", items.len(), if items.len() == 1 { "" } else { "s" });
+    for l in items.iter().skip(1).take(200) {
+        msg.push('\n');
+        msg.push_str(l);
+    }
+    msg
+}
+
+#[cfg(test)]
+mod rsync_error_tests {
+    #[test]
+    fn summarises_and_keeps_details() {
+        let err = "rsync: [receiver] mkstemp \"/mnt/x/a:b\" failed: Invalid argument (22)\nrsync: [receiver] mkstemp \"/mnt/x/c?d\" failed: Invalid argument (22)\nrsync error: some files/attrs were not transferred (see previous errors) (code 23)\n";
+        let m = super::rsync_error(err);
+        assert!(m.starts_with("2 items failed (names with"), "{m}");
+        assert_eq!(m.lines().count(), 2);
+        assert_eq!(super::rsync_error("rsync error: boom (code 5)"), "rsync error: boom (code 5)");
     }
 }
 
