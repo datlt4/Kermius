@@ -300,7 +300,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                     <div class="fs-title"><b>${esc(j.name || "Untitled")}</b><span class="badge">${j.mode === "mirror" ? "Mirror" : "Two-way"}</span>
                       ${j.intervalMin ? `<span class="muted fs-sched">${icon("sync", 12)} ${INTERVALS.find((i) => i[0] === j.intervalMin)?.[1] ?? `${j.intervalMin} min`}</span>` : ""}</div>
                     <div class="fs-path">${sideLabel(j.a, ctx)}<span class="fs-arrow">${j.mode === "mirror" ? "→" : "⇄"}</span>${sideLabel(j.b, ctx)}</div>
-                    ${j.lastRun ? `<div class="fs-stats"><span>A: ${statsLine(j.statsA)}</span><span>B: ${statsLine(j.statsB)}</span></div>` : ""}
+                    ${j.lastRun ? `<div class="fs-stats"><span><b class="fs-side-tag">A</b>${statsLine(j.statsA)}</span><span><b class="fs-side-tag">B</b>${statsLine(j.statsB)}</span></div>` : ""}
                     <div class="fs-status ${st.cls}"><span class="dot-st"></span>${esc(st.text)}
                       ${l?.phase === "syncing" && l.rate ? `<span class="fs-rate">${l.dir === "down" ? "↓" : l.dir === "up" ? "↑" : "⇢"} ${fmtBytes(l.rate)}/s</span>` : ""}
                       ${st.cls === "err" ? `<button class="fs-conflicts" data-fs="details">Details</button>` : ""}
