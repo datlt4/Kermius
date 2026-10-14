@@ -385,6 +385,14 @@ pub fn bridge_shell(host_id: &str) -> Result<String, String> {
 pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new("rsync");
     cmd.args(&args);
+    // If Kermius exits mid-transfer, rsync must stop too (else a restarted app could run a second copy).
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
     // C locale: progress numbers use "," separators regardless of the user's locale.
     cmd.env("LC_ALL", "C").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|err| format!("rsync: {err}"))?;

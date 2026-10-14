@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "kermius"
-version = "1.11.6"
+version = "1.11.7"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",
@@ -2519,6 +2519,7 @@ dependencies = [
  "chacha20poly1305",
  "dirs 6.0.0",
  "fontdb",
+ "libc",
  "notify",
  "parking_lot",
  "png 0.17.16",
