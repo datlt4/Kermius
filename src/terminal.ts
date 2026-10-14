@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { CanvasAddon } from "@xterm/addon-canvas";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import "@fontsource/jetbrains-mono/400.css";
@@ -53,6 +54,8 @@ export const loadFont = (p: TermPrefs) =>
 
 // WebKitGTK's WebGL text is grayscale-AA and looks blurry next to native text; use DOM there.
 const useWebgl = !/Linux/.test(navigator.userAgent) || /Android/.test(navigator.userAgent);
+/** Settings → Terminal → Renderer; read per tab so a change applies to new tabs. */
+const renderer = () => localStorage.getItem("kermius.renderer") || (useWebgl ? "webgl" : "dom");
 
 /** Single-quote for POSIX shells. */
 const quote = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
@@ -149,14 +152,15 @@ export class Session {
     t.loadAddon(this.fit);
     t.loadAddon(new WebLinksAddon());
     t.open(this.el.querySelector(".term")!);
-    if (useWebgl) {
-      try {
+    try {
+      const r = renderer();
+      if (r === "webgl") {
         const gl = new WebglAddon();
         gl.onContextLoss(() => gl.dispose());
         t.loadAddon(gl);
-      } catch {
-        /* falls back to DOM renderer */
-      }
+      } else if (r === "canvas") t.loadAddon(new CanvasAddon());
+    } catch {
+      /* falls back to DOM renderer */
     }
     // Keys xterm already sent from keydown; without an IME WebKit also fires `input` for some (space).
     let lastKey = { d: "", t: 0 };

@@ -732,6 +732,21 @@ els.terms.addEventListener("kermius-snippets", (e) => {
 
 // ---------- settings ----------
 
+const RENDERERS = [
+  ["", "Automatic"],
+  ["canvas", "Canvas (exact grid, drawn box lines)"],
+  ["dom", "DOM (sharpest text on Linux)"],
+  ["webgl", "WebGL (fastest)"],
+];
+
+els.page.addEventListener("change", (e) => {
+  const t = e.target as HTMLSelectElement;
+  if (t.id !== "s-renderer") return;
+  if (t.value) localStorage.setItem("kermius.renderer", t.value);
+  else localStorage.removeItem("kermius.renderer");
+  toast("Renderer saved; open a new tab to use it", "ok");
+});
+
 function renderSettings() {
   const s = state.sync ?? { url: "", token: "", passphrase: "", lastSync: 0 };
   const p = loadPrefs();
@@ -775,6 +790,9 @@ function renderSettings() {
 drwxr-xr-x 2 user user 4.0K Oct 12 08:56 <span class="pv-dir">models</span>
 -rwxrwxr-x 1 user user  772 Oct 12 08:57 <span class="pv-ok">build.sh</span>
 echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
+        <label class="field" style="margin-top:12px"><span>Renderer <small class="muted">(applies to new tabs)</small></span>
+          <select id="s-renderer">${RENDERERS.map(([v, l]) => `<option value="${v}" ${(localStorage.getItem("kermius.renderer") ?? "") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <small>If tmux/htop borders look broken or columns drift (e.g. with display scaling), try Canvas.</small></label>
       </div>`}
       <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>
     </div>`;
