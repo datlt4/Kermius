@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Tunnel {
+    /// Display name (empty: "host:port" is shown).
+    pub label: String,
     pub bind_host: String,
     pub source_port: u16,
     pub endpoint_host: String,

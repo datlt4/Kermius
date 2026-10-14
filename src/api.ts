@@ -5,6 +5,7 @@ import { webApi } from "./webapi";
 export const isWeb = !("__TAURI_INTERNALS__" in window);
 
 export interface Tunnel {
+  label?: string;
   bindHost: string;
   sourcePort: number;
   endpointHost: string;
