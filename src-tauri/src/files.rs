@@ -406,6 +406,8 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
     });
     // progress2 lines: "  12,345,678  42%   10.5MB/s    0:00:03 ..." separated by \r
     let (mut pending, mut out) = (String::new(), String::new());
+    // rsync prints a progress line per folder too: tens of thousands per second would flood the UI.
+    let mut last = std::time::Instant::now() - std::time::Duration::from_secs(1);
     let mut chunk = [0u8; 4096];
     loop {
         let n = stdout.read(&mut chunk).await.map_err(e)?;
@@ -418,8 +420,11 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
             let mut parts = line.split_whitespace();
             if let (Some(bytes), Some(pct)) = (parts.next(), parts.next()) {
                 if let (Ok(b), Some(p)) = (bytes.replace(',', "").parse::<u64>(), pct.strip_suffix('%').and_then(|p| p.parse::<u64>().ok())) {
-                    let total = if p > 0 { b * 100 / p } else { 0 };
-                    progress(b, total.max(b));
+                    if last.elapsed() >= std::time::Duration::from_millis(250) {
+                        last = std::time::Instant::now();
+                        let total = if p > 0 { b * 100 / p } else { 0 };
+                        progress(b, total.max(b));
+                    }
                     continue;
                 }
             }
