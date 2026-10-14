@@ -153,6 +153,7 @@ export const webApi: Api = {
   fsyncStop: unsupported,
   fsyncPause: unsupported,
   fsyncRaiseInotify: unsupported,
+  fsyncInotifyCommand: unsupported,
   fsyncRaiseInotifyRemote: unsupported,
   fsyncImportStignore: unsupported,
   fsyncWatchStates: async () => ({}),
