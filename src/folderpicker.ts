@@ -53,6 +53,7 @@ export function pickFolder(opts: { hostId?: string; hostName?: string; start?: s
         toast(String(e), "err");
       }
     };
+    let lastClick = { path: "", t: 0 };
     const home = () => (remote ? api.sftpHome(sid) : api.localHome());
     (async () => {
       try {
@@ -69,8 +70,18 @@ export function pickFolder(opts: { hostId?: string; hostName?: string; start?: s
       if (t === el) return finish(null);
       const row = t.closest<HTMLElement>(".frow");
       if (row) {
-        selected = selected === row.dataset.path ? "" : row.dataset.path!;
-        return render();
+        // Second click on the same row within 400 ms opens it (independent of the dblclick event).
+        const now = performance.now();
+        if (lastClick.path === row.dataset.path && now - lastClick.t < 400) {
+          lastClick = { path: "", t: 0 };
+          return cd(row.dataset.path!);
+        }
+        lastClick = { path: row.dataset.path!, t: now };
+        // Update in place: re-rendering here would swallow the double click.
+        selected = row.dataset.path!;
+        el.querySelectorAll(".fp-list .frow").forEach((r) => r.classList.toggle("sel", r === row));
+        el.querySelector(".fp-choice")!.textContent = choice();
+        return;
       }
       const a = t.closest<HTMLElement>("[data-p]")?.dataset.p;
       if (a === "cancel") finish(null);
@@ -87,10 +98,6 @@ export function pickFolder(opts: { hostId?: string; hostName?: string; start?: s
         selected = p;
         render();
       }
-    });
-    el.addEventListener("dblclick", (e) => {
-      const row = (e.target as HTMLElement).closest<HTMLElement>(".frow");
-      if (row) cd(row.dataset.path!);
     });
     el.addEventListener("keydown", (e) => {
       const t = e.target as HTMLElement;

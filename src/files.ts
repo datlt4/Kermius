@@ -163,6 +163,11 @@ export class FilesTab {
         .join("") || `<div class="fempty">Empty folder</div>`;
   }
 
+  /** Update row highlighting without re-rendering (keeps double click working). */
+  private markSelection(p: Pane) {
+    p.el.querySelectorAll<HTMLElement>(".frow").forEach((r) => r.classList.toggle("sel", p.selected.has(r.dataset.path!)));
+  }
+
   private other(p: Pane) {
     return this.panes[p.side === "local" ? "remote" : "local"];
   }
@@ -256,9 +261,18 @@ export class FilesTab {
         const r = (e.target as HTMLElement).closest<HTMLElement>(".frow");
         return r ? p.entries.find((x) => x.path === r.dataset.path) : undefined;
       };
+      let lastClick = { path: "", t: 0 };
+      const open = (entry: FileEntry) => (entry.isDir ? this.cd(p, entry.path) : this.transfer(p.side, [entry.path]));
       list.addEventListener("click", (ev) => {
         const e = ev as MouseEvent;
         const entry = rowOf(e);
+        // Second plain click on the same row within 400 ms = open (independent of the dblclick event).
+        const now = performance.now();
+        if (entry && !e.shiftKey && !e.ctrlKey && !e.metaKey && lastClick.path === entry.path && now - lastClick.t < 400) {
+          lastClick = { path: "", t: 0 };
+          return open(entry);
+        }
+        lastClick = { path: entry?.path ?? "", t: now };
         if (!entry) {
           p.selected.clear();
         } else if (e.shiftKey && p.anchor) {
@@ -272,13 +286,7 @@ export class FilesTab {
           p.selected = new Set([entry.path]);
           p.anchor = entry.path;
         }
-        this.renderPane(p);
-      });
-      list.addEventListener("dblclick", (e) => {
-        const entry = rowOf(e);
-        if (!entry) return;
-        if (entry.isDir) this.cd(p, entry.path);
-        else this.transfer(p.side, [entry.path]);
+        this.markSelection(p);
       });
       list.addEventListener("keydown", (ev) => {
         const e = ev as KeyboardEvent;
@@ -290,7 +298,7 @@ export class FilesTab {
         else if ((e.ctrlKey || e.metaKey) && e.key === "a") {
           e.preventDefault();
           p.selected = new Set(p.entries.map((x) => x.path));
-          this.renderPane(p);
+          this.markSelection(p);
         }
       });
       list.addEventListener("contextmenu", (ev) => {
@@ -299,7 +307,7 @@ export class FilesTab {
         const entry = rowOf(e);
         if (entry && !p.selected.has(entry.path)) {
           p.selected = new Set([entry.path]);
-          this.renderPane(p);
+          this.markSelection(p);
         }
         const sel = this.selection(p);
         const verb = p.side === "local" ? `Upload to ${this.host.name}` : "Download to this computer";
