@@ -92,6 +92,15 @@ export interface FsJob {
   lastRun: number;
   lastResult: string;
   conflicts: number;
+  paused: boolean;
+  statsA: FsStats;
+  statsB: FsStats;
+}
+
+export interface FsStats {
+  files: number;
+  dirs: number;
+  bytes: number;
 }
 
 export interface FsConflict {
@@ -104,9 +113,9 @@ export interface FsConflict {
 
 export type FsEvent = { id: string } & (
   | { type: "phase"; phase: string; message: string }
-  | { type: "progress"; done: number; total: number }
+  | { type: "progress"; done: number; total: number; rate: number; dir: "up" | "down" | "local" }
   | { type: "finished"; ok: boolean; summary: string }
-  | { type: "watch"; side: "a" | "b"; state: "watching" | "polling" | "offline"; message: string }
+  | { type: "watch"; side: "a" | "b"; state: "watching" | "polling" | "offline" | "limit"; message: string }
 );
 
 export interface FsPlan {
@@ -176,6 +185,9 @@ const tauriApi = {
   fsyncRead: (id: string, path: string) => invoke<string>("fsync_read", { id, path }),
   fsyncResolve: (id: string, path: string, action: "current" | "conflict" | "both" | "merged", merged?: string) =>
     invoke<void>("fsync_resolve", { id, path, action, merged }),
+  fsyncPause: (ids: string[], paused: boolean) => invoke<void>("fsync_pause", { ids, paused }),
+  fsyncRaiseInotify: () => invoke<void>("fsync_raise_inotify"),
+  fsyncRaiseInotifyRemote: (hostId: string) => invoke<void>("fsync_raise_inotify_remote", { hostId }),
   fsyncWatchStates: () => invoke<Record<string, [string, string]>>("fsync_watch_states"),
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),

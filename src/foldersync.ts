@@ -14,7 +14,28 @@ interface Live {
   phase: string;
   message: string;
   pct: number;
+  rate: number;
+  dir: string;
+  /** Bytes already counted into the session totals for the current rsync step. */
+  counted: number;
 }
+
+/** Bytes moved this session (up = to remotes, down = from remotes). */
+const totals = { up: 0, down: 0, local: 0 };
+
+const fmtBytes = (n: number) => {
+  if (n < 1024) return `${n} B`;
+  const u = ["KiB", "MiB", "GiB", "TiB"];
+  let i = -1;
+  do {
+    n /= 1024;
+    i++;
+  } while (n >= 1024 && i < u.length - 1);
+  return `${n.toFixed(n < 10 ? 2 : 1)} ${u[i]}`;
+};
+const fmtNum = (n: number) => n.toLocaleString();
+const statsLine = (s: { files: number; dirs: number; bytes: number }) =>
+  `${icon("file", 12)} ${fmtNum(s.files)} ${icon("folder", 12)} ${fmtNum(s.dirs)} · ${fmtBytes(s.bytes)}`;
 
 const OFFLINE = "OFFLINE: ";
 const INTERVALS: [number, string][] = [
@@ -62,6 +83,9 @@ const emptyJob = (): FsJob => ({
   lastRun: 0,
   lastResult: "",
   conflicts: 0,
+  paused: false,
+  statsA: { files: 0, dirs: 0, bytes: 0 },
+  statsB: { files: 0, dirs: 0, bytes: 0 },
 });
 
 function ago(ts: number) {
@@ -94,14 +118,20 @@ export async function loadJobs() {
 
 /** Worst watcher state across both sides of a job. */
 function watchStatus(job: FsJob) {
+  if (job.paused) return { cls: "paused", text: "Paused", limitHost: "" };
   if (!job.watch) return null;
   const sides = ["a", "b"].map((s) => watching.get(`${job.id}:${s}`)).filter(Boolean) as { state: string; message: string }[];
   const pick = (st: string) => sides.find((x) => x.state === st);
-  const w = pick("offline") ?? pick("polling") ?? pick("watching");
-  if (!w) return { cls: "", text: "Starting watcher…" };
-  if (w.state === "offline") return { cls: "off", text: `Offline · ${w.message}` };
-  if (w.state === "polling") return { cls: "poll", text: `Checking every minute · ${w.message}` };
-  return { cls: "ok", text: `Watching for changes${sides.map((x) => x.message).filter(Boolean).map((m) => ` · ${m}`).join("")}` };
+  const w = pick("offline") ?? pick("limit") ?? pick("polling") ?? pick("watching");
+  if (!w) return { cls: "", text: "Starting watcher…", limitHost: "" };
+  if (w.state === "offline") return { cls: "off", text: `Offline · ${w.message}`, limitHost: "" };
+  if (w.state === "limit") {
+    // Remote limits carry "<text>|<host id>"; local ones have no host.
+    const [text, host] = w.message.split("|");
+    return { cls: "limit", text: `${text} — checking every minute instead`, limitHost: host ?? "local" };
+  }
+  if (w.state === "polling") return { cls: "poll", text: `Checking every minute · ${w.message}`, limitHost: "" };
+  return { cls: "ok", text: `Watching for changes${sides.map((x) => x.message).filter(Boolean).map((m) => ` · ${m}`).join("")}`, limitHost: "" };
 }
 
 /** Listen for run progress and watcher state from the backend (manual and automatic runs alike). */
@@ -113,19 +143,63 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
       live.delete(ev.id);
       await loadJobs();
     } else {
-      const l = live.get(ev.id) ?? { phase: "connecting", message: "", pct: 0 };
-      if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message });
-      else l.pct = ev.total ? Math.min(100, Math.round((ev.done / ev.total) * 100)) : 0;
+      const l = live.get(ev.id) ?? { phase: "connecting", message: "", pct: 0, rate: 0, dir: "", counted: 0 };
+      if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message, rate: 0, counted: 0 });
+      else {
+        if (ev.done < l.counted) l.counted = 0; // next rsync step started
+        totals[ev.dir] += ev.done - l.counted;
+        Object.assign(l, { pct: ev.total ? Math.min(100, Math.round((ev.done / ev.total) * 100)) : 0, rate: ev.rate, dir: ev.dir, counted: ev.done });
+      }
       live.set(ev.id, l);
     }
     ctx.rerender();
   });
 }
 
+/** Remote machines across jobs, keyed by their route list, with the best-known connection state. */
+function remoteDevices(ctx: FolderSyncCtx) {
+  const devices = new Map<string, { name: string; state: string; text: string }>();
+  for (const j of jobs) {
+    for (const side of ["a", "b"] as const) {
+      const ep = j[side];
+      if (ep.kind !== "remote") continue;
+      const key = ep.hosts.join(",");
+      const name = ep.hosts.map((id) => ctx.hosts().find((h) => h.id === id)?.name ?? "?").join(" / ");
+      const w = watching.get(`${j.id}:${side}`);
+      const state = j.paused ? "paused" : (w?.state ?? (j.lastResult.startsWith(OFFLINE) ? "offline" : "unknown"));
+      const text =
+        state === "offline" ? "Disconnected" : state === "paused" ? "Paused" : state === "unknown" ? "Not watched" : `Connected ${(w?.message ?? "").split("|")[0].split(";")[0]}`;
+      const prev = devices.get(key);
+      if (!prev || prev.state === "unknown" || prev.state === "paused") devices.set(key, { name, state, text });
+    }
+  }
+  return [...devices.values()];
+}
+
 export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
   const mac = /Mac/.test(navigator.userAgent);
+  const rateUp = [...live.values()].filter((l) => l.dir === "up").reduce((n, l) => n + l.rate, 0);
+  const rateDown = [...live.values()].filter((l) => l.dir === "down").reduce((n, l) => n + l.rate, 0);
+  const local = jobs.reduce(
+    (t, j) => {
+      for (const side of ["a", "b"] as const) {
+        if (j[side].kind !== "local") continue;
+        const s = side === "a" ? j.statsA : j.statsB;
+        t.files += s.files;
+        t.dirs += s.dirs;
+        t.bytes += s.bytes;
+      }
+      return t;
+    },
+    { files: 0, dirs: 0, bytes: 0 },
+  );
+  const watched = jobs.filter((j) => j.watch && !j.paused).length;
+  const devices = remoteDevices(ctx);
+  const allPaused = jobs.length > 0 && jobs.every((j) => j.paused);
   root.innerHTML = `
     <div class="toolbar"><div class="grow"></div>
+      ${jobs.length ? `<button class="btn sm" data-fs="${allPaused ? "resume-all" : "pause-all"}">${icon(allPaused ? "play" : "stop", 14)} ${allPaused ? "Resume all" : "Pause all"}</button>
+        <button class="btn sm" data-fs="rescan-all">${icon("sync", 14)} Rescan all</button>` : ""}
       <button class="btn primary" data-fs="new">${icon("plus", 16)}<span>New Sync</span></button></div>
     <div class="content">
       ${
@@ -136,24 +210,42 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
       }
       ${
         jobs.length
-          ? `<div class="fs-list">${jobs
+          ? `<div class="fs-overview">
+              <div class="panel fs-device"><h5>This device</h5>
+                <div class="fs-kv"><span>${icon("import", 13)} Download rate</span><b>${fmtBytes(rateDown)}/s <small class="muted">(${fmtBytes(totals.down)})</small></b></div>
+                <div class="fs-kv"><span>${icon("import", 13)} Upload rate</span><b>${fmtBytes(rateUp)}/s <small class="muted">(${fmtBytes(totals.up)})</small></b></div>
+                <div class="fs-kv"><span>${icon("terminal", 13)} Local state (total)</span><b>${statsLine(local)}</b></div>
+                <div class="fs-kv"><span>${icon("eye", 13)} Watching</span><b>${watched}/${jobs.length} jobs</b></div>
+              </div>
+              <div class="panel fs-device"><h5>Remote devices (${devices.length})</h5>
+                ${devices.map((d) => `<div class="fs-kv"><span>${icon("server", 13)} ${esc(d.name)}</span><b class="dev-${d.state}">${esc(d.text)}</b></div>`).join("") || `<p class="muted">No remote folders yet.</p>`}
+              </div></div>
+            <div class="fs-list">${jobs
               .map((j) => {
                 const st = status(j);
                 const w = watchStatus(j);
                 const l = live.get(j.id);
-                return `<div class="card fs-card" data-job="${j.id}">
+                return `<div class="card fs-card ${j.paused ? "paused" : ""}" data-job="${j.id}">
                   <div class="fs-main">
                     <div class="fs-title"><b>${esc(j.name || "Untitled")}</b><span class="badge">${j.mode === "mirror" ? "Mirror" : "Two-way"}</span>
                       ${j.intervalMin ? `<span class="muted fs-sched">${icon("sync", 12)} ${INTERVALS.find((i) => i[0] === j.intervalMin)?.[1] ?? `${j.intervalMin} min`}</span>` : ""}</div>
                     <div class="fs-path">${sideLabel(j.a, ctx)}<span class="fs-arrow">${j.mode === "mirror" ? "→" : "⇄"}</span>${sideLabel(j.b, ctx)}</div>
+                    ${j.lastRun ? `<div class="fs-stats"><span>A: ${statsLine(j.statsA)}</span><span>B: ${statsLine(j.statsB)}</span></div>` : ""}
                     <div class="fs-status ${st.cls}"><span class="dot-st"></span>${esc(st.text)}
+                      ${l?.phase === "syncing" && l.rate ? `<span class="fs-rate">${l.dir === "down" ? "↓" : l.dir === "up" ? "↑" : "⇢"} ${fmtBytes(l.rate)}/s</span>` : ""}
                       ${j.conflicts ? `<button class="fs-conflicts" data-fs="conflicts">⚠ ${j.conflicts} conflict${j.conflicts > 1 ? "s" : ""}</button>` : ""}</div>
-                    ${w ? `<div class="fs-status ${w.cls}">${icon("eye", 13)}${esc(w.text)}</div>` : ""}
+                    ${
+                      w
+                        ? `<div class="fs-status ${w.cls}">${icon("eye", 13)}${esc(w.text)}
+                            ${w.limitHost ? `<button class="fs-conflicts" data-fs="raise" data-host="${esc(w.limitHost)}">Raise limit</button>` : ""}</div>`
+                        : ""
+                    }
                     ${l?.phase === "syncing" ? `<div class="bar"><i style="width:${l.pct}%"></i></div>` : ""}
                   </div>
                   <div class="fs-actions">
+                    <button class="icon-btn" data-fs="${j.paused ? "resume" : "pause"}" title="${j.paused ? "Resume" : "Pause"}">${icon(j.paused ? "play" : "stop", 15)}</button>
                     <button class="btn sm" data-fs="preview" ${l ? "disabled" : ""}>${icon("eye", 14)} Preview</button>
-                    <button class="btn primary sm" data-fs="run" ${l ? "disabled" : ""}>${icon("play", 14)} Sync now</button>
+                    <button class="btn primary sm" data-fs="run" ${l ? "disabled" : ""}>${icon("sync", 14)} Sync now</button>
                     <button class="icon-btn" data-fs="edit" title="Edit">${icon("edit", 15)}</button>
                   </div></div>`;
               })
@@ -168,7 +260,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
 /** Run or preview; progress arrives through `listenFolderSync`. */
 export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, quiet = false) {
   if (live.has(id)) return;
-  live.set(id, { phase: "connecting", message: "", pct: 0 });
+  live.set(id, { phase: "connecting", message: "", pct: 0, rate: 0, dir: "", counted: 0 });
   ctx.rerender();
   try {
     const r = await api.fsyncRun(id, dryRun);
@@ -187,7 +279,7 @@ export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, qui
 /** Run jobs whose interval has elapsed (called every minute and at startup, so missed runs catch up). */
 export function runDueJobs(ctx: FolderSyncCtx) {
   for (const j of jobs) {
-    if (j.intervalMin > 0 && Date.now() - j.lastRun >= j.intervalMin * 60_000) runJob(j.id, ctx, false, true);
+    if (!j.paused && j.intervalMin > 0 && Date.now() - j.lastRun >= j.intervalMin * 60_000) runJob(j.id, ctx, false, true);
   }
 }
 
@@ -201,7 +293,23 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     const cp = t.closest<HTMLElement>("[data-copy]")?.dataset.copy;
     if (cp) return api.clipboardWrite(cp).then(() => toast("Command copied", "ok"));
     if (act === "new") return jobDialog(emptyJob(), ctx);
+    const pause = async (ids: string[], paused: boolean) => {
+      await api.fsyncPause(ids, paused).catch((x) => toast(String(x), "err"));
+      await loadJobs();
+      ctx.rerender();
+    };
+    if (act === "pause-all" || act === "resume-all") return pause(jobs.map((j) => j.id), act === "pause-all");
+    if (act === "rescan-all") return jobs.filter((j) => !j.paused).forEach((j) => runJob(j.id, ctx, false, true));
     if (!job) return;
+    if (act === "pause" || act === "resume") return pause([job.id], act === "pause");
+    if (act === "raise") {
+      const host = t.closest<HTMLElement>("[data-host]")!.dataset.host!;
+      toast(host === "local" ? "Asking for the admin password…" : "Raising the limit on the remote…", "info");
+      return (host === "local" ? api.fsyncRaiseInotify() : api.fsyncRaiseInotifyRemote(host)).then(
+        () => toast("inotify limit raised; watching again", "ok"),
+        (x) => toast(String(x), "err"),
+      );
+    }
     if (act === "run") return runJob(job.id, ctx);
     if (act === "preview") return runJob(job.id, ctx, true);
     if (act === "edit") return jobDialog(job, ctx);

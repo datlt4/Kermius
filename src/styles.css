@@ -567,3 +567,24 @@ details .field + .field { margin-top: 10px; }
 .fp-foot { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); }
 .fp-choice { font-family: "JetBrains Mono", monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
 .fs-initial-note { color: var(--warn) !important; }
+
+/* ---------- folder sync overview ---------- */
+.fs-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+.fs-device { gap: 6px; margin: 0; }
+.fs-kv { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; padding: 3px 0; border-bottom: 1px solid #252a35; }
+.fs-kv:last-child { border-bottom: 0; }
+.fs-kv > span { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+.fs-kv b { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; }
+.fs-kv b .i { color: var(--faint); }
+.dev-watching, .dev-polling, .dev-limit { color: var(--ok); }
+.dev-offline { color: #c9a0ff; }
+.dev-paused, .dev-unknown { color: var(--muted); }
+.fs-stats { display: flex; gap: 18px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.fs-stats span { display: inline-flex; align-items: center; gap: 4px; }
+.fs-stats .i { color: var(--faint); }
+.fs-rate { margin-left: 8px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.fs-status.limit { color: #ffd27a; }
+.fs-status.limit .i { color: #ffd27a; }
+.fs-status.paused { color: var(--muted); }
+.fs-card.paused { opacity: 0.65; }
+@media (max-width: 900px) { .fs-overview { grid-template-columns: 1fr; } }

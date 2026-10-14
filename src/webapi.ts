@@ -150,6 +150,9 @@ export const webApi: Api = {
   fsyncConflicts: unsupported,
   fsyncRead: unsupported,
   fsyncResolve: unsupported,
+  fsyncPause: unsupported,
+  fsyncRaiseInotify: unsupported,
+  fsyncRaiseInotifyRemote: unsupported,
   fsyncWatchStates: async () => ({}),
   importTermix: unsupported,
   copyPassword: async (id: string) => {

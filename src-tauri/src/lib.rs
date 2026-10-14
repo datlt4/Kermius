@@ -11,6 +11,7 @@ mod sync;
 mod termix;
 mod tunnel;
 
+use foldersync::Plan;
 use model::{now_ms, Host, Identity, Key, Snippet, SyncSettings};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -611,6 +612,9 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
                     j.last_run = now_ms();
                     j.conflicts = plan.open_conflicts;
                 }
+                if let Ok((_, Plan { stats: Some((a, b)), .. })) = &result {
+                    (j.stats_a, j.stats_b) = (*a, *b);
+                }
             }
         }
         state.store.save().map_err(e)?;
@@ -653,6 +657,63 @@ fn fsync_resolve(app: tauri::AppHandle, state: State<AppState>, id: String, path
     Ok(())
 }
 
+#[tauri::command]
+fn fsync_pause(app: tauri::AppHandle, state: State<AppState>, ids: Vec<String>, paused: bool) -> Res<()> {
+    for j in state.store.state.lock().folder_syncs.iter_mut().filter(|j| ids.contains(&j.id)) {
+        j.paused = paused;
+    }
+    state.store.save().map_err(e)?;
+    state.watchers.restart(&app);
+    Ok(())
+}
+
+const INOTIFY_CONF: &str = "fs.inotify.max_user_watches=1048576\nfs.inotify.max_user_instances=1024\n";
+
+/// Shell that persists and applies higher inotify limits (run as root).
+fn inotify_fix_script() -> String {
+    format!("printf '{INOTIFY_CONF}' > /etc/sysctl.d/90-kermius-inotify.conf && sysctl -p /etc/sysctl.d/90-kermius-inotify.conf")
+}
+
+/// Raise the local inotify limits (asks for the admin password via polkit), then restart watchers.
+#[tauri::command]
+async fn fsync_raise_inotify(app: tauri::AppHandle) -> Res<()> {
+    let out = tokio::process::Command::new("pkexec").args(["sh", "-c", &inotify_fix_script()]).output().await.map_err(|err| {
+        format!("pkexec not available ({err}); run: echo -e '{INOTIFY_CONF}' | sudo tee /etc/sysctl.d/90-kermius-inotify.conf && sudo sysctl --system")
+    })?;
+    if !out.status.success() {
+        return Err(format!("Not changed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    app.state::<AppState>().watchers.restart(&app);
+    Ok(())
+}
+
+/// Raise inotify limits on a remote with `sudo` and the host's stored password.
+#[tauri::command]
+async fn fsync_raise_inotify_remote(app: tauri::AppHandle, state: State<'_, AppState>, host_id: String) -> Res<()> {
+    let host = state.host(&host_id)?;
+    if host.password.is_empty() {
+        return Err(format!("No password stored for {}; run on the remote: sudo sh -c \"{}\"", host.name, inotify_fix_script()));
+    }
+    let handle = ssh::connect(state.store.clone(), &host, ssh::no_log()).await?;
+    let mut ch = handle.channel_open_session().await.map_err(e)?;
+    ch.exec(true, format!("sudo -S -p '' sh -c {}", foldersync::sh(&inotify_fix_script()))).await.map_err(e)?;
+    ch.data_bytes(format!("{}\n", host.password).into_bytes()).await.map_err(e)?;
+    ch.eof().await.map_err(e)?;
+    let (mut code, mut err) = (1, Vec::new());
+    while let Some(msg) = ch.wait().await {
+        match msg {
+            russh::ChannelMsg::ExitStatus { exit_status } => code = exit_status,
+            russh::ChannelMsg::ExtendedData { data, .. } => err.extend_from_slice(&data),
+            _ => {}
+        }
+    }
+    if code != 0 {
+        return Err(format!("sudo failed on {}: {}", host.name, String::from_utf8_lossy(&err).trim()));
+    }
+    state.watchers.restart(&app);
+    Ok(())
+}
+
 /// Current watcher states, for UIs opened after the watchers started.
 #[tauri::command]
 fn fsync_watch_states(state: State<AppState>) -> HashMap<String, (String, String)> {
@@ -691,7 +752,7 @@ pub fn cli_run_sync(id: &str) -> i32 {
         let job = store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or("Job not found")?;
         let emit: foldersync::Emit = Arc::new(|ev| match ev {
             foldersync::Event::Phase { phase, message } => eprintln!("{phase} {message}"),
-            foldersync::Event::Progress { done, total } => eprint!("\r{done}/{total} bytes"),
+            foldersync::Event::Progress { done, total, rate, .. } => eprint!("\r{done}/{total} bytes, {rate} B/s"),
             _ => {}
         });
         let (summary, _) = tauri::async_runtime::block_on(foldersync::run(store, job, false, emit))?;
@@ -793,6 +854,9 @@ pub fn run() {
             fsync_delete,
             fsync_run,
             fsync_watch_states,
+            fsync_pause,
+            fsync_raise_inotify,
+            fsync_raise_inotify_remote,
             fsync_conflicts,
             fsync_read,
             fsync_resolve,

@@ -32,7 +32,7 @@ impl Watchers {
             tasks.iter().for_each(|t| t.abort());
         }
         self.states.lock().clear();
-        let jobs: Vec<Job> = app.state::<AppState>().store.state.lock().folder_syncs.iter().filter(|j| j.watch).cloned().collect();
+        let jobs: Vec<Job> = app.state::<AppState>().store.state.lock().folder_syncs.iter().filter(|j| j.watch && !j.paused).cloned().collect();
         let mut tasks = self.tasks.lock();
         for job in jobs {
             tasks.insert(job.id.clone(), start(app.clone(), job, self.states.clone()));
@@ -129,8 +129,12 @@ async fn watch_local(w: Who, path: String, tx: UnboundedSender<()>) {
             }
         };
         if let Err(err) = watcher.watch(Path::new(&path), RecursiveMode::Recursive) {
-            // e.g. inotify watch limit: fall back to polling this side.
-            w.report("polling", format!("{path}: {err}; checking every minute"));
+            // Out of inotify watches (huge trees): poll this side until the limit is raised.
+            if matches!(err.kind, notify::ErrorKind::MaxFilesWatch) || err.to_string().contains("No space left") {
+                w.report("limit", "inotify watch limit reached on this computer; checking every minute");
+            } else {
+                w.report("polling", format!("{path}: {err}; checking every minute"));
+            }
             tokio::time::sleep(Duration::from_secs(60)).await;
             let _ = tx.send(());
             continue;
@@ -178,18 +182,25 @@ async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
             continue;
         }
         w.report("watching", format!("via {}", host.name));
-        let mut missing_tool = false;
+        let (mut missing_tool, mut stderr) = (false, Vec::new());
         while let Some(msg) = ch.wait().await {
             match msg {
                 ChannelMsg::Data { .. } => {
                     let _ = tx.send(());
                 }
+                ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
                 ChannelMsg::ExitStatus { exit_status: 127 } => missing_tool = true,
                 _ => {}
             }
         }
-        if missing_tool {
-            w.report("polling", format!("via {}; install inotify-tools on the remote for instant sync", host.name));
+        let limit = String::from_utf8_lossy(&stderr).contains("upper limit");
+        if missing_tool || limit {
+            if limit {
+                // The message carries the host id so the UI can offer to raise the limit there.
+                w.report("limit", format!("inotify watch limit reached on {}|{}", host.name, host.id));
+            } else {
+                w.report("polling", format!("via {}; install inotify-tools on the remote for instant sync", host.name));
+            }
             while !handle.is_closed() {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 let _ = tx.send(());
