@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "1.20.1"
+version = "1.21.0"
 edition = "2021"
 license = "MIT"
 
@@ -40,6 +40,7 @@ strip = true
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 fontdb = "0.23"
 serialport = { version = "4", default-features = false }
+tauri-plugin-autostart = "2"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 portable-pty = "0.9"

@@ -787,6 +787,13 @@ const RENDERERS = [
 
 els.page.addEventListener("change", (e) => {
   const t = e.target as HTMLSelectElement;
+  if (t.id === "s-autostart") {
+    const on = (t as unknown as HTMLInputElement).checked;
+    return api.autostartSet(on).then(
+      () => toast(on ? "Kermius will start when you log in" : "Start on login turned off", "ok"),
+      (err) => toast(String(err), "err"),
+    );
+  }
   if (t.id !== "s-renderer") return;
   if (t.value) localStorage.setItem("kermius.renderer", t.value);
   else localStorage.removeItem("kermius.renderer");
@@ -812,6 +819,10 @@ function renderSettings() {
         <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>${isWeb ? `<button class="btn ghost" data-set="lock">${icon("lock", 15)} Lock</button>` : ""}
           <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
       </div>
+      ${desktop ? `<div class="panel">
+        <div class="panel-head">${icon("settings")}<div><h3>General</h3></div></div>
+        <label class="check"><input type="checkbox" id="s-autostart" /> Start Kermius when I log in <small class="muted">(Folder Sync watchers start with it)</small></label>
+      </div>` : ""}
       ${isWeb ? "" : `<div class="panel">
         <div class="panel-head">${icon("import")}<div><h3>Import from Termix</h3><p class="muted">Termix → Host Manager → Export (JSON). Existing hosts are updated, not duplicated.</p></div></div>
         <label class="field"><span>Export file path</span><input id="imp-path" placeholder="/home/you/termix-hosts.json" /></label>
@@ -842,6 +853,11 @@ echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
       </div>`}
       <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>
     </div>`;
+  if (desktop)
+    api.autostartGet().then((on) => {
+      const c = $<HTMLInputElement>("#s-autostart", els.page);
+      if (c) c.checked = on;
+    });
 }
 
 els.page.addEventListener("click", async (e) => {
