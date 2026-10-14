@@ -394,6 +394,28 @@ fn ssh_send_password(state: State<AppState>, sid: String, host_id: String) -> Re
     Ok(())
 }
 
+#[tauri::command]
+fn local_has_password(state: State<AppState>) -> bool {
+    !state.store.state.lock().local_password.is_empty()
+}
+
+#[tauri::command]
+fn local_set_password(state: State<AppState>, password: String) -> Res<()> {
+    state.store.state.lock().local_password = password;
+    state.store.save().map_err(e)
+}
+
+/// Type this computer's saved password into a local terminal (e.g. at a sudo prompt).
+#[tauri::command]
+fn local_send_password(state: State<AppState>, sid: String) -> Res<()> {
+    let password = state.store.state.lock().local_password.clone();
+    if password.is_empty() {
+        return Err("No local password saved".into());
+    }
+    send_cmd(&state, &sid, ssh::Cmd::Data(password.into_bytes()));
+    Ok(())
+}
+
 /// The UI rendered `bytes` of terminal output (flow control).
 #[tauri::command]
 fn term_ack(state: State<AppState>, sid: String, bytes: u64) {
@@ -873,6 +895,9 @@ pub fn run() {
             term_ack,
             host_has_password,
             ssh_send_password,
+            local_has_password,
+            local_set_password,
+            local_send_password,
             ssh_close,
             trust_new_host_key,
             tunnel_start,

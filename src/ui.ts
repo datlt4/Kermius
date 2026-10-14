@@ -128,12 +128,12 @@ export function confirmDialog(title: string, body: string, ok = "Delete"): Promi
   });
 }
 
-export function promptDialog(title: string, label: string, value = ""): Promise<string | null> {
+export function promptDialog(title: string, label: string, value = "", password = false): Promise<string | null> {
   return new Promise((resolve) => {
     const el = document.createElement("div");
     el.className = "modal-wrap";
     el.innerHTML = `<form class="modal"><h3>${esc(title)}</h3>
-      <label class="field"><span>${esc(label)}</span><input name="v" value="${esc(value)}" spellcheck="false" /></label>
+      <label class="field"><span>${esc(label)}</span><input name="v" type="${password ? "password" : "text"}" value="${esc(value)}" spellcheck="false" /></label>
       <div class="modal-actions" style="margin-top:16px"><button type="button" class="btn ghost" data-r="0">Cancel</button><button type="submit" class="btn primary">OK</button></div></form>`;
     document.body.append(el);
     const input = el.querySelector("input")!;
