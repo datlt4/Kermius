@@ -376,10 +376,7 @@ function sideFields(key: "a" | "b", ep: FsEndpoint, ctx: FolderSyncCtx) {
       <button type="button" class="btn sm" data-browse="${key}">Browse…</button></div>
     ${
       ep.kind === "remote"
-        ? `<details class="fs-req"><summary>Requirements on the remote</summary>
-            <p class="muted"><b>rsync</b> and GNU <b>find</b> are required (Linux). <b>inotify-tools</b> makes remote changes sync instantly;
-              without it Kermius checks every minute. Run on the remote:</p>${installList(INSTALL)}</details>
-          <small class="muted">Tick the hosts that reach this machine; they are tried top to bottom (e.g. wired, Wi-Fi, VPN).</small>
+        ? `<small class="muted">Tick the hosts that reach this machine; they are tried top to bottom (e.g. wired, Wi-Fi, VPN).</small>
           <input class="fs-route-filter" placeholder="Filter by name, IP, group or tag…" spellcheck="false" />
           <div class="fs-routes">
             ${order
@@ -442,6 +439,19 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
       }
       <label class="check"><input type="checkbox" name="watch" ${draft.watch ? "checked" : ""} /> Watch for changes and sync automatically
         <small class="muted">(remote side: instant with <code>inotify-tools</code>, otherwise checked every minute)</small></label>
+      <details class="fs-req" ${rsyncLocal === false || draft.a.kind === "remote" || draft.b.kind === "remote" ? "open" : ""}>
+        <summary>How to install rsync and inotify-tools</summary>
+        <p class="muted"><b>This computer</b> needs <b>rsync 3.1+</b> (watching local folders is built in, no inotify-tools needed)${
+          rsyncLocal === false ? ` — <span class="err">not found</span>` : rsyncLocal ? " — installed ✓" : ""
+        }.</p>
+        ${installList(
+          /Mac/.test(navigator.userAgent)
+            ? [["macOS (Homebrew)", "brew install rsync"]]
+            : INSTALL.map(([os, cmd]) => [os, cmd.replace(" inotify-tools", "").replace(" findutils", "")]),
+        )}
+        <p class="muted"><b>Remote hosts</b> (Linux) need <b>rsync</b> and GNU <b>find</b>; <b>inotify-tools</b> makes remote changes sync instantly. Run on each remote:</p>
+        ${installList(INSTALL)}
+      </details>
       <div class="field-row"><label class="field grow"><span>Run automatically (while Kermius is open)</span><select name="interval">${INTERVALS.map(
         ([m, l]) => `<option value="${m}" ${m === draft.intervalMin ? "selected" : ""}>${l}</option>`,
       ).join("")}</select></label></div>
