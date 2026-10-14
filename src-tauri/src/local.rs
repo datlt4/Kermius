@@ -26,9 +26,35 @@ pub fn spawn(
     on_status: Channel<Status>,
     flow: Arc<Flow>,
 ) -> Result<mpsc::UnboundedSender<Cmd>, String> {
+    spawn_cmd(shell(), cols, rows, on_data, on_status, flow)
+}
+
+/// Run `program args` in a local PTY (e.g. mosh).
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub fn spawn_program(
+    program: &str,
+    args: &[String],
+    cols: u32,
+    rows: u32,
+    on_data: Channel<InvokeResponseBody>,
+    on_status: Channel<Status>,
+    flow: Arc<Flow>,
+) -> Result<mpsc::UnboundedSender<Cmd>, String> {
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(args);
+    spawn_cmd(cmd, cols, rows, on_data, on_status, flow)
+}
+
+fn spawn_cmd(
+    mut cmd: CommandBuilder,
+    cols: u32,
+    rows: u32,
+    on_data: Channel<InvokeResponseBody>,
+    on_status: Channel<Status>,
+    flow: Arc<Flow>,
+) -> Result<mpsc::UnboundedSender<Cmd>, String> {
     let e = |err: anyhow::Error| err.to_string();
     let pair = native_pty_system().openpty(size(cols, rows)).map_err(e)?;
-    let mut cmd = shell();
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     if let Some(home) = dirs::home_dir() {

@@ -27,6 +27,10 @@ pub struct Host {
     /// Keychain references; host fields take precedence when set.
     pub identity_id: String,
     pub key_id: String,
+    /// "ssh" (or empty), "mosh", "telnet", "serial" (address = device path) or "vnc".
+    pub protocol: String,
+    /// Serial only; 0 = 115200.
+    pub baud: u32,
     pub updated_at: i64,
     /// Tombstone so deletions propagate through sync.
     pub deleted: bool,

@@ -650,3 +650,14 @@ details .field + .field { margin-top: 10px; }
 .sx-right { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .sx-note { font-size: 12px; }
 .sx-preview { flex: 1; margin: 0; overflow: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: #12141a; font-family: "JetBrains Mono", monospace; font-size: 12.5px; white-space: pre; }
+
+/* protocols */
+.proto-seg { margin-bottom: 14px; }
+.proto-seg button { width: auto; flex: 1; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
+.proto-note { margin: -4px 0 14px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; color: var(--muted); background: rgba(91, 140, 255, 0.08); border: 1px solid rgba(91, 140, 255, 0.25); border-radius: 10px; }
+.proto-note .btn { margin-left: 4px; }
+.session.vnc { background: #0b0d12; }
+.vnc-screen { position: absolute; inset: 0; display: flex; }
+.vnc-screen > div { flex: 1; }
+.session.vnc .sess-tools button { width: auto; padding: 0 8px; font-size: 12px; }
+.session.vnc .sess-tools button.on { color: var(--accent); }

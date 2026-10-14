@@ -6,6 +6,7 @@ A fast, Termius-style SSH client built with Tauri 2 (Rust + TypeScript), with se
 
 - Hosts organised by **groups** (folders) and **tags**, instant search (`Ctrl+K`)
 - Multi-tab SSH terminals (xterm.js + WebGL), password / private key / keyboard-interactive auth
+- **Mosh**, **Telnet** (auto-login), **serial** consoles and **VNC** remote desktops (noVNC) in tabs
 - **Copy password** from host cards, the right-click menu, the editor, or the terminal toolbar
 - Local port forwarding rules per host
 - Trust-on-first-use host key checking (synced across devices)
@@ -51,6 +52,12 @@ docker compose up -d   # pulls hienanh/kermius-sync, listens on port 8080 (chang
 Put it behind HTTPS (Caddy, Traefik, nginx…). In Kermius → Settings → Sync, enter the server URL, the token and an encryption passphrase. Use the same passphrase on every device; it never leaves the device and lost passphrases cannot be recovered.
 
 API: `GET /v1/vault` → blob + `x-version`; `PUT /v1/vault` with `x-base-version` (409 on conflict; the client re-pulls and merges per host by last update).
+
+## Mosh, serial and VNC
+
+- **Mosh** needs `mosh` on this computer (the .deb/.rpm installs it; macOS: `brew install mosh`) and `mosh-server` on the host, with UDP ports 60000–61000 open. The host editor has a copyable install command. Kermius signs in over SSH with the host's stored credentials.
+- **Serial** on Linux needs the `dialout` group: `sudo usermod -aG dialout $USER`, then log out and back in.
+- **VNC** needs nothing extra; the VNC password is the host's password.
 
 ## Folder Sync
 
