@@ -336,6 +336,15 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
   else root.innerHTML = html;
 }
 
+/** "Sync now" also resumes a paused job; a watched one then syncs through its watcher's start-up run. */
+async function syncNow(job: FsJob, ctx: FolderSyncCtx) {
+  if (!job.paused) return runJob(job.id, ctx);
+  await api.fsyncPause([job.id], false).catch((x) => toast(String(x), "err"));
+  await loadJobs();
+  ctx.rerender();
+  if (!job.watch) runJob(job.id, ctx);
+}
+
 /** Run a job; progress arrives through `listenFolderSync`. */
 export async function runJob(id: string, ctx: FolderSyncCtx, quiet = false) {
   if (live.has(id)) return;
@@ -413,7 +422,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
         (x) => toast(String(x), "err"),
       );
     }
-    if (act === "run") return runJob(job.id, ctx);
+    if (act === "run") return syncNow(job, ctx);
     if (act === "edit") return jobDialog(job, ctx);
     if (act === "details") return detailsDialog(job);
     if (act === "conflicts") return conflictsDialog(job, () => loadJobs().then(ctx.rerender));
@@ -425,7 +434,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     if (!job) return;
     e.preventDefault();
     contextMenu(e.clientX, e.clientY, [
-      { label: "Sync now", icon: "play", action: () => runJob(job.id, ctx) },
+      { label: "Sync now", icon: "play", action: () => syncNow(job, ctx) },
       { label: "Edit", icon: "edit", action: () => jobDialog(job, ctx) },
       ...(job.mode === "twoway" ? [{ label: "Resolve conflicts", icon: "eye", action: () => conflictsDialog(job, () => loadJobs().then(ctx.rerender)) }] : []),
       "-" as const,

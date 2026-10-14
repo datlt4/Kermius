@@ -30,6 +30,8 @@ export interface Host {
   /** "ssh" (or ""), "mosh", "telnet", "serial" or "vnc". */
   protocol: string;
   baud: number;
+  viewOnly?: boolean;
+  noClipboard?: boolean;
   updatedAt: number;
   deleted: boolean;
 }

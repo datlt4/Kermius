@@ -9,7 +9,6 @@ class IpcChannel {
   protocol = "";
   readyState = "connecting";
   onopen: ((e: Event) => void) | null = null;
-  onmessage: ((e: MessageEvent) => void) | null = null;
   onerror: ((e: Event) => void) | null = null;
   onclose: ((e: CloseEvent) => void) | null = null;
   private sid = "";
@@ -17,11 +16,32 @@ class IpcChannel {
   received = 0;
   rtt = 0;
 
+  /** Data that arrived before noVNC attached (servers greet immediately). */
+  private early: ArrayBuffer[] = [];
+  private handler: ((e: MessageEvent) => void) | null = null;
+
+  get onmessage() {
+    return this.handler;
+  }
+
+  set onmessage(f: ((e: MessageEvent) => void) | null) {
+    this.handler = f;
+    if (!f || !this.early.length) return;
+    // After noVNC finishes attaching (it opens the protocol state right after setting the handler);
+    // data arriving meanwhile is queued behind, keeping the order.
+    setTimeout(() => {
+      const queued = this.early;
+      this.early = [];
+      queued.forEach((d) => this.handler?.(new MessageEvent("message", { data: d })));
+    });
+  }
+
   async open(hostId: string, onEnd: (message: string) => void) {
     const data = new Channel<ArrayBuffer>();
     data.onmessage = (d) => {
       this.received += d.byteLength;
-      this.onmessage?.(new MessageEvent("message", { data: d }));
+      if (this.handler && !this.early.length) this.handler(new MessageEvent("message", { data: d }));
+      else this.early.push(d);
     };
     const status = new Channel<Status>();
     status.onmessage = (s) => {
@@ -67,6 +87,8 @@ const ENCODINGS: Record<number, string> = { 0: "Raw", 1: "CopyRect", 2: "RRE", 5
 const fmtRate = (b: number) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB/s` : `${(b / 1024).toFixed(0)} KB/s`);
 
 type Rfb = {
+  viewOnly: boolean;
+  clipboardPasteFrom(text: string): void;
   scaleViewport: boolean;
   background: string;
   resizeSession: boolean;
@@ -91,6 +113,7 @@ export class VncTab {
     this.el.innerHTML = `<div class="vnc-screen"></div>
       <div class="vnc-stats" ${localStorage.getItem("kermius.vncStats") === "0" ? "hidden" : ""}></div>
       <div class="sess-tools"><button data-v="cad" title="Send Ctrl+Alt+Del">Ctrl+Alt+Del</button>
+        <button data-v="control" class="${host.viewOnly ? "" : "on"}" title="Send mouse and keyboard to the remote (off = view only)">Control</button>
         <button data-v="scale" class="on" title="Fit the remote screen to the window">Fit</button>
         <button data-v="stats" class="${localStorage.getItem("kermius.vncStats") === "0" ? "" : "on"}" title="Frame rate, latency and encoding">Stats</button></div>
       <div class="overlay"></div>`;
@@ -98,7 +121,10 @@ export class VncTab {
       const t = e.target as HTMLElement;
       const v = t.closest<HTMLElement>("[data-v]")?.dataset.v;
       if (v === "cad") this.rfb?.sendCtrlAltDel();
-      else if (v === "stats") {
+      else if (v === "control" && this.rfb) {
+        this.rfb.viewOnly = !this.rfb.viewOnly;
+        t.closest("button")!.classList.toggle("on", !this.rfb.viewOnly);
+      } else if (v === "stats") {
         const box = this.el.querySelector<HTMLElement>(".vnc-stats")!;
         box.hidden = !box.hidden;
         t.closest("button")!.classList.toggle("on", !box.hidden);
@@ -115,6 +141,7 @@ export class VncTab {
 
   mount(parent: HTMLElement) {
     parent.append(this.el);
+    addEventListener("focus", this.onFocus);
     this.connect();
   }
 
@@ -134,10 +161,20 @@ export class VncTab {
       this.rfb = rfb;
       rfb.scaleViewport = this.el.querySelector('[data-v="scale"]')!.classList.contains("on");
       rfb.background = "#0b0d12";
+      rfb.viewOnly = !this.el.querySelector('[data-v="control"]')!.classList.contains("on");
+      if (!this.host.noClipboard) {
+        // Remote copy → local clipboard; local clipboard → remote when this tab gets focus.
+        rfb.addEventListener("clipboard", (e) => {
+          const text = String(e.detail?.text ?? "");
+          this.lastClip = text;
+          if (text) api.clipboardWrite(text);
+        });
+      }
       this.watchStats(rfb as unknown as RfbInternals, channel);
       rfb.addEventListener("connect", () => {
         this.setState("connected");
         rfb.focus();
+        this.sendClipboard();
       });
       rfb.addEventListener("disconnect", (e) => {
         if (this.rfb !== rfb) return;
@@ -157,6 +194,21 @@ export class VncTab {
   }
 
   private statsTimer = 0;
+  private lastClip = "";
+
+  /** Push the local clipboard to the remote if it changed since we last saw it. */
+  private sendClipboard() {
+    // noVNC drops clipboard messages until the session is up.
+    if (this.host.noClipboard || !this.rfb || this.state !== "connected") return;
+    api.clipboardRead().then((text) => {
+      if (text && text !== this.lastClip && this.rfb) {
+        this.lastClip = text;
+        this.rfb.clipboardPasteFrom(text);
+      }
+    }, () => {});
+  }
+
+  private onFocus = () => !this.el.hidden && this.sendClipboard();
 
   /** FPS = completed framebuffer updates per second; encodings = rectangle encodings seen. Uses noVNC 1.7 internals. */
   private watchStats(rfb: RfbInternals, channel: IpcChannel) {
@@ -202,7 +254,9 @@ export class VncTab {
   private setState(s: string, message = "") {
     this.state = s;
     const ov = this.el.querySelector<HTMLElement>(".overlay")!;
-    ov.className = `overlay ${s === "connected" ? "" : s}`;
+    // Not the terminal's "closed" bar: a centred card that takes clicks.
+    ov.className = `overlay ${s === "connected" ? "" : s === "connecting" ? "connecting" : "error"}`;
+    this.el.classList.toggle("live", s === "connected");
     const port = this.host.port || 5900;
     ov.innerHTML =
       s === "connecting"
@@ -217,6 +271,7 @@ export class VncTab {
   show() {
     this.el.hidden = false;
     this.rfb?.focus();
+    this.sendClipboard();
   }
 
   hide() {
@@ -238,6 +293,7 @@ export class VncTab {
 
   dispose() {
     clearInterval(this.statsTimer);
+    removeEventListener("focus", this.onFocus);
     const rfb = this.rfb;
     this.rfb = null;
     rfb?.disconnect();
