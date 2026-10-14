@@ -809,9 +809,10 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
 
 /// Mirror a → b with a single rsync (it compares both sides itself; no separate scan).
 async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&String>, emit: &Emit) -> Result<(String, Plan), String> {
-    // An unmounted disk looks like an empty folder: never let --delete wipe the backup because of it.
-    if job.delete && job.last_run > 0 && is_empty_dir(a).await? {
-        return Err(format!("{} is empty although it was synced before; stopped to protect your files (disk not mounted?)", a.label()));
+    // An unmounted disk looks like an empty folder: never let --delete wipe the backup because of it,
+    // not even on the first run (the destination may be an existing backup).
+    if job.delete && is_empty_dir(a).await? && !is_empty_dir(b).await.unwrap_or(true) {
+        return Err(format!("{} is empty but {} is not; stopped to protect your files (disk not mounted?)", a.label(), b.label()));
     }
     phase(emit, "syncing", via.map(|v| format!("via {v}")).unwrap_or_default());
     let mut args = attr_flags(job);
@@ -1181,11 +1182,17 @@ mod e2e {
         assert!(!b.join("old.txt").exists() && !b.join("skip.log").exists());
         job.last_run = 1;
         assert_eq!(run(store.clone(), job.clone(), false, emit()).await.unwrap().0, "Up to date");
-        // Source emptied (unmounted disk): refuse instead of wiping the backup.
+        // Source emptied (unmounted disk): refuse instead of wiping the backup, also on a first run.
         std::fs::remove_dir_all(&a).unwrap();
         std::fs::create_dir_all(&a).unwrap();
-        assert!(run(store.clone(), job, false, emit()).await.unwrap_err().contains("empty"));
+        assert!(run(store.clone(), job.clone(), false, emit()).await.unwrap_err().contains("empty"));
+        job.last_run = 0;
+        assert!(run(store.clone(), job.clone(), false, emit()).await.unwrap_err().contains("empty"));
         assert!(b.join("one.txt").exists());
+        // Empty source and empty destination: nothing to protect, so it runs.
+        std::fs::create_dir_all(tmp.join("fresh")).unwrap();
+        job.b = ep(&tmp.join("fresh"));
+        assert_eq!(run(store.clone(), job, false, emit()).await.unwrap().0, "Up to date");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
