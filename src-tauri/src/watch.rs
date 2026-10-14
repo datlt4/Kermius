@@ -75,9 +75,9 @@ fn start(app: AppHandle, job: Job, states: States) -> Vec<JoinHandle<()>> {
             if ep.kind == "remote" { watch_remote(w, ep, tx).await } else { watch_local(w, ep.path, tx).await }
         }));
     }
-    // Runner: catch up once, then sync after each burst of changes.
+    // Runner: sync after each burst of changes. No catch-up when the watcher starts (app start, resume):
+    // scheduled jobs catch up through their interval, manual ones wait for a change or "Sync now".
     let id = job.id.clone();
-    let _ = tx.send(());
     tasks.push(tauri::async_runtime::spawn(async move {
         while rx.recv().await.is_some() {
             tokio::time::sleep(DEBOUNCE).await;
@@ -171,6 +171,7 @@ async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
     let store = w.app.state::<AppState>().store.clone();
     let quiet: foldersync::Emit = Arc::new(|_| {});
     let mut backoff = 10;
+    let mut first = true;
     loop {
         let vault = store.state.lock().vault.clone();
         let (handle, host, path) = match foldersync::open_side(&store, &vault, &ep, &quiet).await {
@@ -184,8 +185,10 @@ async fn watch_remote(w: Who, ep: Endpoint, tx: UnboundedSender<()>) {
             }
         };
         backoff = 10;
-        // Reconnected: there may be changes we missed.
-        let _ = tx.send(());
+        // Reconnected (not the first connection): there may be changes we missed.
+        if !std::mem::take(&mut first) {
+            let _ = tx.send(());
+        }
         let cmd = format!(
             "command -v inotifywait >/dev/null 2>&1 || exit 127; exec inotifywait -m -r -q -e close_write,create,delete,move,attrib --exclude '/\\.rsync-partial(/|$)' --format x {}",
             sh(&path)
