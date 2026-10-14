@@ -230,6 +230,11 @@ els.tabs.addEventListener("click", (e) => {
   if (act === "local") return openSession(null);
   if (act === "copy-pass") return state.sessions.find((s) => s.id === state.active)?.copyPassword();
   const tab = t.closest<HTMLElement>("[data-tab]");
+  if (tab?.dataset.tab === "home") {
+    // Vault always lands on the host list.
+    state.view = "hosts";
+    return goHome();
+  }
   if (tab) activate(tab.dataset.tab!);
 });
 
