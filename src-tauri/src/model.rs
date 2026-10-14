@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Tunnel {
+    /// Display name (empty: "host:port" is shown).
+    pub label: String,
     pub bind_host: String,
     pub source_port: u16,
     pub endpoint_host: String,
@@ -27,6 +29,14 @@ pub struct Host {
     /// Keychain references; host fields take precedence when set.
     pub identity_id: String,
     pub key_id: String,
+    /// "ssh" (or empty), "mosh", "telnet", "serial" (address = device path) or "vnc".
+    pub protocol: String,
+    /// Serial only; 0 = 115200.
+    pub baud: u32,
+    /// VNC only: watch without sending mouse/keyboard input.
+    pub view_only: bool,
+    /// VNC only: do not sync the clipboard with the remote desktop.
+    pub no_clipboard: bool,
     pub updated_at: i64,
     /// Tombstone so deletions propagate through sync.
     pub deleted: bool,

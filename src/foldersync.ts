@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { api, type FsEndpoint, type FsEvent, type FsJob, type FsPlan, type Host } from "./api";
+import { api, type FsEndpoint, type FsEvent, type FsJob, type Host } from "./api";
 import { conflictsDialog } from "./conflicts";
 import { notify } from "./notify";
 import { pickFolder } from "./folderpicker";
@@ -315,8 +315,8 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                     ${l?.phase === "syncing" ? `<div class="bar ${l.pct < 0 ? "indeterminate" : ""}"><i style="width:${Math.max(0, l.pct)}%"></i></div>` : ""}
                   </div>
                   <div class="fs-actions">
-                    <button class="icon-btn" data-fs="${j.paused ? "resume" : "pause"}" title="${j.paused ? "Resume" : "Pause"}">${icon(j.paused ? "play" : "stop", 15)}</button>
-                    <button class="btn sm" data-fs="preview" ${l ? `disabled title="Busy: wait for the current sync or stop it"` : `title="List what would be copied or deleted, without changing anything"`}>${icon("eye", 14)} Preview</button>
+                    <button class="btn sm ${j.paused ? "resume-btn" : "pause-btn"}" data-fs="${j.paused ? "resume" : "pause"}"
+                      title="${j.paused ? "Watch and schedule this job again" : "Stop watching and scheduling this job"}">${icon(j.paused ? "play" : "pause", 14)} ${j.paused ? "Resume" : "Pause"}</button>
                     ${
                       l
                         ? `<button class="btn danger sm" data-fs="stop" title="Stop now; the next run resumes partial files">${icon("stop", 14)} Stop</button>`
@@ -336,16 +336,24 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
   else root.innerHTML = html;
 }
 
-/** Run or preview; progress arrives through `listenFolderSync`. */
-export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, quiet = false) {
+/** "Sync now" also resumes a paused job; a watched one then syncs through its watcher's start-up run. */
+async function syncNow(job: FsJob, ctx: FolderSyncCtx) {
+  if (!job.paused) return runJob(job.id, ctx);
+  await api.fsyncPause([job.id], false).catch((x) => toast(String(x), "err"));
+  await loadJobs();
+  ctx.rerender();
+  if (!job.watch) runJob(job.id, ctx);
+}
+
+/** Run a job; progress arrives through `listenFolderSync`. */
+export async function runJob(id: string, ctx: FolderSyncCtx, quiet = false) {
   if (live.has(id)) return;
   live.set(id, newLive());
   ctx.rerender();
   ctx.activity();
   try {
-    const r = await api.fsyncRun(id, dryRun);
-    if (dryRun) previewDialog(jobs.find((j) => j.id === id)!, r.summary, r.plan);
-    else if (!quiet) toast(r.summary, "ok");
+    const r = await api.fsyncRun(id, false);
+    if (!quiet) toast(r.summary, "ok");
   } catch (e) {
     // Automatic runs stay silent here: the outcome goes to the notification center.
     const msg = String(e);
@@ -361,7 +369,7 @@ export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, qui
 export function runDueJobs(ctx: FolderSyncCtx) {
   for (const j of jobs) {
     // Based on the last attempt, so a failing job waits a full interval instead of retrying every minute.
-    if (!j.paused && j.intervalMin > 0 && Date.now() - Math.max(j.lastRun, j.lastAttempt ?? 0) >= j.intervalMin * 60_000) runJob(j.id, ctx, false, true);
+    if (!j.paused && j.intervalMin > 0 && Date.now() - Math.max(j.lastRun, j.lastAttempt ?? 0) >= j.intervalMin * 60_000) runJob(j.id, ctx, true);
   }
 }
 
@@ -381,7 +389,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
       ctx.rerender();
     };
     if (act === "pause-all" || act === "resume-all") return pause(jobs.map((j) => j.id), act === "pause-all");
-    if (act === "rescan-all") return jobs.filter((j) => !j.paused).forEach((j) => runJob(j.id, ctx, false, true));
+    if (act === "rescan-all") return jobs.filter((j) => !j.paused).forEach((j) => runJob(j.id, ctx, true));
     if (!job) return;
     if (act === "pause" || act === "resume") return pause([job.id], act === "pause");
     if (act === "stop") {
@@ -414,8 +422,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
         (x) => toast(String(x), "err"),
       );
     }
-    if (act === "run") return runJob(job.id, ctx);
-    if (act === "preview") return runJob(job.id, ctx, true);
+    if (act === "run") return syncNow(job, ctx);
     if (act === "edit") return jobDialog(job, ctx);
     if (act === "details") return detailsDialog(job);
     if (act === "conflicts") return conflictsDialog(job, () => loadJobs().then(ctx.rerender));
@@ -427,8 +434,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     if (!job) return;
     e.preventDefault();
     contextMenu(e.clientX, e.clientY, [
-      { label: "Sync now", icon: "play", action: () => runJob(job.id, ctx) },
-      { label: "Preview", icon: "eye", action: () => runJob(job.id, ctx, true) },
+      { label: "Sync now", icon: "play", action: () => syncNow(job, ctx) },
       { label: "Edit", icon: "edit", action: () => jobDialog(job, ctx) },
       ...(job.mode === "twoway" ? [{ label: "Resolve conflicts", icon: "eye", action: () => conflictsDialog(job, () => loadJobs().then(ctx.rerender)) }] : []),
       "-" as const,
@@ -462,30 +468,6 @@ function detailsDialog(job: FsJob) {
     const t = e.target as HTMLElement;
     if (t.dataset.m === "copy") api.clipboardWrite(job.lastResult).then(() => toast("Copied", "ok"));
     else if (t === el || t.dataset.m === "close") el.remove();
-  });
-}
-
-function previewDialog(job: FsJob, summary: string, plan: FsPlan) {
-  const a = job.mode === "mirror" ? "source" : "A";
-  const b = job.mode === "mirror" ? "destination" : "B";
-  const section = (title: string, items: string[]) =>
-    items.length
-      ? `<details open><summary>${esc(title)} <b>${items.length}</b></summary><div class="fs-plan">${items
-          .slice(0, 300)
-          .map((x) => `<div>${esc(x)}</div>`)
-          .join("")}${items.length > 300 ? `<div class="muted">… ${items.length - 300} more</div>` : ""}</div></details>`
-      : "";
-  const el = document.createElement("div");
-  el.className = "modal-wrap";
-  el.innerHTML = `<div class="modal form-modal"><h3>Preview: ${esc(job.name)}</h3><p class="muted">${esc(summary)}</p>
-    ${section(`Copy ${a} → ${b}`, plan.copyAb)}${section(`Copy ${b} → ${a}`, plan.copyBa)}
-    ${section(`Delete in ${a}`, plan.deleteA)}${section(`Delete in ${b}`, plan.deleteB)}
-    ${section("Conflicts (newest wins, other kept as .sync-conflict copy)", plan.conflicts.map(([p, w]) => `${p}  (${w.toUpperCase()} wins)`))}
-    <div class="modal-actions"><button class="btn ghost" data-m="close">Close</button></div></div>`;
-  document.body.append(el);
-  el.addEventListener("click", (e) => {
-    const t = e.target as HTMLElement;
-    if (t === el || t.dataset.m === "close") el.remove();
   });
 }
 
@@ -561,7 +543,7 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
               <option value="a_to_b" ${draft.initial === "a_to_b" ? "selected" : ""}>A → B: make B identical to A (overwrite, delete files only in B)</option>
               <option value="b_to_a" ${draft.initial === "b_to_a" ? "selected" : ""}>B → A: make A identical to B (overwrite, delete files only in A)</option>
               <option value="merge" ${draft.initial === "merge" || !draft.initial ? "selected" : ""}>Merge both (copy what is missing, delete nothing)</option></select>
-              <small class="fs-initial-note">After the first sync, changes flow both ways. Identical files are never copied again. Use <b>Preview</b> to check what will be overwritten or deleted.</small></label>`
+              <small class="fs-initial-note">After the first sync, changes flow both ways. Identical files are never copied again.</small></label>`
           : ""
       }
       <label class="check"><input type="checkbox" name="watch" ${draft.watch ? "checked" : ""} /> Watch for changes and sync automatically
@@ -661,7 +643,7 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
       el.remove();
       await loadJobs();
       ctx.rerender();
-      toast("Saved. Use Preview to check what will happen before the first sync.", "ok");
+      toast("Saved", "ok");
     } catch (err) {
       toast(String(err), "err");
     }

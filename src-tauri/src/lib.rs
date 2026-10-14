@@ -5,6 +5,7 @@ mod watch;
 #[cfg(not(target_os = "ios"))]
 mod local;
 mod model;
+mod proto;
 mod ssh;
 mod sshconfig;
 mod store;
@@ -242,23 +243,33 @@ fn ssh_config_export(state: State<AppState>, host_ids: Vec<String>, with_keys: b
     sshconfig::write(&home.join(".ssh"), &ex).map_err(e)
 }
 
+/// Clipboard access off the UI thread, with a time limit: on X11 a read waits for the selection owner,
+/// which can be slow, hung, or our own window (then the UI would freeze).
+async fn with_clipboard<T: Send + 'static>(app: tauri::AppHandle, f: impl FnOnce(&tauri::AppHandle) -> Res<T> + Send + 'static) -> Res<T> {
+    let job = tauri::async_runtime::spawn_blocking(move || f(&app));
+    match tokio::time::timeout(std::time::Duration::from_secs(3), job).await {
+        Ok(r) => r.map_err(e)?,
+        Err(_) => Err("The clipboard did not respond".into()),
+    }
+}
+
 #[tauri::command]
-fn copy_password(app: tauri::AppHandle, state: State<AppState>, id: String) -> Res<()> {
+async fn copy_password(app: tauri::AppHandle, state: State<'_, AppState>, id: String) -> Res<()> {
     let host = state.host(&id)?;
     if host.password.is_empty() {
         return Err("This host has no password".into());
     }
-    app.clipboard().write_text(host.password).map_err(e)
+    with_clipboard(app, move |a| a.clipboard().write_text(host.password).map_err(e)).await
 }
 
 #[tauri::command]
-fn clipboard_write(app: tauri::AppHandle, text: String) -> Res<()> {
-    app.clipboard().write_text(text).map_err(e)
+async fn clipboard_write(app: tauri::AppHandle, text: String) -> Res<()> {
+    with_clipboard(app, move |a| a.clipboard().write_text(text).map_err(e)).await
 }
 
 #[tauri::command]
-fn clipboard_read(app: tauri::AppHandle) -> Res<String> {
-    app.clipboard().read_text().map_err(e)
+async fn clipboard_read(app: tauri::AppHandle) -> Res<String> {
+    with_clipboard(app, |a| a.clipboard().read_text().map_err(e)).await
 }
 
 #[tauri::command]
@@ -272,10 +283,125 @@ fn ssh_connect(
 ) -> Res<String> {
     let host = state.host(&host_id)?;
     let flow = Arc::new(ssh::Flow::default());
-    let tx = ssh::spawn_shell(state.store.clone(), host, cols, rows, on_data, on_status, flow.clone());
+    let tx = match host.protocol.as_str() {
+        "telnet" => proto::spawn_telnet(host, cols, rows, on_data, on_status, flow.clone()),
+        #[cfg(desktop)]
+        "serial" => proto::spawn_serial(host, on_data, on_status, flow.clone()),
+        #[cfg(desktop)]
+        "mosh" => spawn_mosh(&host, cols, rows, on_data, on_status, flow.clone())?,
+        "ssh" | "" => ssh::spawn_shell(state.store.clone(), host, cols, rows, on_data, on_status, flow.clone()),
+        p => return Err(format!("{p} is not available here")),
+    };
     let sid = uuid::Uuid::new_v4().to_string();
     state.sessions.lock().insert(sid.clone(), (tx, flow));
     Ok(sid)
+}
+
+/// Whether `name` is an executable on PATH.
+#[cfg(desktop)]
+fn in_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+}
+
+/// mosh in a local PTY; its ssh bootstrap goes through our bridge, so vault credentials and TOFU apply.
+#[cfg(desktop)]
+fn spawn_mosh(
+    host: &Host,
+    cols: u32,
+    rows: u32,
+    on_data: Channel<InvokeResponseBody>,
+    on_status: Channel<ssh::Status>,
+    flow: Arc<ssh::Flow>,
+) -> Res<tokio::sync::mpsc::UnboundedSender<ssh::Cmd>> {
+    if !in_path("mosh") {
+        return Err(format!("mosh is not installed on this computer. Install it: `{MOSH_LOCAL_SETUP}`"));
+    }
+    let target = if host.username.is_empty() { host.address.clone() } else { format!("{}@{}", host.username, host.address) };
+    // remote-ip=remote: the server reports its address over the ssh session (no ProxyCommand needed).
+    let mut args = vec!["--no-ssh-pty".to_string(), "--experimental-remote-ip=remote".into(), format!("--ssh={}", files::bridge_shell(&host.id)?)];
+    if let Ok(server) = std::env::var("KERMIUS_MOSH_SERVER") {
+        args.push(format!("--server={server}"));
+    }
+    args.push(target);
+    let _ = on_status.send(ssh::Status::Log { message: format!("Starting mosh {}", args.join(" ")) });
+    local::spawn_program("mosh", &args, cols, rows, on_data, on_status, flow)
+}
+
+#[cfg(desktop)]
+const MOSH_LOCAL_SETUP: &str = if cfg!(target_os = "macos") { "brew install mosh" } else { "sudo apt install mosh" };
+
+#[tauri::command]
+fn serial_ports() -> Vec<String> {
+    #[cfg(desktop)]
+    return proto::serial_ports();
+    #[cfg(not(desktop))]
+    Vec::new()
+}
+
+/// Whether Kermius starts when the user logs in.
+#[tauri::command]
+fn autostart_get(app: tauri::AppHandle) -> bool {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        return app.autolaunch().is_enabled().unwrap_or(false);
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        false
+    }
+}
+
+#[tauri::command]
+fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Res<()> {
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let a = app.autolaunch();
+        return if enabled { a.enable() } else { a.disable() }.map_err(e);
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, enabled);
+        Err("Not available on this platform".into())
+    }
+}
+
+/// Shell command that grants serial port access (empty where none is needed or already done).
+#[tauri::command]
+fn serial_setup_command() -> String {
+    if !cfg!(target_os = "linux") {
+        return String::new();
+    }
+    // Group lists of this process (a fresh login is needed after usermod anyway).
+    let groups = std::process::Command::new("id").arg("-nG").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    if groups.split_whitespace().any(|g| g == "dialout" || g == "uucp") { String::new() } else { proto::SERIAL_SETUP.into() }
+}
+
+/// Open a raw TCP stream to a VNC host for noVNC; data flows through `on_data` / `session_write`.
+#[tauri::command]
+async fn vnc_open(state: State<'_, AppState>, host_id: String, on_data: Channel<InvokeResponseBody>, on_status: Channel<ssh::Status>) -> Res<String> {
+    let host = state.host(&host_id)?;
+    let tx = proto::open_tcp(host, 5900, on_data, on_status).await?;
+    let sid = uuid::Uuid::new_v4().to_string();
+    state.sessions.lock().insert(sid.clone(), (tx, Arc::new(ssh::Flow::default())));
+    Ok(sid)
+}
+
+/// The VNC password for noVNC's authentication (VNC passwords cannot be kept from the client).
+#[tauri::command]
+fn vnc_password(state: State<AppState>, host_id: String) -> Res<String> {
+    Ok(state.host(&host_id)?.password)
+}
+
+/// Binary write (raw body) to a session; header `sid`.
+#[tauri::command]
+fn session_write(state: State<AppState>, request: tauri::ipc::Request<'_>) -> Res<()> {
+    let sid = request.headers().get("sid").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else { return Err("Expected raw bytes".into()) };
+    send_cmd(&state, &sid, ssh::Cmd::Data(data.clone()));
+    Ok(())
 }
 
 #[tauri::command]
@@ -366,7 +492,7 @@ fn clipboard_png(app: &tauri::AppHandle) -> Res<Vec<u8>> {
 #[tauri::command]
 async fn ssh_paste_image(app: tauri::AppHandle, state: State<'_, AppState>, sid: String) -> Res<String> {
     #[cfg(desktop)]
-    return upload_to_session(&state, &sid, "png", clipboard_png(&app)?).await;
+    return upload_to_session(&state, &sid, "png", with_clipboard(app, clipboard_png).await?).await;
     #[cfg(mobile)]
     {
         let _ = (app, state, sid);
@@ -376,13 +502,14 @@ async fn ssh_paste_image(app: tauri::AppHandle, state: State<'_, AppState>, sid:
 
 /// Save the clipboard image to the local temp dir (for local terminals); returns its path.
 #[tauri::command]
-fn save_clipboard_image(app: tauri::AppHandle) -> Res<String> {
+async fn save_clipboard_image(app: tauri::AppHandle) -> Res<String> {
     #[cfg(desktop)]
     {
+        let png = with_clipboard(app, clipboard_png).await?;
         let dir = std::env::temp_dir().join("kermius-images");
         std::fs::create_dir_all(&dir).map_err(e)?;
         let path = dir.join(format!("{}.png", uuid::Uuid::new_v4()));
-        std::fs::write(&path, clipboard_png(&app)?).map_err(e)?;
+        std::fs::write(&path, png).map_err(e)?;
         Ok(path.to_string_lossy().into_owned())
     }
     #[cfg(mobile)]
@@ -643,7 +770,8 @@ pub(crate) fn emit_fsync(app: &tauri::AppHandle, id: &str, event: foldersync::Ev
 }
 
 /// Run or preview a Folder Sync job; progress goes out as global `fsync` events.
-pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) -> Res<SyncOutcome> {
+/// `only`: paths the watchers saw change (relative to the job folders); None = full run.
+pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool, only: Option<Vec<String>>) -> Res<SyncOutcome> {
     let state = app.state::<AppState>();
     let job = state.store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or("Job not found")?;
     if !state.running_syncs.lock().insert(id.clone()) {
@@ -655,7 +783,12 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
     state.sync_stops.lock().insert(id.clone(), stop_tx);
     // Dropping the run future kills rsync; its --partial-dir keeps progress for the next run.
     let result = tokio::select! {
-        r = foldersync::run(state.store.clone(), job, dry_run, emit) => r,
+        r = async {
+            match only {
+                Some(paths) if !dry_run => foldersync::run_paths(state.store.clone(), job, paths, emit).await,
+                _ => foldersync::run(state.store.clone(), job, dry_run, emit).await,
+            }
+        } => r,
         _ = stop_rx => Err("Stopped".to_string()),
     };
     state.sync_stops.lock().remove(&id);
@@ -690,7 +823,7 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
 
 #[tauri::command]
 async fn fsync_run(app: tauri::AppHandle, id: String, dry_run: bool) -> Res<SyncOutcome> {
-    run_job(app, id, dry_run).await
+    run_job(app, id, dry_run, None).await
 }
 
 fn fsync_job(state: &AppState, id: &str) -> Res<foldersync::Job> {
@@ -713,7 +846,7 @@ fn fsync_read(state: State<AppState>, id: String, path: String) -> Res<String> {
 fn fsync_resolve(app: tauri::AppHandle, state: State<AppState>, id: String, path: String, action: String, merged: Option<String>) -> Res<()> {
     foldersync::resolve(&fsync_job(&state, &id)?, &path, &action, merged)?;
     tauri::async_runtime::spawn(async move {
-        let _ = run_job(app, id, false).await;
+        let _ = run_job(app, id, false, None).await;
     });
     Ok(())
 }
@@ -818,7 +951,16 @@ fn cli_store() -> anyhow::Result<Store> {
 /// `kermius --ssh-bridge <host id> <host> <command...>`: remote shell for rsync. Returns the exit code.
 pub fn cli_ssh_bridge(args: &[String]) -> i32 {
     let run = || -> Result<u32, String> {
-        let [id, _host, command @ ..] = args else { return Err("usage: --ssh-bridge <host id> <host> <command>".into()) };
+        // `<ssh> [flags] host [--] command…` as called by rsync or mosh (-n, -tt, -4/-6; -o/-S/-l/-p take a value).
+        let [id, rest @ ..] = args else { return Err("usage: --ssh-bridge <host id> <host> <command>".into()) };
+        let mut i = 0;
+        while i < rest.len() && rest[i].starts_with('-') && rest[i] != "--" {
+            i += if ["-o", "-S", "-l", "-p"].contains(&rest[i].as_str()) { 2 } else { 1 };
+        }
+        let mut command = rest.get(i + 1..).unwrap_or_default();
+        if command.first().is_some_and(|c| c == "--") {
+            command = &command[1..];
+        }
         let store = Arc::new(cli_store().map_err(e)?);
         let host = {
             let st = store.state.lock();
@@ -877,6 +1019,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
                 store: Arc::new(store),
@@ -923,6 +1067,13 @@ pub fn run() {
             host_has_password,
             ssh_send_password,
             local_has_password,
+            serial_ports,
+            autostart_get,
+            autostart_set,
+            serial_setup_command,
+            vnc_open,
+            vnc_password,
+            session_write,
             local_set_password,
             local_send_password,
             ssh_close,

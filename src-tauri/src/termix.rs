@@ -33,6 +33,7 @@ pub fn import(vault: &mut Vault, json: &str) -> Result<ImportReport> {
                     source_port: n("sourcePort"),
                     endpoint_host: s("endpointHost"),
                     endpoint_port: n("endpointPort"),
+                    ..Default::default()
                 }
             })
             .collect();

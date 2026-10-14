@@ -5,6 +5,7 @@ import { webApi } from "./webapi";
 export const isWeb = !("__TAURI_INTERNALS__" in window);
 
 export interface Tunnel {
+  label?: string;
   bindHost: string;
   sourcePort: number;
   endpointHost: string;
@@ -26,6 +27,11 @@ export interface Host {
   tunnels: Tunnel[];
   identityId: string;
   keyId: string;
+  /** "ssh" (or ""), "mosh", "telnet", "serial" or "vnc". */
+  protocol: string;
+  baud: number;
+  viewOnly?: boolean;
+  noClipboard?: boolean;
   updatedAt: number;
   deleted: boolean;
 }
@@ -144,11 +150,12 @@ export type Status =
   | { type: "closed" }
   | { type: "error"; message: string }
   | { type: "log"; message: string }
-  | { type: "upload"; progress: number };
+  | { type: "upload"; progress: number }
+  | { type: "rtt"; micros: number };
 
 export const emptyHost = (): Host => ({
   id: "", name: "", address: "", port: 22, username: "", password: "", privateKey: "",
-  keyPassphrase: "", folder: "", tags: [], notes: "", tunnels: [], identityId: "", keyId: "", updatedAt: 0, deleted: false,
+  keyPassphrase: "", folder: "", tags: [], notes: "", tunnels: [], identityId: "", keyId: "", protocol: "ssh", baud: 0, updatedAt: 0, deleted: false,
 });
 
 const tauriApi = {
@@ -223,6 +230,13 @@ const tauriApi = {
   termAck: (sid: string, bytes: number) => invoke<void>("term_ack", { sid, bytes }),
   sshResize: (sid: string, cols: number, rows: number) => invoke<void>("ssh_resize", { sid, cols, rows }),
   sshClose: (sid: string) => invoke<void>("ssh_close", { sid }),
+  vncOpen: (hostId: string, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) => invoke<string>("vnc_open", { hostId, onData, onStatus }),
+  vncPassword: (hostId: string) => invoke<string>("vnc_password", { hostId }),
+  sessionWrite: (sid: string, bytes: Uint8Array) => invoke<void>("session_write", bytes, { headers: { sid } }),
+  serialPorts: () => invoke<string[]>("serial_ports"),
+  autostartGet: () => invoke<boolean>("autostart_get"),
+  autostartSet: (enabled: boolean) => invoke<void>("autostart_set", { enabled }),
+  serialSetupCommand: () => invoke<string>("serial_setup_command"),
   trustNewHostKey: (hostId: string) => invoke<void>("trust_new_host_key", { hostId }),
   tunnelStart: (hostId: string, index: number) => invoke<void>("tunnel_start", { hostId, index }),
   tunnelStop: (hostId: string, index: number) => invoke<void>("tunnel_stop", { hostId, index }),

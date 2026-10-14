@@ -4,15 +4,16 @@ import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
 import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
+import { VncTab } from "./vnc";
 import { sshExportDialog } from "./sshexport";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
-import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
+import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 
 /** Open tabs: terminals (SSH / local) and SFTP file managers. */
-type Tab = Session | FilesTab;
+type Tab = Session | FilesTab | VncTab;
 
 type View = "hosts" | "keychain" | "forwarding" | "foldersync" | "snippets" | "settings";
 
@@ -35,6 +36,8 @@ const state = {
   active: "home" as string,
   editing: null as Host | null,
   tunnels: new Set<string>(),
+  /** Forwardings being started (spinning border). */
+  connecting: new Set<string>(),
   sync: null as SyncSettings | null,
   syncing: false,
   syncError: "",
@@ -206,7 +209,7 @@ function renderTabs() {
     ${state.sessions
       .map(
         (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
-          ${s.kind === "files" ? icon("folder", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : ""}</span>
+          ${s.kind === "files" ? icon("folder", 13) : s.kind === "vnc" ? icon("monitor", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : s.kind === "vnc" ? " · VNC" : ""}</span>
           <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
       )
       .join("")}
@@ -259,7 +262,7 @@ els.tabs.addEventListener("contextmenu", (e) => {
   contextMenu(e.clientX, e.clientY, [
     ...(s.local ? [] : [{ label: "Retry", icon: "sync", action: () => s.connect() }]),
     { label: "Duplicate", icon: "plus", action: () => (s.kind === "files" ? openFiles(s.host) : openSession(s.local ? null : s.host)) },
-    ...(s.local || s.kind === "files" ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(s.host) }]),
+    ...(s.local || s.kind === "files" || !isSsh(s.host) ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(s.host) }]),
     ...(s.local ? [] : [{ label: "Copy password", icon: "key", action: () => s.copyPassword() }]),
     "-" as const,
     { label: "Close others", icon: "x", action: () => state.sessions.filter((x) => x !== s).forEach((x) => closeSession(x.id)) },
@@ -290,11 +293,20 @@ function goHome() {
 }
 
 function openSession(h: Host | null) {
+  if (h?.protocol === "vnc") return openVnc(h);
   const s = new Session(h, renderTabs, (x) => closeSession(x.id));
   state.sessions.push(s);
   s.mount(els.terms);
   els.shell.classList.remove("side-open");
   activate(s.id);
+}
+
+function openVnc(h: Host) {
+  const t = new VncTab(h, renderTabs, (x) => closeSession(x.id));
+  state.sessions.push(t);
+  t.mount(els.terms);
+  els.shell.classList.remove("side-open");
+  activate(t.id);
 }
 
 function openFiles(h: Host) {
@@ -331,10 +343,10 @@ function renderPage() {
 function hostCard(h: Host) {
   const shown = h.tags.slice(0, 3);
   return `<div class="card host" data-host="${h.id}" tabindex="0">
-    <div class="avatar" style="--h:${hue(h.folder || h.name)}">${icon("server", 20)}</div>
+    <div class="avatar" style="--h:${hue(h.folder || h.name)}">${icon(hostIcon(h), 20)}</div>
     <div class="card-body">
       <div class="card-title">${esc(h.name || h.address)}</div>
-      <div class="card-sub">ssh, ${esc(h.username || "—")}${state.layout === "list" ? ` · ${esc(h.address)}:${h.port}` : ""}</div>
+      <div class="card-sub">${esc(protocolLabel(h).toLowerCase())}${h.protocol === "serial" ? `, ${h.baud || 115200} baud` : `, ${esc(h.username || "—")}`}${state.layout === "list" ? ` · ${esc(describeTarget(h))}` : ""}</div>
       ${shown.length ? `<div class="card-tags">${shown.map((t) => `<span class="mini-tag">${esc(t)}</span>`).join("")}${h.tags.length > 3 ? `<span class="mini-tag">+${h.tags.length - 3}</span>` : ""}</div>` : ""}
     </div>
     <div class="card-actions">
@@ -503,6 +515,7 @@ function renderForwarding() {
   els.page.innerHTML = `
     <div class="toolbar">
       <label class="search fwd-search">${icon("search")}<input placeholder="Filter port forwarding rules…" value="${esc(state.query)}" spellcheck="false" /></label>
+      <button class="btn primary" data-new-rule>${icon("plus", 16)}<span>New forwarding</span></button>
     </div>
     <div class="content"><div class="fwd-list"></div></div>`;
   api.tunnelList().then((l) => {
@@ -518,62 +531,148 @@ function renderForwardList() {
     .sort((a, b) => byName(a.name, b.name));
   const el = $(".fwd-list", els.page);
   if (!el) return;
-  el.innerHTML = rows.length
-    ? rows
-        .map(
-          (h) => `<div class="fwd-host"><div class="fwd-head"><div class="avatar sm" style="--h:${hue(h.folder || h.name)}">${icon("server", 14)}</div>
-            <b>${esc(h.name)}</b><span class="muted">${esc(h.username)}@${esc(h.address)}</span></div>
-            ${h.tunnels
-              .map((t, i) => {
-                const on = state.tunnels.has(`${h.id}:${i}`);
-                return `<div class="fwd-row ${on ? "on" : ""}">
-                  <span class="badge">Local</span>
-                  <code>${esc(t.bindHost || "127.0.0.1")}:${t.sourcePort}</code>${icon("chevron", 14)}<code>${esc(t.endpointHost || "localhost")}:${t.endpointPort}</code>
-                  <div class="grow"></div>
-                  ${on ? `<button class="icon-btn" data-open-url="http://localhost:${t.sourcePort}" title="Copy URL">${icon("copy", 15)}</button>` : ""}
-                  ${isWeb ? "" : `<button class="switch ${on ? "on" : ""}" data-tunnel="${h.id}:${i}" aria-label="toggle"><i></i></button>`}
-                  <button class="icon-btn danger" data-del-tunnel="${h.id}:${i}" title="Delete rule">${icon("trash", 15)}</button></div>`;
-              })
-              .join("")}</div>`,
-        )
-        .join("")
-    : `<div class="empty">${icon("forward", 40)}<h3>No port forwarding rules</h3><p>Add rules in a host's editor.</p></div>`;
+  const cards = rows.flatMap((h) => h.tunnels.map((t, i) => ({ h, t, key: `${h.id}:${i}` })));
+  el.innerHTML = cards.length
+    ? `<div class="fwd-grid">${cards
+        .map(({ h, t, key }) => {
+          const st = state.connecting.has(key) ? "connecting" : state.tunnels.has(key) ? "on" : "";
+          const title = t.label || `${h.name} · ${t.sourcePort}`;
+          return `<div class="fwd-card ${st}" data-tunnel="${key}" title="${isWeb ? "" : st === "on" ? "Click to stop" : "Click to start"}">
+            <div class="fwd-avatar">L</div>
+            <div class="fwd-text"><b>${esc(title)}</b>
+              <span>Local:${t.sourcePort} → ${esc(h.name)} → ${esc(t.endpointHost || "localhost")}:${t.endpointPort}</span></div>
+            <button class="icon-btn fwd-edit" data-edit-tunnel="${key}" title="Edit">${icon("edit", 15)}</button></div>`;
+        })
+        .join("")}</div>`
+    : `<div class="empty">${icon("forward", 40)}<h3>No port forwarding rules</h3><p>Forward a local port to a service reachable from one of your SSH hosts.</p>
+        <button class="btn primary" data-new-rule>New forwarding</button></div>`;
 }
 
-els.page.addEventListener("click", async (e) => {
-  const t = e.target as HTMLElement;
-  const url = t.closest<HTMLElement>("[data-open-url]")?.dataset.openUrl;
-  if (url) return api.clipboardWrite(url).then(() => toast(`${url} copied`, "ok"));
-  const del = t.closest<HTMLElement>("[data-del-tunnel]")?.dataset.delTunnel;
-  if (del) {
-    const [id, idx] = [del.slice(0, del.lastIndexOf(":")), +del.slice(del.lastIndexOf(":") + 1)];
-    // Indices of running tunnels would shift, so require them stopped first.
-    if ([...state.tunnels].some((k) => k.startsWith(`${id}:`))) return toast("Stop this host's tunnels first", "err");
-    const h = state.hosts.find((x) => x.id === id);
-    if (!h) return;
-    await api.saveHost({ ...h, tunnels: h.tunnels.filter((_, i) => i !== idx) });
-    await reload();
-    scheduleSync();
-    return toast("Rule deleted", "ok");
-  }
-  const sw = t.closest<HTMLElement>("[data-tunnel]");
-  if (!sw) return;
-  const key = sw.dataset.tunnel!;
-  const [id, idx] = [key.slice(0, key.lastIndexOf(":")), +key.slice(key.lastIndexOf(":") + 1)];
-  if (state.tunnels.has(key)) {
-    await api.tunnelStop(id, idx);
-    state.tunnels.delete(key);
-  } else {
-    sw.classList.add("busy");
+const splitKey = (key: string) => [key.slice(0, key.lastIndexOf(":")), +key.slice(key.lastIndexOf(":") + 1)] as const;
+
+/** New or edit a local forward: the SSH host it goes through (picked like in Folder Sync), then the ports. */
+function ruleDialog(key?: string) {
+  const hosts = state.hosts.filter((h) => !h.protocol || h.protocol === "ssh").sort((a, b) => byName(a.name, b.name));
+  if (!hosts.length) return toast("Add an SSH host first", "info");
+  const [hostId, idx] = key ? splitKey(key) : ["", -1];
+  const rule = state.hosts.find((h) => h.id === hostId)?.tunnels[idx];
+  if (key && state.tunnels.has(key)) return toast("Stop this forwarding before editing it", "info");
+  const el = document.createElement("div");
+  el.className = "modal-wrap";
+  el.innerHTML = `<form class="modal form-modal fwd-modal"><h3>${rule ? "Edit" : "New"} port forwarding</h3>
+    <label class="field"><span>Label</span><input name="label" value="${esc(rule?.label ?? "")}" placeholder="e.g. Tensorboard" /></label>
+    <div class="field"><span>Through host</span>
+      ${rule ? "" : `<input class="fs-route-filter" placeholder="Filter by name, IP, group or tag…" spellcheck="false" />`}
+      <div class="fs-routes">${hosts
+        .filter((h) => !rule || h.id === hostId)
+        .map(
+          (h) => `<label class="fs-route" data-search="${esc([h.name, h.username, h.address, h.folder, ...h.tags].join(" ").toLowerCase())}">
+            <input type="radio" name="host" value="${h.id}" ${h.id === hostId ? "checked" : ""} ${rule ? "disabled" : ""} required />
+            <span>${esc(h.name)} <small class="muted">${esc(h.username ? `${h.username}@` : "")}${esc(h.address)}</small>
+              ${h.tags.map((t) => `<small class="mini-tag">${esc(t)}</small>`).join("")}</span></label>`,
+        )
+        .join("")}</div></div>
+    <div class="field-row">
+      <label class="field grow"><span>Local address</span><input name="bind" value="${esc(rule?.bindHost || "127.0.0.1")}" spellcheck="false" /></label>
+      <label class="field" style="width:110px"><span>Local port</span><input name="sport" type="number" min="1" max="65535" placeholder="8080" value="${rule?.sourcePort || ""}" required /></label>
+    </div>
+    <div class="field-row">
+      <label class="field grow"><span>Destination (as seen from the host)</span><input name="dhost" value="${esc(rule?.endpointHost || "localhost")}" spellcheck="false" /></label>
+      <label class="field" style="width:110px"><span>Port</span><input name="dport" type="number" min="1" max="65535" placeholder="80" value="${rule?.endpointPort || ""}" required /></label>
+    </div>
+    <div class="modal-actions">${rule ? `<button type="button" class="btn danger" data-m="delete">Delete</button><div class="grow"></div>` : ""}
+      <button type="button" class="btn ghost" data-m="close">Cancel</button><button class="btn primary">${rule ? "Save" : "Add"}</button></div></form>`;
+  document.body.append(el);
+  const f = el.querySelector("form")!;
+  const v = (n: string) => ((f.elements.namedItem(n) as HTMLInputElement | null)?.value ?? "").trim();
+  el.querySelector<HTMLInputElement>(rule ? '[name="label"]' : ".fs-route-filter")!.focus();
+  el.querySelector(".fs-route-filter")?.addEventListener("input", (e) => {
+    const q = (e.target as HTMLInputElement).value.trim().toLowerCase();
+    el.querySelectorAll<HTMLElement>(".fs-route").forEach((r) => (r.hidden = !!q && !r.dataset.search!.includes(q)));
+  });
+  el.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t === el || t.dataset.m === "close") el.remove();
+    else if (t.dataset.m === "delete") {
+      el.remove();
+      deleteRule(key!);
+    }
+  });
+  el.addEventListener("keydown", (e) => e.key === "Escape" && el.remove());
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const h = state.hosts.find((x) => x.id === (rule ? hostId : v("host")));
+    if (!h) return toast("Pick a host", "info");
+    const next = { label: v("label"), bindHost: v("bind") || "127.0.0.1", sourcePort: +v("sport"), endpointHost: v("dhost") || "localhost", endpointPort: +v("dport") };
     try {
-      await api.tunnelStart(id, idx);
-      state.tunnels.add(key);
-      toast("Tunnel started", "ok");
+      // New rules are appended, so indices of running tunnels stay valid.
+      await api.saveHost({ ...h, tunnels: rule ? h.tunnels.map((t, i) => (i === idx ? next : t)) : [...h.tunnels, next] });
+      el.remove();
+      await reload();
+      scheduleSync();
+      toast(rule ? "Saved" : "Forwarding added", "ok");
     } catch (err) {
       toast(String(err), "err");
     }
+  });
+}
+
+async function deleteRule(key: string) {
+  const [id, idx] = splitKey(key);
+  // Indices of running tunnels would shift, so require them stopped first.
+  if ([...state.tunnels].some((k) => k.startsWith(`${id}:`))) return toast("Stop this host's forwardings first", "err");
+  const h = state.hosts.find((x) => x.id === id);
+  if (!h) return;
+  await api.saveHost({ ...h, tunnels: h.tunnels.filter((_, i) => i !== idx) });
+  await reload();
+  scheduleSync();
+  toast("Forwarding deleted", "ok");
+}
+
+async function toggleRule(key: string) {
+  if (isWeb || state.connecting.has(key)) return;
+  const [id, idx] = splitKey(key);
+  if (state.tunnels.has(key)) {
+    await api.tunnelStop(id, idx);
+    state.tunnels.delete(key);
+    return renderForwardList();
   }
+  state.connecting.add(key);
   renderForwardList();
+  try {
+    await api.tunnelStart(id, idx);
+    state.tunnels.add(key);
+  } catch (err) {
+    toast(String(err), "err");
+  } finally {
+    state.connecting.delete(key);
+    renderForwardList();
+  }
+}
+
+els.page.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest("[data-new-rule]")) return ruleDialog();
+  const edit = t.closest<HTMLElement>("[data-edit-tunnel]")?.dataset.editTunnel;
+  if (edit) return ruleDialog(edit);
+  const key = t.closest<HTMLElement>(".fwd-card[data-tunnel]")?.dataset.tunnel;
+  if (key) toggleRule(key);
+});
+
+els.page.addEventListener("contextmenu", (e) => {
+  const key = (e.target as HTMLElement).closest<HTMLElement>(".fwd-card[data-tunnel]")?.dataset.tunnel;
+  if (!key) return;
+  e.preventDefault();
+  const [id, idx] = splitKey(key);
+  const port = state.hosts.find((h) => h.id === id)?.tunnels[idx]?.sourcePort;
+  const on = state.tunnels.has(key);
+  contextMenu(e.clientX, e.clientY, [
+    ...(isWeb ? [] : [{ label: on ? "Stop" : "Start", icon: on ? "stop" : "play", action: () => toggleRule(key) }]),
+    ...(on ? [{ label: "Copy URL", icon: "copy", action: () => api.clipboardWrite(`http://localhost:${port}`).then(() => toast(`http://localhost:${port} copied`, "ok")) }] : []),
+    { label: "Edit", icon: "edit", action: () => ruleDialog(key) },
+    "-" as const,
+    { label: "Delete", icon: "trash", danger: true, action: () => deleteRule(key) },
+  ]);
 });
 
 // ---------- keychain ----------
@@ -722,6 +821,28 @@ els.terms.addEventListener("kermius-snippets", (e) => {
 
 // ---------- settings ----------
 
+const RENDERERS = [
+  ["", "Automatic"],
+  ["canvas", "Canvas (exact grid, drawn box lines)"],
+  ["dom", "DOM (sharpest text on Linux)"],
+  ["webgl", "WebGL (fastest)"],
+];
+
+els.page.addEventListener("change", (e) => {
+  const t = e.target as HTMLSelectElement;
+  if (t.id === "s-autostart") {
+    const on = (t as unknown as HTMLInputElement).checked;
+    return api.autostartSet(on).then(
+      () => toast(on ? "Kermius will start when you log in" : "Start on login turned off", "ok"),
+      (err) => toast(String(err), "err"),
+    );
+  }
+  if (t.id !== "s-renderer") return;
+  if (t.value) localStorage.setItem("kermius.renderer", t.value);
+  else localStorage.removeItem("kermius.renderer");
+  toast("Renderer saved; open a new tab to use it", "ok");
+});
+
 function renderSettings() {
   const s = state.sync ?? { url: "", token: "", passphrase: "", lastSync: 0 };
   const p = loadPrefs();
@@ -741,6 +862,10 @@ function renderSettings() {
         <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>${isWeb ? `<button class="btn ghost" data-set="lock">${icon("lock", 15)} Lock</button>` : ""}
           <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
       </div>
+      ${desktop ? `<div class="panel">
+        <div class="panel-head">${icon("settings")}<div><h3>General</h3></div></div>
+        <label class="check"><input type="checkbox" id="s-autostart" /> Start Kermius when I log in <small class="muted">(Folder Sync watchers start with it)</small></label>
+      </div>` : ""}
       ${isWeb ? "" : `<div class="panel">
         <div class="panel-head">${icon("import")}<div><h3>Import from Termix</h3><p class="muted">Termix → Host Manager → Export (JSON). Existing hosts are updated, not duplicated.</p></div></div>
         <label class="field"><span>Export file path</span><input id="imp-path" placeholder="/home/you/termix-hosts.json" /></label>
@@ -765,9 +890,17 @@ function renderSettings() {
 drwxr-xr-x 2 user user 4.0K Oct 12 08:56 <span class="pv-dir">models</span>
 -rwxrwxr-x 1 user user  772 Oct 12 08:57 <span class="pv-ok">build.sh</span>
 echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
+        <label class="field" style="margin-top:12px"><span>Renderer <small class="muted">(applies to new tabs)</small></span>
+          <select id="s-renderer">${RENDERERS.map(([v, l]) => `<option value="${v}" ${(localStorage.getItem("kermius.renderer") ?? "") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <small>If tmux/htop borders look broken or columns drift (e.g. with display scaling), try Canvas.</small></label>
       </div>`}
       <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>
     </div>`;
+  if (desktop)
+    api.autostartGet().then((on) => {
+      const c = $<HTMLInputElement>("#s-autostart", els.page);
+      if (c) c.checked = on;
+    });
 }
 
 els.page.addEventListener("click", async (e) => {
@@ -803,7 +936,7 @@ els.page.addEventListener("click", async (e) => {
     if (settings.url) await runSync(true);
     renderSettings();
   } else if (a === "ssh-export") {
-    sshExportDialog(state.hosts);
+    sshExportDialog(state.hosts.filter(isSsh));
   } else if (a === "import") {
     try {
       const r = await api.importTermix(v("imp-path").trim());
@@ -885,8 +1018,70 @@ function tunnelRow(t: Tunnel, i: number) {
     <button class="icon-btn" data-ed="rm-tun" data-i="${i}">${icon("x", 14)}</button></div>`;
 }
 
+const hostIcon = (h: Host) => (h.protocol === "vnc" ? "monitor" : h.protocol === "serial" ? "plug" : "server");
+
+const PROTOCOLS = [
+  ["ssh", "SSH"],
+  ["mosh", "Mosh"],
+  ["telnet", "Telnet"],
+  ["serial", "Serial"],
+  ["vnc", "VNC"],
+] as const;
+const DEFAULT_PORT: Record<string, number> = { ssh: 22, mosh: 22, telnet: 23, serial: 0, vnc: 5900 };
+const BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+
+/** Setup hints per protocol, with copyable commands. */
+function protoNote(proto: string) {
+  if (proto === "mosh")
+    return `<div class="proto-note">Mosh signs in over SSH (the credentials below), then switches to UDP ports 60000–61000.
+      The host needs <code>mosh-server</code>: <button class="btn ghost sm" data-ed="copy-cmd" data-cmd="${esc(MOSH_SERVER_SETUP)}">Copy install command</button></div>`;
+  if (proto === "serial")
+    return `<div class="proto-note serial-note" hidden>Opening serial ports needs the <code>dialout</code> group:
+      <button class="btn ghost sm" data-ed="copy-serial">Copy command</button> then log out and back in.</div>`;
+  if (proto === "vnc") {
+    const h = state.editing!;
+    const steps = [
+      ["Install x11vnc on the remote", "sudo apt install -y x11vnc"],
+      ...(h.password ? [["Save the same VNC password there", "x11vnc -storepasswd ~/.vnc/passwd"]] : []),
+      ["Share the desktop (add -clip xinerama0 for the first monitor only)", x11vncCommand(h)],
+    ];
+    return `<div class="proto-note">Opens the remote desktop in a tab (port 5900 + display number, e.g. :1 = 5901).
+      ${steps.map(([t, c]) => `<div class="vnc-step"><span>${esc(t)}</span><div class="input-group"><code>${esc(c)}</code>
+        <button type="button" class="btn ghost sm" data-ed="copy-cmd" data-cmd="${esc(c)}">${icon("copy", 13)} Copy</button></div></div>`).join("")}
+      ${h.password ? "" : `<small class="muted">Without a password anyone who reaches the port can connect: set one below, or add <code>-localhost</code> and use a port forwarding.</small>`}</div>`;
+  }
+  return "";
+}
+
+/** x11vnc command matching the host settings (port, password, view-only). */
+function x11vncCommand(h: Host) {
+  return [
+    "x11vnc -display :0",
+    h.password ? "-rfbauth ~/.vnc/passwd" : "-nopw",
+    h.viewOnly ? "-viewonly" : "",
+    `-shared -forever -rfbport ${h.port || 5900} -xkb -repeat -bg -nocursorshape -cursor most -fixscreen V=1`,
+  ].filter(Boolean).join(" ");
+}
+
+/** Fill the serial port suggestions and the setup hint (async, desktop only). */
+function loadSerialHints() {
+  if (isWeb || state.editing?.protocol !== "serial") return;
+  api.serialPorts().then((ports) => {
+    const dl = els.drawer.querySelector("#dl-ports");
+    if (dl) dl.innerHTML = ports.map((p) => `<option value="${esc(p)}">`).join("");
+  });
+  api.serialSetupCommand().then((cmd) => {
+    const note = els.drawer.querySelector<HTMLElement>(".serial-note");
+    if (note && cmd) {
+      note.hidden = false;
+      note.dataset.cmd = cmd;
+    }
+  });
+}
+
 function renderEditor() {
   const h = state.editing!;
+  const proto = h.protocol || "ssh";
   els.drawer.innerHTML = `
     <div class="drawer-head">
       <button class="icon-btn" data-ed="close">${icon("back")}</button>
@@ -895,10 +1090,15 @@ function renderEditor() {
       ${h.id ? `<button class="icon-btn danger" data-ed="delete" title="Delete">${icon("trash", 16)}</button>` : ""}
     </div>
     <div class="drawer-body">
+      <div class="seg proto-seg">${PROTOCOLS.filter(([p]) => isWeb || desktop || !["mosh", "serial"].includes(p))
+        .map(([p, label]) => `<button data-ed="proto" data-p="${p}" class="${proto === p ? "on" : ""}">${label}</button>`).join("")}</div>
       <div class="hero">
-        <div class="avatar lg" style="--h:${hue(h.folder || h.name || "x")}">${icon("server", 26)}</div>
-        <label class="field grow"><span>Address</span><input id="e-address" value="${esc(h.address)}" placeholder="IP or hostname" spellcheck="false" /></label>
+        <div class="avatar lg" style="--h:${hue(h.folder || h.name || "x")}">${icon(hostIcon(h), 26)}</div>
+        <label class="field grow"><span>${proto === "serial" ? "Serial port" : "Address"}</span><input id="e-address" value="${esc(h.address)}"
+          placeholder="${proto === "serial" ? "/dev/ttyUSB0 or COM3" : "IP or hostname"}" spellcheck="false" ${proto === "serial" ? 'list="dl-ports"' : ""} /></label>
+        <datalist id="dl-ports"></datalist>
       </div>
+      ${protoNote(proto)}
       <div class="panel">
         <h5>General</h5>
         <label class="field"><span>Label</span><input id="e-name" value="${esc(h.name)}" placeholder="My server" /></label>
@@ -911,22 +1111,27 @@ function renderEditor() {
         </div>
       </div>
       <div class="panel">
-        <h5>SSH</h5>
-        <div class="field-row">
-          <label class="field grow"><span>Username</span><input id="e-user" value="${esc(h.username)}" spellcheck="false" /></label>
-          <label class="field" style="width:96px"><span>Port</span><input id="e-port" type="number" value="${h.port}" /></label>
+        <h5>${PROTOCOLS.find(([p]) => p === proto)![1]}</h5>
+        <label class="field" ${proto === "serial" ? "" : "hidden"}><span>Baud rate</span><select id="e-baud">${BAUDS.map((b) => `<option ${b === (h.baud || 115200) ? "selected" : ""}>${b}</option>`).join("")}</select></label>
+        <div class="field-row" ${proto === "serial" ? "hidden" : ""}>
+          <label class="field grow"><span>Username${proto === "vnc" ? " (if the server asks)" : proto === "telnet" ? " (typed at the login prompt)" : ""}</span><input id="e-user" value="${esc(h.username)}" spellcheck="false" /></label>
+          <label class="field" style="width:96px"><span>${proto === "mosh" ? "SSH port" : "Port"}</span><input id="e-port" type="number" value="${h.port}" /></label>
         </div>
-        ${credentialPickers(h.identityId, h.keyId, keychain)}
-        <label class="field"><span>Password</span>
+        <div ${isSsh(h) ? "" : "hidden"}>${credentialPickers(h.identityId, h.keyId, keychain)}</div>
+        <div class="vnc-opts" ${proto === "vnc" ? "" : "hidden"}>
+          <label class="check"><input type="checkbox" id="e-vnc-control" ${h.viewOnly ? "" : "checked"} /> Allow control (mouse and keyboard)</label>
+          <label class="check"><input type="checkbox" id="e-vnc-clip" ${h.noClipboard ? "" : "checked"} /> Share clipboard</label>
+        </div>
+        <label class="field" ${proto === "serial" ? "hidden" : ""}><span>${proto === "vnc" ? "VNC password" : "Password"}</span>
           <div class="input-group"><input id="e-pass" type="password" value="${esc(h.password)}" autocomplete="off" />
             <button class="icon-btn" data-ed="toggle-pass" title="Show">${icon("eye", 16)}</button>
             <button class="icon-btn" data-ed="copy-pass" title="Copy">${icon("copy", 16)}</button></div></label>
-        <details ${h.privateKey ? "open" : ""}><summary>Private key</summary>
+        <details ${h.privateKey ? "open" : ""} ${isSsh(h) ? "" : "hidden"}><summary>Private key</summary>
           <label class="field"><textarea id="e-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellcheck="false">${esc(h.privateKey)}</textarea></label>
           <label class="field"><span>Key passphrase</span><input id="e-keypass" type="password" value="${esc(h.keyPassphrase)}" /></label>
         </details>
       </div>
-      <div class="panel">
+      <div class="panel" ${proto === "ssh" ? "" : "hidden"}>
         <h5>Port forwarding <small class="muted">local → remote</small></h5>
         <div class="tuns">${h.tunnels.map(tunnelRow).join("")}</div>
         <button class="btn ghost sm" data-ed="add-tun">${icon("plus", 14)} Add rule</button>
@@ -941,6 +1146,7 @@ function renderEditor() {
       <div class="grow"></div>
       <button class="btn primary" data-ed="save">Save</button>
     </div>`;
+  loadSerialHints();
 }
 
 /** Pull form values into state.editing. */
@@ -951,7 +1157,10 @@ function readEditor() {
   h.name = v("e-name").trim();
   h.folder = v("e-folder").trim();
   h.username = v("e-user").trim();
-  h.port = +v("e-port") || 22;
+  h.port = +v("e-port") || DEFAULT_PORT[h.protocol || "ssh"];
+  h.baud = +v("e-baud") || 115200;
+  h.viewOnly = !$<HTMLInputElement>("#e-vnc-control", els.drawer).checked;
+  h.noClipboard = !$<HTMLInputElement>("#e-vnc-clip", els.drawer).checked;
   h.password = v("e-pass");
   h.privateKey = v("e-key");
   h.keyPassphrase = v("e-keypass");
@@ -959,7 +1168,7 @@ function readEditor() {
   h.notes = v("e-notes");
   h.tunnels = [...els.drawer.querySelectorAll<HTMLElement>(".tun-row")].map((r) => {
     const f = (k: string) => $<HTMLInputElement>(`[data-f="${k}"]`, r).value.trim();
-    return { bindHost: f("bindHost") || "127.0.0.1", sourcePort: +f("sourcePort") || 0, endpointHost: f("endpointHost"), endpointPort: +f("endpointPort") || 0 };
+    return { label: h.tunnels[+r.dataset.i!]?.label ?? "", bindHost: f("bindHost") || "127.0.0.1", sourcePort: +f("sourcePort") || 0, endpointHost: f("endpointHost"), endpointPort: +f("endpointPort") || 0 };
   });
   const pending = v("e-tag").trim();
   if (pending && !h.tags.includes(pending)) h.tags.push(pending);
@@ -977,6 +1186,18 @@ els.drawer.addEventListener("click", async (e) => {
       i.type = i.type === "password" ? "text" : "password";
       return;
     }
+    case "proto": {
+      readEditor();
+      const next = b.dataset.p!;
+      // Follow the new protocol's default port unless a custom one was set.
+      if (h.port === DEFAULT_PORT[h.protocol || "ssh"]) h.port = DEFAULT_PORT[next];
+      h.protocol = next;
+      return renderEditor();
+    }
+    case "copy-cmd":
+      return api.clipboardWrite(b.dataset.cmd!).then(() => toast("Command copied; run it on the host", "ok"));
+    case "copy-serial":
+      return api.clipboardWrite(b.closest<HTMLElement>(".serial-note")!.dataset.cmd!).then(() => toast("Command copied; paste it into a terminal on this computer", "ok"));
     case "copy-pass":
       return api.clipboardWrite($<HTMLInputElement>("#e-pass", els.drawer).value).then(() => toast("Password copied", "ok"));
     case "rm-tag":
@@ -1000,6 +1221,15 @@ els.drawer.addEventListener("click", async (e) => {
     case "save":
       readEditor();
       if (await saveEditor()) closeEditor();
+  }
+});
+
+// The x11vnc guide follows the control/password settings.
+els.drawer.addEventListener("change", (e) => {
+  const id = (e.target as HTMLElement).id;
+  if (state.editing?.protocol === "vnc" && ["e-vnc-control", "e-pass", "e-port"].includes(id)) {
+    readEditor();
+    renderEditor();
   }
 });
 
