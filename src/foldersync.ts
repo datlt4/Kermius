@@ -181,6 +181,8 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
       live.delete(ev.id);
       await loadJobs();
     } else {
+      // Only a phase event starts a run; stray progress from a stopped run must not revive it.
+      if (!live.has(ev.id) && ev.type !== "phase") return;
       const l = live.get(ev.id) ?? newLive();
       if (ev.type === "scan") l.scan[ev.side] = { files: ev.files, dirs: ev.dirs, bytes: ev.bytes };
       else if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message, rate: 0, counted: 0 });
@@ -332,7 +334,7 @@ export function runDueJobs(ctx: FolderSyncCtx) {
 }
 
 export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: () => boolean) {
-  root.addEventListener("click", (e) => {
+  root.addEventListener("click", async (e) => {
     if (!active()) return;
     const t = e.target as HTMLElement;
     const act = t.closest<HTMLElement>("[data-fs]")?.dataset.fs;
@@ -350,7 +352,17 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     if (act === "rescan-all") return jobs.filter((j) => !j.paused).forEach((j) => runJob(j.id, ctx, false, true));
     if (!job) return;
     if (act === "pause" || act === "resume") return pause([job.id], act === "pause");
-    if (act === "stop") return api.fsyncStop(job.id);
+    if (act === "stop") {
+      await api.fsyncStop(job.id).catch(() => {});
+      // If nothing was running in the backend, clear the stale entry ourselves.
+      setTimeout(() => {
+        if (live.delete(job.id)) {
+          ctx.rerender();
+          ctx.activity();
+        }
+      }, 1500);
+      return;
+    }
     if (act === "raise") {
       const host = t.closest<HTMLElement>("[data-host]")!.dataset.host!;
       toast(host === "local" ? "Asking for the admin password…" : "Raising the limit on the remote…", "info");
