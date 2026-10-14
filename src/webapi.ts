@@ -143,6 +143,10 @@ export const webApi: Api = {
   rsyncAvailable: async () => false,
   transferStart: unsupported,
   transferCancel: unsupported,
+  fsyncList: async () => [],
+  fsyncSave: unsupported,
+  fsyncDelete: unsupported,
+  fsyncRun: unsupported,
   importTermix: unsupported,
   copyPassword: async (id: string) => {
     const h = live().find((x) => x.id === id);

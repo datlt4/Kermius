@@ -1,5 +1,6 @@
 mod crypto;
 mod files;
+mod foldersync;
 #[cfg(not(target_os = "ios"))]
 mod local;
 mod model;
@@ -26,6 +27,7 @@ struct AppState {
     sessions: Mutex<HashMap<String, UnboundedSender<ssh::Cmd>>>,
     tunnels: tunnel::Tunnels,
     files: Arc<files::Files>,
+    running_syncs: Mutex<std::collections::HashSet<String>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -527,6 +529,83 @@ fn transfer_cancel(state: State<AppState>, tid: String) {
     state.files.cancel(&tid);
 }
 
+#[tauri::command]
+fn fsync_list(state: State<AppState>) -> Vec<foldersync::Job> {
+    state.store.state.lock().folder_syncs.clone()
+}
+
+#[tauri::command]
+fn fsync_save(state: State<AppState>, mut job: foldersync::Job) -> Res<foldersync::Job> {
+    foldersync::validate(&job)?;
+    if job.id.is_empty() {
+        job.id = uuid::Uuid::new_v4().to_string();
+    }
+    {
+        let mut st = state.store.state.lock();
+        match st.folder_syncs.iter_mut().find(|j| j.id == job.id) {
+            Some(old) => {
+                // Different folders or mode: the old two-way state no longer applies.
+                if (&old.a, &old.b, &old.mode) != (&job.a, &job.b, &job.mode) {
+                    foldersync::forget_state(&state.store, &job.id);
+                    job.last_run = 0;
+                }
+                *old = job.clone();
+            }
+            None => st.folder_syncs.push(job.clone()),
+        }
+    }
+    state.store.save().map_err(e)?;
+    Ok(job)
+}
+
+#[tauri::command]
+fn fsync_delete(state: State<AppState>, id: String) -> Res<()> {
+    state.store.state.lock().folder_syncs.retain(|j| j.id != id);
+    foldersync::forget_state(&state.store, &id);
+    state.store.save().map_err(e)
+}
+
+#[derive(serde::Serialize)]
+struct SyncOutcome {
+    summary: String,
+    plan: foldersync::Plan,
+}
+
+/// Run or preview a Folder Sync job, streaming phases/progress to `on_event`.
+#[tauri::command]
+async fn fsync_run(
+    state: State<'_, AppState>,
+    id: String,
+    dry_run: bool,
+    on_event: Channel<foldersync::Event>,
+) -> Res<SyncOutcome> {
+    let job = state.store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or("Job not found")?;
+    if !state.running_syncs.lock().insert(id.clone()) {
+        return Err("Already running".into());
+    }
+    let emit: foldersync::Emit = Arc::new(move |ev| {
+        let _ = on_event.send(ev);
+    });
+    let result = foldersync::run(state.store.clone(), job, dry_run, emit).await;
+    state.running_syncs.lock().remove(&id);
+    if !dry_run {
+        {
+            let mut st = state.store.state.lock();
+            if let Some(j) = st.folder_syncs.iter_mut().find(|j| j.id == id) {
+                j.last_result = match &result {
+                    Ok((s, _)) => s.clone(),
+                    Err(err) => err.clone(),
+                };
+                if result.is_ok() {
+                    j.last_run = now_ms();
+                }
+            }
+        }
+        state.store.save().map_err(e)?;
+    }
+    result.map(|(summary, plan)| SyncOutcome { summary, plan })
+}
+
 fn cli_store() -> anyhow::Result<Store> {
     Store::open(dirs::data_dir().ok_or_else(|| anyhow::anyhow!("no data dir"))?.join(IDENTIFIER))
 }
@@ -552,6 +631,30 @@ pub fn cli_ssh_bridge(args: &[String]) -> i32 {
     }
 }
 
+/// `kermius --run-sync <job id>`: run a Folder Sync job headless (also handy for cron).
+pub fn cli_run_sync(id: &str) -> i32 {
+    let run = || -> Result<String, String> {
+        let store = Arc::new(cli_store().map_err(e)?);
+        let job = store.state.lock().folder_syncs.iter().find(|j| j.id == id).cloned().ok_or("Job not found")?;
+        let emit: foldersync::Emit = Arc::new(|ev| match ev {
+            foldersync::Event::Phase { phase, message } => eprintln!("{phase} {message}"),
+            foldersync::Event::Progress { done, total } => eprint!("\r{done}/{total} bytes"),
+        });
+        let (summary, _) = tauri::async_runtime::block_on(foldersync::run(store, job, false, emit))?;
+        Ok(summary)
+    };
+    match run() {
+        Ok(s) => {
+            println!("{s}");
+            0
+        }
+        Err(err) => {
+            eprintln!("kermius: {err}");
+            1
+        }
+    }
+}
+
 /// `kermius --import-termix <file>`: import without opening the UI.
 pub fn cli_import(path: &str) -> anyhow::Result<String> {
     let store = cli_store()?;
@@ -573,6 +676,7 @@ pub fn run() {
                 sessions: Default::default(),
                 tunnels: Default::default(),
                 files: Default::default(),
+                running_syncs: Default::default(),
             });
             Ok(())
         })
@@ -628,6 +732,10 @@ pub fn run() {
             rsync_available,
             transfer_start,
             transfer_cancel,
+            fsync_list,
+            fsync_save,
+            fsync_delete,
+            fsync_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kermius");

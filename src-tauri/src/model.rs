@@ -106,6 +106,8 @@ pub struct SyncSettings {
 pub struct LocalState {
     pub vault: Vault,
     pub sync: SyncSettings,
+    /// Folder Sync jobs (paths are device-specific, so never synced).
+    pub folder_syncs: Vec<crate::foldersync::Job>,
 }
 
 pub fn now_ms() -> i64 {

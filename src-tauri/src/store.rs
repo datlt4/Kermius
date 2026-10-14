@@ -31,6 +31,10 @@ impl Store {
         Ok(Self { dir, key, state: Mutex::new(state) })
     }
 
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     pub fn save(&self) -> Result<()> {
         let json = serde_json::to_vec(&*self.state.lock())?;
         let tmp = self.dir.join("vault.bin.tmp");
