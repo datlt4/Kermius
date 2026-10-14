@@ -4,15 +4,16 @@ import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
 import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
+import { VncTab } from "./vnc";
 import { sshExportDialog } from "./sshexport";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
-import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
+import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
 import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 
 /** Open tabs: terminals (SSH / local) and SFTP file managers. */
-type Tab = Session | FilesTab;
+type Tab = Session | FilesTab | VncTab;
 
 type View = "hosts" | "keychain" | "forwarding" | "foldersync" | "snippets" | "settings";
 
@@ -206,7 +207,7 @@ function renderTabs() {
     ${state.sessions
       .map(
         (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
-          ${s.kind === "files" ? icon("folder", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : ""}</span>
+          ${s.kind === "files" ? icon("folder", 13) : s.kind === "vnc" ? icon("monitor", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : s.kind === "vnc" ? " · VNC" : ""}</span>
           <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
       )
       .join("")}
@@ -259,7 +260,7 @@ els.tabs.addEventListener("contextmenu", (e) => {
   contextMenu(e.clientX, e.clientY, [
     ...(s.local ? [] : [{ label: "Retry", icon: "sync", action: () => s.connect() }]),
     { label: "Duplicate", icon: "plus", action: () => (s.kind === "files" ? openFiles(s.host) : openSession(s.local ? null : s.host)) },
-    ...(s.local || s.kind === "files" ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(s.host) }]),
+    ...(s.local || s.kind === "files" || !isSsh(s.host) ? [] : [{ label: "Open SFTP", icon: "folder", action: () => openFiles(s.host) }]),
     ...(s.local ? [] : [{ label: "Copy password", icon: "key", action: () => s.copyPassword() }]),
     "-" as const,
     { label: "Close others", icon: "x", action: () => state.sessions.filter((x) => x !== s).forEach((x) => closeSession(x.id)) },
@@ -290,11 +291,20 @@ function goHome() {
 }
 
 function openSession(h: Host | null) {
+  if (h?.protocol === "vnc") return openVnc(h);
   const s = new Session(h, renderTabs, (x) => closeSession(x.id));
   state.sessions.push(s);
   s.mount(els.terms);
   els.shell.classList.remove("side-open");
   activate(s.id);
+}
+
+function openVnc(h: Host) {
+  const t = new VncTab(h, renderTabs, (x) => closeSession(x.id));
+  state.sessions.push(t);
+  t.mount(els.terms);
+  els.shell.classList.remove("side-open");
+  activate(t.id);
 }
 
 function openFiles(h: Host) {
@@ -331,10 +341,10 @@ function renderPage() {
 function hostCard(h: Host) {
   const shown = h.tags.slice(0, 3);
   return `<div class="card host" data-host="${h.id}" tabindex="0">
-    <div class="avatar" style="--h:${hue(h.folder || h.name)}">${icon("server", 20)}</div>
+    <div class="avatar" style="--h:${hue(h.folder || h.name)}">${icon(hostIcon(h), 20)}</div>
     <div class="card-body">
       <div class="card-title">${esc(h.name || h.address)}</div>
-      <div class="card-sub">ssh, ${esc(h.username || "—")}${state.layout === "list" ? ` · ${esc(h.address)}:${h.port}` : ""}</div>
+      <div class="card-sub">${esc(protocolLabel(h).toLowerCase())}${h.protocol === "serial" ? `, ${h.baud || 115200} baud` : `, ${esc(h.username || "—")}`}${state.layout === "list" ? ` · ${esc(describeTarget(h))}` : ""}</div>
       ${shown.length ? `<div class="card-tags">${shown.map((t) => `<span class="mini-tag">${esc(t)}</span>`).join("")}${h.tags.length > 3 ? `<span class="mini-tag">+${h.tags.length - 3}</span>` : ""}</div>` : ""}
     </div>
     <div class="card-actions">
@@ -803,7 +813,7 @@ els.page.addEventListener("click", async (e) => {
     if (settings.url) await runSync(true);
     renderSettings();
   } else if (a === "ssh-export") {
-    sshExportDialog(state.hosts);
+    sshExportDialog(state.hosts.filter(isSsh));
   } else if (a === "import") {
     try {
       const r = await api.importTermix(v("imp-path").trim());
@@ -885,8 +895,49 @@ function tunnelRow(t: Tunnel, i: number) {
     <button class="icon-btn" data-ed="rm-tun" data-i="${i}">${icon("x", 14)}</button></div>`;
 }
 
+const hostIcon = (h: Host) => (h.protocol === "vnc" ? "monitor" : h.protocol === "serial" ? "plug" : "server");
+
+const PROTOCOLS = [
+  ["ssh", "SSH"],
+  ["mosh", "Mosh"],
+  ["telnet", "Telnet"],
+  ["serial", "Serial"],
+  ["vnc", "VNC"],
+] as const;
+const DEFAULT_PORT: Record<string, number> = { ssh: 22, mosh: 22, telnet: 23, serial: 0, vnc: 5900 };
+const BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+
+/** Setup hints per protocol, with copyable commands. */
+function protoNote(proto: string) {
+  if (proto === "mosh")
+    return `<div class="proto-note">Mosh signs in over SSH (the credentials below), then switches to UDP ports 60000–61000.
+      The host needs <code>mosh-server</code>: <button class="btn ghost sm" data-ed="copy-cmd" data-cmd="${esc(MOSH_SERVER_SETUP)}">Copy install command</button></div>`;
+  if (proto === "serial")
+    return `<div class="proto-note serial-note" hidden>Opening serial ports needs the <code>dialout</code> group:
+      <button class="btn ghost sm" data-ed="copy-serial">Copy command</button> then log out and back in.</div>`;
+  if (proto === "vnc") return `<div class="proto-note">Opens the remote desktop in a tab (port 5900 + display number, e.g. :1 = 5901).</div>`;
+  return "";
+}
+
+/** Fill the serial port suggestions and the setup hint (async, desktop only). */
+function loadSerialHints() {
+  if (isWeb || state.editing?.protocol !== "serial") return;
+  api.serialPorts().then((ports) => {
+    const dl = els.drawer.querySelector("#dl-ports");
+    if (dl) dl.innerHTML = ports.map((p) => `<option value="${esc(p)}">`).join("");
+  });
+  api.serialSetupCommand().then((cmd) => {
+    const note = els.drawer.querySelector<HTMLElement>(".serial-note");
+    if (note && cmd) {
+      note.hidden = false;
+      note.dataset.cmd = cmd;
+    }
+  });
+}
+
 function renderEditor() {
   const h = state.editing!;
+  const proto = h.protocol || "ssh";
   els.drawer.innerHTML = `
     <div class="drawer-head">
       <button class="icon-btn" data-ed="close">${icon("back")}</button>
@@ -895,10 +946,15 @@ function renderEditor() {
       ${h.id ? `<button class="icon-btn danger" data-ed="delete" title="Delete">${icon("trash", 16)}</button>` : ""}
     </div>
     <div class="drawer-body">
+      <div class="seg proto-seg">${PROTOCOLS.filter(([p]) => isWeb || desktop || !["mosh", "serial"].includes(p))
+        .map(([p, label]) => `<button data-ed="proto" data-p="${p}" class="${proto === p ? "on" : ""}">${label}</button>`).join("")}</div>
       <div class="hero">
-        <div class="avatar lg" style="--h:${hue(h.folder || h.name || "x")}">${icon("server", 26)}</div>
-        <label class="field grow"><span>Address</span><input id="e-address" value="${esc(h.address)}" placeholder="IP or hostname" spellcheck="false" /></label>
+        <div class="avatar lg" style="--h:${hue(h.folder || h.name || "x")}">${icon(hostIcon(h), 26)}</div>
+        <label class="field grow"><span>${proto === "serial" ? "Serial port" : "Address"}</span><input id="e-address" value="${esc(h.address)}"
+          placeholder="${proto === "serial" ? "/dev/ttyUSB0 or COM3" : "IP or hostname"}" spellcheck="false" ${proto === "serial" ? 'list="dl-ports"' : ""} /></label>
+        <datalist id="dl-ports"></datalist>
       </div>
+      ${protoNote(proto)}
       <div class="panel">
         <h5>General</h5>
         <label class="field"><span>Label</span><input id="e-name" value="${esc(h.name)}" placeholder="My server" /></label>
@@ -911,22 +967,23 @@ function renderEditor() {
         </div>
       </div>
       <div class="panel">
-        <h5>SSH</h5>
-        <div class="field-row">
-          <label class="field grow"><span>Username</span><input id="e-user" value="${esc(h.username)}" spellcheck="false" /></label>
-          <label class="field" style="width:96px"><span>Port</span><input id="e-port" type="number" value="${h.port}" /></label>
+        <h5>${PROTOCOLS.find(([p]) => p === proto)![1]}</h5>
+        <label class="field" ${proto === "serial" ? "" : "hidden"}><span>Baud rate</span><select id="e-baud">${BAUDS.map((b) => `<option ${b === (h.baud || 115200) ? "selected" : ""}>${b}</option>`).join("")}</select></label>
+        <div class="field-row" ${proto === "serial" ? "hidden" : ""}>
+          <label class="field grow"><span>Username${proto === "vnc" ? " (if the server asks)" : proto === "telnet" ? " (typed at the login prompt)" : ""}</span><input id="e-user" value="${esc(h.username)}" spellcheck="false" /></label>
+          <label class="field" style="width:96px"><span>${proto === "mosh" ? "SSH port" : "Port"}</span><input id="e-port" type="number" value="${h.port}" /></label>
         </div>
-        ${credentialPickers(h.identityId, h.keyId, keychain)}
-        <label class="field"><span>Password</span>
+        <div ${isSsh(h) ? "" : "hidden"}>${credentialPickers(h.identityId, h.keyId, keychain)}</div>
+        <label class="field" ${proto === "serial" ? "hidden" : ""}><span>${proto === "vnc" ? "VNC password" : "Password"}</span>
           <div class="input-group"><input id="e-pass" type="password" value="${esc(h.password)}" autocomplete="off" />
             <button class="icon-btn" data-ed="toggle-pass" title="Show">${icon("eye", 16)}</button>
             <button class="icon-btn" data-ed="copy-pass" title="Copy">${icon("copy", 16)}</button></div></label>
-        <details ${h.privateKey ? "open" : ""}><summary>Private key</summary>
+        <details ${h.privateKey ? "open" : ""} ${isSsh(h) ? "" : "hidden"}><summary>Private key</summary>
           <label class="field"><textarea id="e-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellcheck="false">${esc(h.privateKey)}</textarea></label>
           <label class="field"><span>Key passphrase</span><input id="e-keypass" type="password" value="${esc(h.keyPassphrase)}" /></label>
         </details>
       </div>
-      <div class="panel">
+      <div class="panel" ${proto === "ssh" ? "" : "hidden"}>
         <h5>Port forwarding <small class="muted">local → remote</small></h5>
         <div class="tuns">${h.tunnels.map(tunnelRow).join("")}</div>
         <button class="btn ghost sm" data-ed="add-tun">${icon("plus", 14)} Add rule</button>
@@ -941,6 +998,7 @@ function renderEditor() {
       <div class="grow"></div>
       <button class="btn primary" data-ed="save">Save</button>
     </div>`;
+  loadSerialHints();
 }
 
 /** Pull form values into state.editing. */
@@ -951,7 +1009,8 @@ function readEditor() {
   h.name = v("e-name").trim();
   h.folder = v("e-folder").trim();
   h.username = v("e-user").trim();
-  h.port = +v("e-port") || 22;
+  h.port = +v("e-port") || DEFAULT_PORT[h.protocol || "ssh"];
+  h.baud = +v("e-baud") || 115200;
   h.password = v("e-pass");
   h.privateKey = v("e-key");
   h.keyPassphrase = v("e-keypass");
@@ -977,6 +1036,18 @@ els.drawer.addEventListener("click", async (e) => {
       i.type = i.type === "password" ? "text" : "password";
       return;
     }
+    case "proto": {
+      readEditor();
+      const next = b.dataset.p!;
+      // Follow the new protocol's default port unless a custom one was set.
+      if (h.port === DEFAULT_PORT[h.protocol || "ssh"]) h.port = DEFAULT_PORT[next];
+      h.protocol = next;
+      return renderEditor();
+    }
+    case "copy-cmd":
+      return api.clipboardWrite(b.dataset.cmd!).then(() => toast("Command copied; run it on the host", "ok"));
+    case "copy-serial":
+      return api.clipboardWrite(b.closest<HTMLElement>(".serial-note")!.dataset.cmd!).then(() => toast("Command copied; paste it into a terminal on this computer", "ok"));
     case "copy-pass":
       return api.clipboardWrite($<HTMLInputElement>("#e-pass", els.drawer).value).then(() => toast("Password copied", "ok"));
     case "rm-tag":

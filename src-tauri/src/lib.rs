@@ -5,6 +5,7 @@ mod watch;
 #[cfg(not(target_os = "ios"))]
 mod local;
 mod model;
+mod proto;
 mod ssh;
 mod sshconfig;
 mod store;
@@ -272,10 +273,95 @@ fn ssh_connect(
 ) -> Res<String> {
     let host = state.host(&host_id)?;
     let flow = Arc::new(ssh::Flow::default());
-    let tx = ssh::spawn_shell(state.store.clone(), host, cols, rows, on_data, on_status, flow.clone());
+    let tx = match host.protocol.as_str() {
+        "telnet" => proto::spawn_telnet(host, cols, rows, on_data, on_status, flow.clone()),
+        #[cfg(desktop)]
+        "serial" => proto::spawn_serial(host, on_data, on_status, flow.clone()),
+        #[cfg(desktop)]
+        "mosh" => spawn_mosh(&host, cols, rows, on_data, on_status, flow.clone())?,
+        "ssh" | "" => ssh::spawn_shell(state.store.clone(), host, cols, rows, on_data, on_status, flow.clone()),
+        p => return Err(format!("{p} is not available here")),
+    };
     let sid = uuid::Uuid::new_v4().to_string();
     state.sessions.lock().insert(sid.clone(), (tx, flow));
     Ok(sid)
+}
+
+/// Whether `name` is an executable on PATH.
+#[cfg(desktop)]
+fn in_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+}
+
+/// mosh in a local PTY; its ssh bootstrap goes through our bridge, so vault credentials and TOFU apply.
+#[cfg(desktop)]
+fn spawn_mosh(
+    host: &Host,
+    cols: u32,
+    rows: u32,
+    on_data: Channel<InvokeResponseBody>,
+    on_status: Channel<ssh::Status>,
+    flow: Arc<ssh::Flow>,
+) -> Res<tokio::sync::mpsc::UnboundedSender<ssh::Cmd>> {
+    if !in_path("mosh") {
+        return Err(format!("mosh is not installed on this computer. Install it: `{MOSH_LOCAL_SETUP}`"));
+    }
+    let target = if host.username.is_empty() { host.address.clone() } else { format!("{}@{}", host.username, host.address) };
+    // remote-ip=remote: the server reports its address over the ssh session (no ProxyCommand needed).
+    let mut args = vec!["--no-ssh-pty".to_string(), "--experimental-remote-ip=remote".into(), format!("--ssh={}", files::bridge_shell(&host.id)?)];
+    if let Ok(server) = std::env::var("KERMIUS_MOSH_SERVER") {
+        args.push(format!("--server={server}"));
+    }
+    args.push(target);
+    let _ = on_status.send(ssh::Status::Log { message: format!("Starting mosh {}", args.join(" ")) });
+    local::spawn_program("mosh", &args, cols, rows, on_data, on_status, flow)
+}
+
+#[cfg(desktop)]
+const MOSH_LOCAL_SETUP: &str = if cfg!(target_os = "macos") { "brew install mosh" } else { "sudo apt install mosh" };
+
+#[tauri::command]
+fn serial_ports() -> Vec<String> {
+    #[cfg(desktop)]
+    return proto::serial_ports();
+    #[cfg(not(desktop))]
+    Vec::new()
+}
+
+/// Shell command that grants serial port access (empty where none is needed or already done).
+#[tauri::command]
+fn serial_setup_command() -> String {
+    if !cfg!(target_os = "linux") {
+        return String::new();
+    }
+    // Group lists of this process (a fresh login is needed after usermod anyway).
+    let groups = std::process::Command::new("id").arg("-nG").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    if groups.split_whitespace().any(|g| g == "dialout" || g == "uucp") { String::new() } else { proto::SERIAL_SETUP.into() }
+}
+
+/// Open a raw TCP stream to a VNC host for noVNC; data flows through `on_data` / `session_write`.
+#[tauri::command]
+async fn vnc_open(state: State<'_, AppState>, host_id: String, on_data: Channel<InvokeResponseBody>, on_status: Channel<ssh::Status>) -> Res<String> {
+    let host = state.host(&host_id)?;
+    let tx = proto::open_tcp(host, 5900, on_data, on_status).await?;
+    let sid = uuid::Uuid::new_v4().to_string();
+    state.sessions.lock().insert(sid.clone(), (tx, Arc::new(ssh::Flow::default())));
+    Ok(sid)
+}
+
+/// The VNC password for noVNC's authentication (VNC passwords cannot be kept from the client).
+#[tauri::command]
+fn vnc_password(state: State<AppState>, host_id: String) -> Res<String> {
+    Ok(state.host(&host_id)?.password)
+}
+
+/// Binary write (raw body) to a session; header `sid`.
+#[tauri::command]
+fn session_write(state: State<AppState>, request: tauri::ipc::Request<'_>) -> Res<()> {
+    let sid = request.headers().get("sid").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else { return Err("Expected raw bytes".into()) };
+    send_cmd(&state, &sid, ssh::Cmd::Data(data.clone()));
+    Ok(())
 }
 
 #[tauri::command]
@@ -818,7 +904,16 @@ fn cli_store() -> anyhow::Result<Store> {
 /// `kermius --ssh-bridge <host id> <host> <command...>`: remote shell for rsync. Returns the exit code.
 pub fn cli_ssh_bridge(args: &[String]) -> i32 {
     let run = || -> Result<u32, String> {
-        let [id, _host, command @ ..] = args else { return Err("usage: --ssh-bridge <host id> <host> <command>".into()) };
+        // `<ssh> [flags] host [--] command…` as called by rsync or mosh (-n, -tt, -4/-6; -o/-S/-l/-p take a value).
+        let [id, rest @ ..] = args else { return Err("usage: --ssh-bridge <host id> <host> <command>".into()) };
+        let mut i = 0;
+        while i < rest.len() && rest[i].starts_with('-') && rest[i] != "--" {
+            i += if ["-o", "-S", "-l", "-p"].contains(&rest[i].as_str()) { 2 } else { 1 };
+        }
+        let mut command = rest.get(i + 1..).unwrap_or_default();
+        if command.first().is_some_and(|c| c == "--") {
+            command = &command[1..];
+        }
         let store = Arc::new(cli_store().map_err(e)?);
         let host = {
             let st = store.state.lock();
@@ -923,6 +1018,11 @@ pub fn run() {
             host_has_password,
             ssh_send_password,
             local_has_password,
+            serial_ports,
+            serial_setup_command,
+            vnc_open,
+            vnc_password,
+            session_write,
             local_set_password,
             local_send_password,
             ssh_close,

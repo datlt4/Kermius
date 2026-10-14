@@ -23,7 +23,9 @@ fn alias(name: &str) -> String {
 /// `with_passwords`: add each password as a comment line (plain text) so it is easy to copy.
 pub fn render(vault: &Vault, ids: &[String], with_keys: bool, with_passwords: bool) -> Export {
     let wanted: HashSet<&String> = ids.iter().collect();
-    let mut hosts: Vec<_> = vault.hosts.iter().filter(|h| !h.deleted && wanted.contains(&h.id)).map(|h| vault.resolve(h.clone())).collect();
+    // Telnet, serial and VNC hosts have no ssh config equivalent.
+    let ssh = |p: &str| matches!(p, "" | "ssh" | "mosh");
+    let mut hosts: Vec<_> = vault.hosts.iter().filter(|h| !h.deleted && ssh(&h.protocol) && wanted.contains(&h.id)).map(|h| vault.resolve(h.clone())).collect();
     hosts.sort_by(|a, b| (a.folder.to_lowercase(), a.name.to_lowercase()).cmp(&(b.folder.to_lowercase(), b.name.to_lowercase())));
     let (mut config, mut keys, mut used) = (String::new(), Vec::new(), HashSet::new());
     let mut folder = None;

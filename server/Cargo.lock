@@ -214,7 +214,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "kermius-sync"
-version = "1.15.1"
+version = "1.19.0"
 dependencies = [
  "axum",
  "tokio",

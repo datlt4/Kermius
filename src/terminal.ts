@@ -61,6 +61,26 @@ export type SessionState = "connecting" | "connected" | "closed" | "error";
 
 const coarse = matchMedia("(pointer: coarse)").matches;
 
+/** SSH and mosh (which logs in over SSH) share keys, passwords and SFTP. */
+export const isSsh = (h: Host) => !h.protocol || h.protocol === "ssh" || h.protocol === "mosh";
+
+export const protocolLabel = (h: Host) => ({ mosh: "Mosh", telnet: "Telnet", serial: "Serial", vnc: "VNC" })[h.protocol] ?? "SSH";
+
+export function describeTarget(h: Host) {
+  if (h.protocol === "serial") return `${h.address} · ${h.baud || 115200} baud`;
+  const user = h.username ? `${h.username}@` : "";
+  if (h.protocol === "telnet") return `telnet ${h.address}:${h.port || 23}`;
+  if (h.protocol === "mosh") return `mosh ${user}${h.address}`;
+  return `${user}${h.address}:${h.port}`;
+}
+
+/** A command embedded in a setup error as `...`, for the "Copy command" button. */
+export const fixCommand = (message: string) => /`([^`]+)`/.exec(message)?.[1] ?? "";
+
+/** Installs mosh-server on common Linux distributions (paste on the remote host). */
+export const MOSH_SERVER_SETUP =
+  "if command -v apt-get >/dev/null; then sudo apt-get install -y mosh; elif command -v dnf >/dev/null; then sudo dnf install -y mosh; elif command -v pacman >/dev/null; then sudo pacman -S --needed mosh; elif command -v apk >/dev/null; then sudo apk add mosh; elif command -v brew >/dev/null; then brew install mosh; fi";
+
 export class Session {
   readonly id = crypto.randomUUID();
   readonly el = document.createElement("div");
@@ -104,12 +124,15 @@ export class Session {
     });
     this.el.className = "session";
     this.el.innerHTML = `<div class="term"></div><div class="sess-tools">${
-      host
-        ? `<button data-t="files" title="Open SFTP file manager">${icon("folder", 15)}</button>
+      host && isSsh(host)
+        ? `${host.protocol === "mosh" ? "" : `<button data-t="files" title="Open SFTP file manager">${icon("folder", 15)}</button>`}
         <button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
-        <button data-t="upload" title="Upload a file to the host">${icon("image", 15)}</button>
-        <button data-t="paste-img" title="Paste image from clipboard">${icon("paste", 15)}</button>
+        ${host.protocol === "mosh" ? "" : `<button data-t="upload" title="Upload a file to the host">${icon("image", 15)}</button>
+        <button data-t="paste-img" title="Paste image from clipboard">${icon("paste", 15)}</button>`}
         <button data-t="password" title="Type password (e.g. for sudo)" disabled>${icon("key", 15)}</button>`
+        : host
+        ? `<button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
+        <button data-t="password" title="Type password" disabled>${icon("key", 15)}</button>`
         : `<button data-t="snippets" title="Run a snippet">${icon("code", 15)}</button>
         <button data-t="insert-path" title="Insert a file path">${icon("file", 15)}</button>
         <button data-t="paste-img" title="Paste image from clipboard (saved to a temp file)">${icon("paste", 15)}</button>
@@ -135,7 +158,12 @@ export class Session {
         /* falls back to DOM renderer */
       }
     }
-    t.onData((d) => this.send(d));
+    // Keys xterm already sent from keydown; without an IME WebKit also fires `input` for some (space).
+    let lastKey = { d: "", t: 0 };
+    t.onData((d) => {
+      lastKey = { d, t: performance.now() };
+      this.send(d);
+    });
     // WebKitGTK IME commits arrive via several events and xterm sends on more than one; send each once here.
     const ta = t.textarea!;
     const termEl = this.el.querySelector(".term")!;
@@ -200,6 +228,7 @@ export class Session {
         if (composing || ie.isComposing || ie.inputType !== "insertText" || !ie.data) return;
         const d = ie.data.replace(/\u00a0/g, " ");
         if (d === lastCommit.d && performance.now() - lastCommit.t < 100) return; // same commit reported twice
+        if (d === lastKey.d && performance.now() - lastKey.t < 50) return;
         commit(d);
         ta.value = "";
       },
@@ -265,6 +294,8 @@ export class Session {
         this.setState(this.state);
       }
       else if (a === "trust") api.trustNewHostKey(this.host.id).then(() => this.connect());
+      else if (a === "copy-fix") api.clipboardWrite(fixCommand(this.error)).then(() => toast("Command copied; paste it into a terminal on this computer", "ok"));
+      else if (a === "mosh-server") api.clipboardWrite(MOSH_SERVER_SETUP).then(() => toast(`Command copied; run it on ${this.host.name}`, "ok"));
       else if (a === "close") this.onClose(this);
     });
     let raf = 0;
@@ -342,11 +373,12 @@ export class Session {
 
   private fail(message: string) {
     // A dropped live session is worth a notification (the tab may be in the background).
-    if (this.state === "connected" && !this.local) notify("warn", `SSH · ${this.host.name}`, message, "");
+    if (this.state === "connected" && !this.local) notify("warn", `${protocolLabel(this.host)} · ${this.host.name}`, message, "");
     this.error = message;
     this.addLog(`Error: ${message}`);
     // Host key changes need a decision from the user; never retry those automatically.
-    if (!this.local && !message.startsWith("HOSTKEY_MISMATCH")) {
+    // Same for setup problems with a fix command (missing mosh, serial permissions): retrying cannot help.
+    if (!this.local && !message.startsWith("HOSTKEY_MISMATCH") && !fixCommand(message)) {
       const delay = Session.DELAYS[Math.min(this.retryStep, Session.DELAYS.length - 1)];
       this.retryStep++;
       this.retryAt = Date.now() + delay * 1000;
@@ -386,7 +418,7 @@ export class Session {
     this.state = s;
     const h = this.host;
     const avatar = `<div class="avatar lg" style="--h:${hue(h.folder || h.name)}">${icon("server", 26)}</div>`;
-    const target = `${esc(h.username)}@${esc(h.address)}:${h.port}`;
+    const target = esc(describeTarget(h));
     this.overlay.className = `overlay ${s}`;
     if (this.local && s !== "error") {
       this.overlay.className = `overlay ${s === "closed" ? "closed" : ""}`;
@@ -403,11 +435,14 @@ export class Session {
         <p class="err">${esc(this.error.replace(/^HOSTKEY_MISMATCH: /, "⚠ "))}</p>
         <p class="countdown muted"></p>
         <div class="row">${mismatch ? `<button class="btn danger" data-a="trust">Trust new key</button>` : ""}
+        ${fixCommand(this.error) ? `<button class="btn" data-a="copy-fix">Copy command</button>` : ""}
         <button class="btn primary" data-a="retry">Retry</button><button class="btn ghost" data-a="close">Close</button></div>
         ${this.local ? "" : this.logsHtml()}</div>`;
       this.renderCountdown();
     } else if (s === "closed") {
-      this.overlay.innerHTML = `<div class="ov-bar"><span>Connection closed</span><button class="btn primary sm" data-a="retry">Reconnect</button><button class="btn ghost sm" data-a="close">Close tab</button></div>`;
+      // mosh exits right away when the server lacks mosh-server: offer the install command.
+      const mosh = h.protocol === "mosh" ? `<button class="btn sm" data-a="mosh-server" title="${esc(MOSH_SERVER_SETUP)}">Copy mosh-server install command</button>` : "";
+      this.overlay.innerHTML = `<div class="ov-bar"><span>Connection closed</span>${mosh}<button class="btn primary sm" data-a="retry">Reconnect</button><button class="btn ghost sm" data-a="close">Close tab</button></div>`;
     } else this.overlay.innerHTML = "";
     this.onChange();
   }
