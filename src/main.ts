@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
+import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, Session, fontStack, loadFont, loadPrefs, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
@@ -211,6 +212,7 @@ function renderTabs() {
     ${isWeb ? "" : `<button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>`}
     <div class="grow" data-tauri-drag-region></div>
     ${state.sessions.some((s) => s.id === state.active && !s.local) ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
+    ${bellButton()}
     ${desktop ? `<div class="win-ctl">
       <button data-win="min" title="Minimize">${icon("min", 15)}</button>
       <button data-win="max" title="Maximize">${icon("max", 13)}</button>
@@ -233,6 +235,11 @@ els.tabs.addEventListener("click", (e) => {
   const act = t.closest<HTMLElement>("[data-act]")?.dataset.act;
   if (act === "menu") return els.shell.classList.toggle("side-open");
   if (act === "local") return openSession(null);
+  if (act === "notes")
+    return toggleNotesPanel(t.closest<HTMLElement>("[data-act]")!, (v) => {
+      state.view = v as View;
+      goHome();
+    });
   if (act === "copy-pass") return state.sessions.find((s) => s.id === state.active)?.copyPassword();
   const tab = t.closest<HTMLElement>("[data-tab]");
   if (tab?.dataset.tab === "home") {
@@ -306,6 +313,8 @@ function closeSession(id: string) {
   if (state.active === id) activate(state.sessions[Math.min(i, state.sessions.length - 1)]?.id ?? "home");
   else renderTabs();
 }
+
+onNotesChange(renderTabs);
 
 // ---------- pages ----------
 

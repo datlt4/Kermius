@@ -94,6 +94,7 @@ export interface FsJob {
   intervalMin: number;
   watch: boolean;
   lastRun: number;
+  lastAttempt: number;
   lastResult: string;
   conflicts: number;
   paused: boolean;

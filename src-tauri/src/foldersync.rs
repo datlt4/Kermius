@@ -49,6 +49,8 @@ pub struct Job {
     /// Sync automatically when files change on either side (while the app is open).
     pub watch: bool,
     pub last_run: i64,
+    /// Last run attempt, successful or not (scheduling uses it so failures do not retry every minute).
+    pub last_attempt: i64,
     pub last_result: String,
     /// Unresolved `.sync-conflict-` files after the last run (two-way only).
     pub conflicts: u32,

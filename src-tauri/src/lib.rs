@@ -625,6 +625,7 @@ pub(crate) async fn run_job(app: tauri::AppHandle, id: String, dry_run: bool) ->
         {
             let mut st = state.store.state.lock();
             if let Some(j) = st.folder_syncs.iter_mut().find(|j| j.id == id) {
+                j.last_attempt = now_ms();
                 j.last_result = match &result {
                     Ok((s, _)) => s.clone(),
                     Err(err) => err.clone(),

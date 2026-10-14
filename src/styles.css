@@ -602,3 +602,24 @@ details .field + .field { margin-top: 10px; }
 .nav-dot.scanning { display: block; background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 .nav-dot.copying { display: block; background: var(--danger); animation: pulse 0.8s ease-in-out infinite; }
 .side-collapsed .nav-dot { left: 34px; }
+
+/* ---------- notifications ---------- */
+.bell { position: relative; }
+.bell-badge { position: absolute; top: 1px; right: 0; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
+.notes-panel { position: fixed; z-index: 120; width: min(420px, 94vw); max-height: 70vh; display: flex; flex-direction: column; background: #20242f; border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 18px 50px -12px rgba(0, 0, 0, 0.85); animation: pop 0.12s var(--ease); }
+.notes-head { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.notes-list { overflow-y: auto; padding: 6px; }
+.note { display: flex; gap: 10px; padding: 8px; border-radius: 9px; cursor: default; }
+.note:hover { background: rgba(255, 255, 255, 0.04); }
+.note-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--faint); }
+.note.error .note-dot { background: var(--danger); }
+.note.warn .note-dot { background: var(--warn); }
+.note.ok .note-dot { background: var(--ok); }
+.note:not(.unread) { opacity: 0.6; }
+.note-body { flex: 1; min-width: 0; }
+.note-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.note-top .muted { font-size: 11.5px; white-space: nowrap; }
+.note-text { font-size: 12.5px; color: #cfd3dd; margin-top: 2px; word-break: break-word; }
+.note pre { max-height: 160px; overflow: auto; font-size: 11.5px; background: #171a22; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; }
+.fs-status.warn { color: #ffd27a; }
+.fs-status.warn .dot-st { background: var(--warn); }

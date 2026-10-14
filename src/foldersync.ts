@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { api, type FsEndpoint, type FsEvent, type FsJob, type FsPlan, type Host } from "./api";
 import { conflictsDialog } from "./conflicts";
+import { notify } from "./notify";
 import { pickFolder } from "./folderpicker";
 import { confirmDialog, contextMenu, esc, icon, morphHtml, toast } from "./ui";
 
@@ -106,6 +107,7 @@ const emptyJob = (): FsJob => ({
   intervalMin: 0,
   watch: true,
   lastRun: 0,
+  lastAttempt: 0,
   lastResult: "",
   conflicts: 0,
   paused: false,
@@ -144,7 +146,21 @@ function status(job: FsJob) {
   if (job.lastResult.startsWith(OFFLINE)) return { cls: "off", text: `Offline · ${job.lastResult.slice(OFFLINE.length)}` };
   if (job.lastResult === "Stopped") return { cls: "", text: `Stopped · ${job.paused ? "paused" : "will resume on the next run"}` };
   const ok = /^Up to date$|copied|deleted|conflicts kept/.test(job.lastResult);
-  return ok ? { cls: "ok", text: `${job.lastResult} · ${ago(job.lastRun)}` } : { cls: "err", text: job.lastResult.split("\n")[0] };
+  if (ok) return { cls: "ok", text: `${job.lastResult} · ${ago(job.lastRun)}` };
+  // A few files failed (rsync 23/24): the rest synced, so warn rather than fail.
+  return { cls: isPartial(job.lastResult) ? "warn" : "err", text: job.lastResult.split("\n")[0] };
+}
+
+const isPartial = (msg: string) => /^\d+ items? failed/.test(msg);
+
+/** Background run outcome → notification center (no toasts for automatic runs). */
+function noteResult(id: string, ok: boolean, summary: string) {
+  const job = jobs.find((j) => j.id === id);
+  const name = `Folder Sync · ${job?.name || "Untitled"}`;
+  if (ok) return;
+  if (summary === "Stopped" || summary === "Already running") return;
+  if (summary.startsWith(OFFLINE)) notify("warn", name, `Offline: ${summary.slice(OFFLINE.length)}`, "foldersync");
+  else notify(isPartial(summary) ? "warn" : "error", name, summary, "foldersync");
 }
 
 export async function loadJobs() {
@@ -176,10 +192,22 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
   setInterval(() => live.size && ctx.rerender(), 1000);
   for (const [k, [state, message]] of Object.entries(await api.fsyncWatchStates().catch(() => ({})))) watching.set(k, { state, message });
   await listen<FsEvent>("fsync", async ({ payload: ev }) => {
-    if (ev.type === "watch") watching.set(`${ev.id}:${ev.side}`, { state: ev.state, message: ev.message });
+    if (ev.type === "watch") {
+      const prev = watching.get(`${ev.id}:${ev.side}`)?.state;
+      watching.set(`${ev.id}:${ev.side}`, { state: ev.state, message: ev.message });
+      if (ev.state === "limit" && prev !== "limit") {
+        const job = jobs.find((j) => j.id === ev.id);
+        notify("warn", `Folder Sync · ${job?.name || "Untitled"}`, ev.message.split("|")[0], "foldersync");
+      }
+    }
     else if (ev.type === "finished") {
       live.delete(ev.id);
+      const before = jobs.find((j) => j.id === ev.id)?.conflicts ?? 0;
       await loadJobs();
+      noteResult(ev.id, ev.ok, ev.summary);
+      const job = jobs.find((j) => j.id === ev.id);
+      if (job && job.conflicts > before)
+        notify("warn", `Folder Sync · ${job.name || "Untitled"}`, `${job.conflicts} unresolved conflict${job.conflicts > 1 ? "s" : ""}`, "foldersync");
     } else {
       // Only a phase event starts a run; stray progress from a stopped run must not revive it.
       if (!live.has(ev.id) && ev.type !== "phase") return;
@@ -318,8 +346,9 @@ export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, qui
     if (dryRun) previewDialog(jobs.find((j) => j.id === id)!, r.summary, r.plan);
     else if (!quiet) toast(r.summary, "ok");
   } catch (e) {
+    // Automatic runs stay silent here: the outcome goes to the notification center.
     const msg = String(e);
-    if (!quiet || !msg.startsWith(OFFLINE)) toast(msg.split("\n")[0].replace(OFFLINE, "Offline: "), msg.startsWith(OFFLINE) ? "info" : "err");
+    if (!quiet) toast(msg.split("\n")[0].replace(OFFLINE, "Offline: "), msg.startsWith(OFFLINE) ? "info" : isPartial(msg) ? "info" : "err");
   } finally {
     live.delete(id);
     await loadJobs();
@@ -330,7 +359,8 @@ export async function runJob(id: string, ctx: FolderSyncCtx, dryRun = false, qui
 /** Run jobs whose interval has elapsed (called every minute and at startup, so missed runs catch up). */
 export function runDueJobs(ctx: FolderSyncCtx) {
   for (const j of jobs) {
-    if (!j.paused && j.intervalMin > 0 && Date.now() - j.lastRun >= j.intervalMin * 60_000) runJob(j.id, ctx, false, true);
+    // Based on the last attempt, so a failing job waits a full interval instead of retrying every minute.
+    if (!j.paused && j.intervalMin > 0 && Date.now() - Math.max(j.lastRun, j.lastAttempt ?? 0) >= j.intervalMin * 60_000) runJob(j.id, ctx, false, true);
   }
 }
 

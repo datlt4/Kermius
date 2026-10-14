@@ -11,6 +11,7 @@ import "@fontsource/source-code-pro/400.css";
 import "@fontsource/source-code-pro/700.css";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, Channel, emptyHost, type Host, type Status } from "./api";
+import { notify } from "./notify";
 import { contextMenu, esc, hue, icon, toast } from "./ui";
 
 export const termTheme = {
@@ -336,6 +337,8 @@ export class Session {
   }
 
   private fail(message: string) {
+    // A dropped live session is worth a notification (the tab may be in the background).
+    if (this.state === "connected" && !this.local) notify("warn", `SSH · ${this.host.name}`, message, "");
     this.error = message;
     this.addLog(`Error: ${message}`);
     // Host key changes need a decision from the user; never retry those automatically.
