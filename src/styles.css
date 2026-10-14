@@ -528,3 +528,9 @@ details .field + .field { margin-top: 10px; }
 .fs-route .mini-tag { margin-left: 4px; font-size: 10.5px; padding: 0 6px; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .fs-plan { max-height: 180px; overflow-y: auto; font-family: "JetBrains Mono", monospace; font-size: 12px; padding: 6px 10px; background: #171a22; border-radius: 8px; margin-top: 6px; }
+
+.fs-req summary { cursor: pointer; font-size: 12.5px; color: var(--accent); }
+.fs-req p { margin: 8px 0; font-size: 12.5px; }
+.fs-cmd { display: grid; grid-template-columns: 200px 1fr 28px; gap: 8px; align-items: center; padding: 2px 0; font-size: 12px; }
+.fs-cmd code { font-family: "JetBrains Mono", monospace; font-size: 12px; background: #171a22; padding: 4px 8px; border-radius: 6px; overflow-x: auto; white-space: nowrap; }
+.fs-warn { margin: 6px 0 14px; padding: 12px 14px; border-radius: 10px; background: rgba(245, 200, 76, 0.08); border: 1px solid rgba(245, 200, 76, 0.35); font-size: 13px; display: flex; flex-direction: column; gap: 6px; }

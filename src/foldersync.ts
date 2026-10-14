@@ -25,6 +25,23 @@ const INTERVALS: [number, string][] = [
   [1440, "Every day"],
 ];
 
+/** Install commands per distro (remote needs rsync + GNU find; inotify-tools for instant sync). */
+const INSTALL: [string, string][] = [
+  ["Debian / Ubuntu / Raspberry Pi OS", "sudo apt install -y rsync inotify-tools"],
+  ["Fedora / RHEL / Rocky", "sudo dnf install -y rsync inotify-tools"],
+  ["Arch / Manjaro", "sudo pacman -S --needed rsync inotify-tools"],
+  ["Alpine", "sudo apk add rsync inotify-tools findutils"],
+  ["openSUSE", "sudo zypper install -y rsync inotify-tools"],
+];
+
+const installList = (rows: [string, string][]) =>
+  rows
+    .map(([os, cmd]) => `<div class="fs-cmd"><span class="muted">${esc(os)}</span><code>${esc(cmd)}</code>
+      <button type="button" class="icon-btn" data-copy="${esc(cmd)}" title="Copy">${icon("copy", 13)}</button></div>`)
+    .join("");
+
+let rsyncLocal: boolean | null = null;
+
 let jobs: FsJob[] = [];
 const live = new Map<string, Live>();
 /** Watcher state per "<job id>:<side>". */
@@ -69,6 +86,7 @@ function status(job: FsJob) {
 
 export async function loadJobs() {
   jobs = await api.fsyncList().catch(() => []);
+  rsyncLocal ??= await api.rsyncAvailable().catch(() => false);
 }
 
 /** Worst watcher state across both sides of a job. */
@@ -102,10 +120,17 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
 }
 
 export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
+  const mac = /Mac/.test(navigator.userAgent);
   root.innerHTML = `
     <div class="toolbar"><div class="grow"></div>
       <button class="btn primary" data-fs="new">${icon("plus", 16)}<span>New Sync</span></button></div>
     <div class="content">
+      ${
+        rsyncLocal === false
+          ? `<div class="fs-warn"><b>rsync is not installed on this computer.</b> Folder Sync needs rsync 3.1 or newer.
+              ${installList(mac ? [["macOS (Homebrew)", "brew install rsync"]] : INSTALL.map(([os, cmd]) => [os, cmd.replace(" inotify-tools", "").replace(" findutils", "")]))}</div>`
+          : ""
+      }
       ${
         jobs.length
           ? `<div class="fs-list">${jobs
@@ -169,6 +194,8 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     const act = t.closest<HTMLElement>("[data-fs]")?.dataset.fs;
     const id = t.closest<HTMLElement>("[data-job]")?.dataset.job;
     const job = jobs.find((j) => j.id === id);
+    const cp = t.closest<HTMLElement>("[data-copy]")?.dataset.copy;
+    if (cp) return api.clipboardWrite(cp).then(() => toast("Command copied", "ok"));
     if (act === "new") return jobDialog(emptyJob(), ctx);
     if (!job) return;
     if (act === "run") return runJob(job.id, ctx);
@@ -235,7 +262,10 @@ function sideFields(key: "a" | "b", ep: FsEndpoint, ctx: FolderSyncCtx) {
       ${ep.kind === "local" ? `<button type="button" class="btn sm" data-browse="${key}">Browse…</button>` : ""}</div>
     ${
       ep.kind === "remote"
-        ? `<small class="muted">Tick the hosts that reach this machine; they are tried top to bottom (e.g. wired, Wi-Fi, VPN).</small>
+        ? `<details class="fs-req"><summary>Requirements on the remote</summary>
+            <p class="muted"><b>rsync</b> and GNU <b>find</b> are required (Linux). <b>inotify-tools</b> makes remote changes sync instantly;
+              without it Kermius checks every minute. Run on the remote:</p>${installList(INSTALL)}</details>
+          <small class="muted">Tick the hosts that reach this machine; they are tried top to bottom (e.g. wired, Wi-Fi, VPN).</small>
           <input class="fs-route-filter" placeholder="Filter by name, IP, group or tag…" spellcheck="false" />
           <div class="fs-routes">
             ${order
@@ -304,6 +334,8 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
       draft[k].kind = kindBtn.dataset.kind as FsEndpoint["kind"];
       return render();
     }
+    const cp = t.closest<HTMLElement>("[data-copy]")?.dataset.copy;
+    if (cp) return api.clipboardWrite(cp).then(() => toast("Command copied", "ok"));
     const browse = t.closest<HTMLElement>("[data-browse]")?.dataset.browse;
     if (browse) {
       const dir = await openDialog({ directory: true }).catch(() => null);

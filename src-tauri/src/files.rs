@@ -198,8 +198,33 @@ pub enum Event {
     Error { message: String },
 }
 
+/// rsync 3.1+ is needed (`--info=progress2`); macOS ships 2.6.9 or openrsync.
 pub fn rsync_available() -> bool {
-    !cfg!(windows) && std::process::Command::new("rsync").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    if cfg!(windows) {
+        return false;
+    }
+    let Ok(out) = std::process::Command::new("rsync").arg("--version").output() else { return false };
+    rsync_version_ok(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn rsync_version_ok(version_output: &str) -> bool {
+    let first = version_output.lines().next().unwrap_or("");
+    if !first.starts_with("rsync ") {
+        return false;
+    }
+    let v = first.split_whitespace().skip_while(|w| *w != "version").nth(1).unwrap_or("");
+    let mut nums = v.split('.').map(|n| n.parse::<u32>().unwrap_or(0));
+    (nums.next().unwrap_or(0), nums.next().unwrap_or(0)) >= (3, 1)
+}
+
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn rsync_versions() {
+        assert!(super::rsync_version_ok("rsync  version 3.2.7  protocol version 31\n"));
+        assert!(!super::rsync_version_ok("rsync  version 2.6.9  protocol version 29\n"));
+        assert!(!super::rsync_version_ok("openrsync: protocol version 29\n"));
+    }
 }
 
 impl Files {
