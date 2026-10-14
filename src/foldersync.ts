@@ -207,7 +207,9 @@ function sideFields(key: "a" | "b", ep: FsEndpoint, ctx: FolderSyncCtx) {
       ${ep.kind === "local" ? `<button type="button" class="btn sm" data-browse="${key}">Browse…</button>` : ""}</div>
     ${
       ep.kind === "remote"
-        ? `<div class="fs-routes"><small class="muted">Routes to the same machine, tried top to bottom (e.g. wired, Wi-Fi, VPN):</small>
+        ? `<small class="muted">Tick the hosts that reach this machine; they are tried top to bottom (e.g. wired, Wi-Fi, VPN).</small>
+          <input class="fs-route-filter" placeholder="Filter hosts…" spellcheck="false" />
+          <div class="fs-routes">
             ${order
               .map((id) => {
                 const h = hosts.find((x) => x.id === id);
@@ -281,6 +283,14 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
       const sib = move === "up" ? row.previousElementSibling : row.nextElementSibling;
       if (sib?.classList.contains("fs-route")) move === "up" ? sib.before(row) : sib.after(row);
     }
+  });
+  el.addEventListener("input", (e) => {
+    const t = e.target as HTMLInputElement;
+    if (!t.classList.contains("fs-route-filter")) return;
+    const q = t.value.trim().toLowerCase();
+    t.closest(".fs-side")!.querySelectorAll<HTMLElement>(".fs-route").forEach((r) => {
+      r.hidden = !!q && !r.textContent!.toLowerCase().includes(q) && !r.querySelector("input")!.checked;
+    });
   });
   el.addEventListener("change", (e) => {
     if ((e.target as HTMLElement).getAttribute("name") === "mode") {

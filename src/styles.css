@@ -513,10 +513,13 @@ details .field + .field { margin-top: 10px; }
 .fs-side { display: flex; flex-direction: column; gap: 8px; padding: 10px; background: #1a1d26; border: 1px solid var(--border); border-radius: 10px; }
 .fs-kind { align-self: flex-start; }
 .fs-kind button { width: auto; padding: 0 12px; font-size: 12.5px; }
-.fs-routes { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; }
+.fs-routes { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; overflow-x: hidden; }
 .fs-route { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 13px; }
 .fs-route:hover { background: rgba(255, 255, 255, 0.04); }
 .fs-route span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fs-route .icon-btn { width: 24px; height: 24px; }
+.fs-route input[type="checkbox"] { width: auto; flex: none; padding: 0; margin: 0; accent-color: var(--accent); }
+.fs-route-filter { padding: 6px 9px !important; font-size: 12.5px; }
+.fs-route[hidden] { display: none; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
 .fs-plan { max-height: 180px; overflow-y: auto; font-family: "JetBrains Mono", monospace; font-size: 12px; padding: 6px 10px; background: #171a22; border-radius: 8px; margin-top: 6px; }
