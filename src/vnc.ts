@@ -119,11 +119,12 @@ const WHEEL_UP = 8;
 const WHEEL_DOWN = 16;
 
 /**
- * Touch input for VNC (replaces noVNC's tap-to-click gestures). Touchpad mode (default): one finger
- * moves the pointer by the swipe distance, like a laptop touchpad; direct mode: the pointer goes where
- * the finger is. Both: double tap = left click, double tap + hold + move = left drag, long press (0.7 s)
- * = right click, pinch = zoom, two fingers = pan when zoomed (scroll otherwise). When zoomed, the view
- * follows the pointer (touchpad) or the finger (direct) near its edges.
+ * Touch input for VNC (replaces noVNC's tap-to-click gestures). Touchpad mode (default), like a laptop
+ * touchpad: one finger moves the pointer by the swipe distance, tap = left click (two taps = double
+ * click), tap then touch and move = drag. Direct mode: the pointer goes where the finger is, double tap
+ * = left click, double tap + hold + move = drag. Both: two-finger tap or long press (0.7 s) = right
+ * click, pinch = zoom, two fingers = pan when zoomed (scroll otherwise). When zoomed, the view follows
+ * the pointer (touchpad) or the finger (direct) near its edges.
  */
 function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
   rfb._gestures?.detach();
@@ -223,7 +224,7 @@ function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
   let moved = false;
   let longPress = 0;
   let longDone = false;
-  let pinch: { dist: number; zoom: number; fbx: number; fby: number; my: number } | null = null;
+  let pinch: { dist: number; zoom: number; fbx: number; fby: number; my: number; mx0: number; my0: number; t: number; moved: boolean } | null = null;
   let scrollAcc = 0;
 
   const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
@@ -236,7 +237,7 @@ function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
       if (mask) send((mask = 0));
       const m = mid(e.touches);
       const c = canvasRect();
-      pinch = { dist: dist(e.touches), zoom, fbx: (m.x - c.left) / d.scale + d._viewportLoc.x, fby: (m.y - c.top) / d.scale + d._viewportLoc.y, my: m.y };
+      pinch = { dist: dist(e.touches), zoom, fbx: (m.x - c.left) / d.scale + d._viewportLoc.x, fby: (m.y - c.top) / d.scale + d._viewportLoc.y, my: m.y, mx0: m.x, my0: m.y, t: Date.now(), moved: false };
       scrollAcc = 0;
       return;
     }
@@ -268,6 +269,7 @@ function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
     e.preventDefault();
     if (pinch && e.touches.length === 2) {
       const m = mid(e.touches);
+      if (Math.abs(dist(e.touches) - pinch.dist) > 12 || Math.hypot(m.x - pinch.mx0, m.y - pinch.my0) > 12) pinch.moved = true;
       const z = Math.min(6, Math.max(1, (pinch.zoom * dist(e.touches)) / pinch.dist));
       if (z === 1 && pinch.zoom === 1) {
         // Not zoomed: two fingers scroll the remote screen.
@@ -317,6 +319,11 @@ function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
     if (e.touches.length) return;
     edgeStop();
     if (pinch) {
+      // Two-finger tap: right click (at the pointer, or between the fingers in direct mode).
+      if (!pinch.moved && Date.now() - pinch.t < 350) {
+        if (!touchpad()) toFinger(pinch.mx0, pinch.my0);
+        click(RIGHT);
+      }
       pinch = null;
       return;
     }
@@ -324,7 +331,10 @@ function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
       send((mask = 0)); // ends the click or the drag
       return;
     }
-    if (!moved && !longDone && Date.now() - start.t < 300) lastTap = { x: start.x, y: start.y, t: Date.now() };
+    if (!moved && !longDone && Date.now() - start.t < 300) {
+      lastTap = { x: start.x, y: start.y, t: Date.now() };
+      if (touchpad()) click(LEFT);
+    }
   };
 
   const opts = { passive: false } as const;
