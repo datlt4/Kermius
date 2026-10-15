@@ -118,7 +118,7 @@ function renderSidebar() {
     ["keychain", "key", "Keychain"],
     ["forwarding", "forward", "Port Forwarding"],
     ...(desktop ? [["foldersync", "folders", "Folder Sync"] as [View, string, string]] : []),
-    ...(isWeb ? [] : [["nearby", "share", "Nearby Share"] as [View, string, string]]),
+    ...(desktop ? [["nearby", "share", "Nearby Share"] as [View, string, string]] : []),
     ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
   ];
@@ -1526,6 +1526,6 @@ function webUnlock(): Promise<void> {
     runDueJobs(folderSync);
     setInterval(() => runDueJobs(folderSync), 60_000);
   }
-  if (!isWeb) initNearby(rerenderNearby).catch((e) => console.error(e));
+  if (desktop) initNearby(rerenderNearby).catch((e) => console.error(e));
   setInterval(renderSyncFoot, 30_000);
 })();

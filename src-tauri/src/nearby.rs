@@ -121,6 +121,7 @@ struct Session {
 
 pub struct Nearby {
     app: AppHandle,
+    client: reqwest::Client,
     fingerprint: String,
     alias: String,
     port: Mutex<u16>,
@@ -217,9 +218,31 @@ fn udp_socket() -> std::io::Result<tokio::net::UdpSocket> {
     tokio::net::UdpSocket::from_std(s.into())
 }
 
-fn client() -> reqwest::Client {
-    // LocalSend peers use self-signed certificates.
-    reqwest::Client::builder().danger_accept_invalid_certs(true).build().unwrap()
+/// "error sending request" alone hides the cause (refused, TLS, timeout…).
+fn err_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut src = e.source();
+    while let Some(c) = src {
+        out = format!("{out}: {c}");
+        src = c.source();
+    }
+    out
+}
+
+/// Self-signed certificate: LocalSend's HTTPS servers require a client certificate,
+/// and its SHA-256 is the device fingerprint.
+fn http_client() -> (reqwest::Client, String) {
+    use sha2::Digest;
+    let ck = rcgen::generate_simple_self_signed(vec!["LocalSend User".into()]).expect("certificate");
+    let fingerprint = sha2::Sha256::digest(ck.cert.der()).iter().map(|b| format!("{b:02x}")).collect();
+    let pem = format!("{}{}", ck.signing_key.serialize_pem(), ck.cert.pem());
+    let client = reqwest::Client::builder()
+        // Peers use self-signed certificates.
+        .danger_accept_invalid_certs(true)
+        .identity(reqwest::Identity::from_pem(pem.as_bytes()).expect("identity"))
+        .build()
+        .unwrap();
+    (client, fingerprint)
 }
 
 fn base_url(d: &Device) -> String {
@@ -229,9 +252,11 @@ fn base_url(d: &Device) -> String {
 
 impl Nearby {
     pub fn new(app: AppHandle) -> Arc<Self> {
+        let (client, fingerprint) = http_client();
         Arc::new(Self {
             app,
-            fingerprint: uuid::Uuid::new_v4().to_string(),
+            client,
+            fingerprint,
             alias: hostname(),
             port: Mutex::new(PORT),
             running: Mutex::new(None),
@@ -299,8 +324,8 @@ impl Nearby {
         };
         let changed = {
             let mut devs = self.devices.lock();
-            // A device keeps its fingerprint across restarts only in HTTPS mode; drop stale entries for the same address.
-            devs.retain(|k, v| *k == d.fingerprint || !(v.ip == d.ip && v.port == d.port));
+            // HTTP-mode apps get a new fingerprint on every start: drop the old entry of a restarted app.
+            devs.retain(|k, v| *k == d.fingerprint || !(v.ip == d.ip && (v.port == d.port || v.alias == d.alias)));
             let old = devs.insert(d.fingerprint.clone(), d.clone());
             old.is_none_or(|o| o.alias != d.alias || o.ip != d.ip || o.port != d.port)
         };
@@ -334,7 +359,7 @@ impl Nearby {
             .with_state(self.clone());
         let stop = token.clone();
         let me = self.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let serve = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
                 .with_graceful_shutdown(stop.cancelled_owned());
             if let Err(e) = serve.await {
@@ -345,7 +370,7 @@ impl Nearby {
         let me = self.clone();
         let stop = token.clone();
         let sock = udp.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let (n, from) = tokio::select! {
@@ -360,7 +385,7 @@ impl Nearby {
                 if info.announce == Some(true) {
                     let me = me.clone();
                     let sock = sock.clone();
-                    tokio::spawn(async move { me.answer(&sock, from.ip(), &info).await });
+                    tauri::async_runtime::spawn(async move { me.answer(&sock, from.ip(), &info).await });
                 }
             }
         });
@@ -379,7 +404,8 @@ impl Nearby {
             port: info.port.unwrap_or(PORT),
             https: info.protocol.as_deref() != Some("http"),
         };
-        let ok = client()
+        let ok = self.client
+            .clone()
             .post(format!("{}/register", base_url(&d)))
             .timeout(Duration::from_secs(3))
             .header("content-type", "application/json")
@@ -410,7 +436,7 @@ impl Nearby {
 
     fn announce_with(self: &Arc<Self>, sock: Arc<tokio::net::UdpSocket>) {
         let me = self.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             for wait in [100, 400, 1500] {
                 tokio::time::sleep(Duration::from_millis(wait)).await;
                 me.multicast(&sock, &me.info(Some(true))).await;
@@ -455,7 +481,7 @@ impl Nearby {
         self.sends.lock().insert(id.clone(), token.clone());
         let me = self.clone();
         let tid = id.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let mut t = Transfer {
                 id: tid.clone(),
                 peer: dev.alias.clone(),
@@ -474,7 +500,8 @@ impl Nearby {
                 _ = token.cancelled() => {
                     if let Some(sid) = session.lock().clone() {
                         let url = format!("{}/cancel?sessionId={sid}", base_url(&dev));
-                        tokio::spawn(async move { let _ = client().post(url).timeout(Duration::from_secs(3)).send().await; });
+                        let c = me.client.clone();
+                        tauri::async_runtime::spawn(async move { let _ = c.post(url).timeout(Duration::from_secs(3)).send().await; });
                     }
                     Err("cancelled".into())
                 }
@@ -500,13 +527,14 @@ impl Nearby {
             "files": files.iter().map(|(_, m)| (m.id.clone(), m.clone())).collect::<HashMap<_, _>>(),
         });
         // No timeout: the receiver may take a while to accept.
-        let r = client()
+        let r = self.client
+            .clone()
             .post(format!("{base}/prepare-upload"))
             .header("content-type", "application/json")
             .body(body.to_string())
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| err_chain(&e))?;
         match r.status().as_u16() {
             200 => {}
             204 => return Ok("done".into()),
@@ -548,7 +576,8 @@ impl Nearby {
                 }
             });
             let url = format!("{base}/upload?sessionId={}&fileId={}&token={}", p.session_id, meta.id, token);
-            let r = client()
+            let r = self.client
+            .clone()
                 .post(url)
                 .header("content-length", meta.size)
                 .body(reqwest::Body::wrap_stream(stream))
@@ -644,6 +673,9 @@ struct PrepareRes {
 }
 
 async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Json(req): Json<PrepareReq>) -> Result<Json<PrepareRes>, StatusCode> {
+    if req.files.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if me.session.lock().is_some() {
         return Err(StatusCode::CONFLICT);
     }
