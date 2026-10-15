@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, type NearbyEvent, type NearbyStatus, type NearbyTransfer } from "./api";
+import { api, type Host, type NearbyEvent, type NearbyStatus, type NearbyTransfer } from "./api";
 import { notify } from "./notify";
 import { esc, icon, morphHtml, toast } from "./ui";
 
@@ -9,6 +9,20 @@ const KEY = "kermius.nearby";
 let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "" };
 const transfers = new Map<string, NearbyTransfer>();
 let busy = false;
+let hosts: () => Host[] = () => [];
+/** Host id → fingerprint of the app answering at its address ("" = offline). */
+const probed = new Map<string, string>();
+let lastProbe = 0;
+
+/** Saved hosts marked for Nearby Share are asked directly (works across VPNs). */
+async function probeHosts(rerender: () => void) {
+  const list = hosts().filter((h) => h.nearby && h.address);
+  if (!status.running || !list.length) return;
+  lastProbe = Date.now();
+  const found = await api.nearbyProbe([...new Set(list.map((h) => h.address))]).catch(() => []);
+  for (const h of list) probed.set(h.id, found.find((d) => d.ip === h.address)?.fingerprint ?? "");
+  rerender();
+}
 
 const fmtSize = (n: number) => {
   if (n < 1024) return `${n} B`;
@@ -38,7 +52,10 @@ async function setRunning(on: boolean, rerender: () => void) {
   busy = true;
   rerender();
   try {
-    if (on) status = await api.nearbyStart();
+    if (on) {
+      status = await api.nearbyStart();
+      probeHosts(rerender);
+    }
     else {
       await api.nearbyStop();
       status = await api.nearbyStatus();
@@ -72,7 +89,9 @@ function requestDialog(id: string, alias: string, files: [string, number][]) {
   });
 }
 
-export async function initNearby(rerender: () => void) {
+export async function initNearby(rerender: () => void, savedHosts: () => Host[], active: () => boolean) {
+  hosts = savedHosts;
+  setInterval(() => active() && probeHosts(rerender), 15_000);
   await listen<NearbyEvent>("nearby", ({ payload: ev }) => {
     if (ev.kind === "devices") status.devices = ev.devices;
     else if (ev.kind === "request") {
@@ -130,8 +149,28 @@ function transferRow(t: NearbyTransfer) {
   </div>`;
 }
 
+function hostCards() {
+  const list = hosts().filter((h) => h.nearby && h.address).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (!list.length) return "";
+  return `<h4 class="section">Your hosts</h4><div class="grid">${list
+    .map((h) => {
+      const fp = probed.get(h.id);
+      const dev = fp ? status.devices.find((d) => d.fingerprint === fp) : undefined;
+      const state = fp === undefined ? "Checking…" : dev ? `${dev.alias} · ${dev.deviceModel || "online"}` : "Offline: Kermius / LocalSend not running";
+      return `<div class="card nb-dev ${dev ? "" : "offline"}" ${dev ? `data-nb-dev="${esc(dev.fingerprint)}"` : ""}>
+        <div class="avatar" style="--h:${dev ? 150 : 220}">${icon("server", 20)}</div>
+        <div class="card-body"><div class="card-title">${esc(h.name || h.address)}</div><div class="card-sub">${esc(h.address)} · ${esc(state)}</div></div>
+        <div class="nb-actions"><button class="btn ghost sm" data-nb="files" title="Send files" ${dev ? "" : "disabled"}>${icon("file", 14)}</button>
+          <button class="btn ghost sm" data-nb="folder" title="Send a folder" ${dev ? "" : "disabled"}>${icon("folder", 14)}</button></div></div>`;
+    })
+    .join("")}</div>`;
+}
+
 export function renderNearby(root: HTMLElement) {
   const on = status.running;
+  if (on && Date.now() - lastProbe > 15_000) probeHosts(() => root.querySelector(".nb-toolbar") && renderNearby(root));
+  const mine = new Set(probed.values());
+  const others = status.devices.filter((d) => !mine.has(d.fingerprint));
   const list = [...transfers.values()].reverse();
   const html = `
     <div class="toolbar nb-toolbar">
@@ -147,15 +186,16 @@ export function renderNearby(root: HTMLElement) {
         ? `<div class="empty">${icon("share", 40)}<h3>Nearby Share</h3>
             <p>Send files to phones and computers on the same network, and receive from them.<br/>Works with the LocalSend app (Android, iOS, Windows, macOS, Linux) and other Kermius devices.</p>
             <button class="btn primary" data-nb="on" ${busy ? "disabled" : ""}>Turn on</button></div>`
-        : `<h4 class="section">Nearby devices</h4>
-          ${status.devices.length
-            ? `<div class="grid">${status.devices.map((d) => `<div class="card nb-dev" data-nb-dev="${esc(d.fingerprint)}">
+        : `${hostCards()}<h4 class="section">Nearby devices</h4>
+          ${others.length
+            ? `<div class="grid">${others.map((d) => `<div class="card nb-dev" data-nb-dev="${esc(d.fingerprint)}">
                 <div class="avatar" style="--h:${d.deviceType === "mobile" ? 150 : 215}">${icon(devIcon(d.deviceType), 20)}</div>
                 <div class="card-body"><div class="card-title">${esc(d.alias)}</div><div class="card-sub">${esc([d.deviceModel, d.ip].filter(Boolean).join(" · "))}</div></div>
                 <div class="nb-actions"><button class="btn ghost sm" data-nb="files" title="Send files">${icon("file", 14)}</button>
                   <button class="btn ghost sm" data-nb="folder" title="Send a folder">${icon("folder", 14)}</button></div></div>`).join("")}</div>
               <p class="muted nb-hint">Drop files on a device, or use its buttons.</p>`
-            : `<div class="nb-searching muted">${icon("sync", 16)} Looking for devices… Open LocalSend or Kermius on another device in this network.</div>`}
+            : `<div class="nb-searching muted">${icon("sync", 16)} Looking for devices… Open LocalSend or Kermius on another device in this network.
+                Across a VPN, tick “Use this address for Nearby Share” on the host instead.</div>`}
           ${list.length ? `<h4 class="section">Transfers</h4><div class="nb-trs">${list.map(transferRow).join("")}</div>` : ""}`}
     </div>`;
   if (root.querySelector(".nb-toolbar")) morphHtml(root, html);
@@ -175,6 +215,7 @@ export function bindNearby(root: HTMLElement, rerender: () => void, active: () =
       case "on":
         return setRunning(true, rerender);
       case "refresh":
+        probeHosts(rerender);
         return api.nearbyRefresh().catch((e) => toast(String(e), "err"));
       case "open":
         return api.nearbyOpenFolder().catch((e) => toast(String(e), "err"));

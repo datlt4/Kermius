@@ -162,6 +162,7 @@ export const webApi: Api = {
   nearbyStop: unsupported,
   nearbyRefresh: unsupported,
   nearbySend: unsupported,
+  nearbyProbe: unsupported,
   nearbyRespond: unsupported,
   nearbyCancel: unsupported,
   nearbyOpenFolder: unsupported,
