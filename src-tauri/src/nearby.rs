@@ -310,6 +310,11 @@ impl Nearby {
     }
 
     fn add_device(&self, ip: IpAddr, info: &Info) {
+        self.add_device_at(&ip.to_string(), info);
+    }
+
+    /// `ip` may also be a host name (saved hosts).
+    fn add_device_at(&self, ip: &str, info: &Info) {
         if info.fingerprint == self.fingerprint {
             return;
         }
@@ -451,6 +456,42 @@ impl Nearby {
         self.emit(Event::Devices { devices: vec![] });
         self.announce_with(sock);
         Ok(())
+    }
+
+    /// Reach saved addresses directly (multicast does not cross VPNs or routers): register
+    /// with each, so both sides learn each other. Returns the devices that answered.
+    pub async fn probe(&self, addresses: Vec<String>) -> Vec<Device> {
+        let found = futures_util::future::join_all(addresses.into_iter().map(|a| self.probe_one(a))).await;
+        found.into_iter().flatten().collect()
+    }
+
+    async fn probe_one(&self, address: String) -> Option<Device> {
+        let body = serde_json::to_vec(&self.info(None)).unwrap();
+        // Kermius serves HTTP, LocalSend HTTPS by default.
+        for https in [false, true] {
+            let d = Device { fingerprint: String::new(), alias: String::new(), device_model: String::new(), device_type: String::new(), ip: address.clone(), port: PORT, https };
+            let Ok(r) = self
+                .client
+                .post(format!("{}/register", base_url(&d)))
+                .timeout(Duration::from_secs(3))
+                .header("content-type", "application/json")
+                .body(body.clone())
+                .send()
+                .await
+            else {
+                continue;
+            };
+            let Ok(mut info) = serde_json::from_str::<Info>(&r.text().await.unwrap_or_default()) else { continue };
+            // The answer describes the peer; the protocol that worked is the one to use.
+            info.port = Some(PORT);
+            info.protocol = Some(if https { "https" } else { "http" }.into());
+            if info.fingerprint == self.fingerprint {
+                return None;
+            }
+            self.add_device_at(&address, &info);
+            return self.devices.lock().get(&info.fingerprint).cloned();
+        }
+        None
     }
 
     pub fn stop(&self) {

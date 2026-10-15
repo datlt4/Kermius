@@ -43,6 +43,10 @@ pub struct Host {
     pub env: String,
     /// SSH: snippet typed into the shell once it opens.
     pub startup_snippet_id: String,
+    /// Position within its group (drag & drop); ties sort by name.
+    pub order: f64,
+    /// Also reach this address with Nearby Share (LocalSend protocol), e.g. across a VPN.
+    pub nearby: bool,
     /// VNC only: watch without sending mouse/keyboard input.
     pub view_only: bool,
     /// VNC only: do not sync the clipboard with the remote desktop.

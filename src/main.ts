@@ -83,6 +83,7 @@ const els = {
 // ---------- derived data ----------
 
 const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+const byOrder = (a: Host, b: Host) => (a.order ?? 0) - (b.order ?? 0) || byName(a.name, b.name);
 
 function folders() {
   const m = new Map<string, number>();
@@ -107,7 +108,7 @@ function visibleHosts() {
   else if (state.tag) list = list.filter((h) => h.tags.includes(state.tag!));
   else list = list.filter((h) => h.folder === (state.folder ?? ""));
   if (state.tag && q) list = list.filter((h) => h.tags.includes(state.tag!));
-  return [...list].sort((a, b) => byName(a.name, b.name));
+  return [...list].sort(byOrder);
 }
 
 // ---------- sidebar ----------
@@ -411,7 +412,7 @@ function renderHosts() {
 
 function sectionsHtml() {
   const byFolder = new Map<string, Host[]>();
-  for (const h of [...state.hosts].sort((a, b) => byName(a.name, b.name))) {
+  for (const h of [...state.hosts].sort(byOrder)) {
     byFolder.set(h.folder, [...(byFolder.get(h.folder) ?? []), h]);
   }
   const names = [...byFolder.keys()].filter(Boolean).sort(byName);
@@ -423,7 +424,7 @@ function sectionsHtml() {
       return `<div class="sec ${shut ? "shut" : ""}">
         <button class="sec-head" data-sec="${esc(f)}">${icon("chevron", 14)}<span class="dot" style="--h:${hue(f)}"></span>
           <b>${esc(f || "No group")}</b><span class="count">${hosts.length}</span></button>
-        ${shut ? "" : `<div class="grid ${state.layout}">${hosts.map(hostCard).join("")}</div>`}</div>`;
+        ${shut ? "" : `<div class="grid ${state.layout}" data-drop-folder="${esc(f)}">${hosts.map(hostCard).join("")}</div>`}</div>`;
     })
     .join("");
 }
@@ -441,7 +442,7 @@ function resultsHtml(groups: [string, number][], list: Host[], showGroups: boole
         <div class="card-body"><div class="card-title">${esc(f)}</div><div class="card-sub">${n} host${n === 1 ? "" : "s"}</div></div></div>`)
       .join("")}</div>` : ""}
     ${list.length ? `<h4 class="section">${showGroups ? "Hosts" : `${list.length} host${list.length === 1 ? "" : "s"}`}</h4>
-      <div class="grid ${state.layout}">${list.map(hostCard).join("")}</div>` : groups.length ? "" : empty}`;
+      <div class="grid ${state.layout}" ${!state.query.trim() && !state.tag ? `data-drop-folder="${esc(state.folder ?? "")}"` : ""}>${list.map(hostCard).join("")}</div>` : groups.length ? "" : empty}`;
 }
 
 /** Update only the results when typing so the input keeps focus and stays snappy. */
@@ -505,6 +506,101 @@ els.page.addEventListener("click", (e) => {
   if (f) return (state.folder = f.dataset.openFolder!), (state.query = ""), goHome();
   if (t.closest("[data-crumb]")) return (state.folder = null), (state.tag = null), goHome();
 });
+
+// ---------- drag & drop ordering (desktop) ----------
+
+/** Pointer-based (HTML5 drag & drop clashes with the webview's file drop): drag a host card
+ *  before/after another card, into a section, or onto a group card to move it there. */
+let dragJustEnded = false;
+els.page.addEventListener("pointerdown", (e) => {
+  const card = (e.target as HTMLElement).closest<HTMLElement>(".card.host");
+  const grid = card?.closest<HTMLElement>("[data-drop-folder]");
+  if (!desktop || !card || !grid || e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+  const id = card.dataset.host!;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  let ghost: HTMLElement | null = null;
+  let drop: { folder: string; before: string | null } | null = null;
+  const clear = () => els.page.querySelectorAll(".drop-before,.drop-after,.drop-into").forEach((el) => el.classList.remove("drop-before", "drop-after", "drop-into"));
+  const move = (ev: PointerEvent) => {
+    if (!ghost) {
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+      const r = card.getBoundingClientRect();
+      ghost = card.cloneNode(true) as HTMLElement;
+      ghost.classList.add("drag-ghost");
+      Object.assign(ghost.style, { width: `${r.width}px`, left: `${r.left}px`, top: `${r.top}px` });
+      ghost.dataset.dx = String(x0 - r.left);
+      ghost.dataset.dy = String(y0 - r.top);
+      document.body.append(ghost);
+      document.body.classList.add("no-select");
+      card.classList.add("dragging");
+    }
+    ghost.style.left = `${ev.clientX - +ghost.dataset.dx!}px`;
+    ghost.style.top = `${ev.clientY - +ghost.dataset.dy!}px`;
+    clear();
+    drop = null;
+    const at = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+    const over = at?.closest<HTMLElement>(".card.host");
+    const overGrid = at?.closest<HTMLElement>("[data-drop-folder]");
+    const overGroup = at?.closest<HTMLElement>("[data-open-folder]");
+    if (over && over !== card && overGrid) {
+      const r = over.getBoundingClientRect();
+      const after = state.layout === "list" ? ev.clientY > r.top + r.height / 2 : ev.clientX > r.left + r.width / 2;
+      const next = after ? (over.nextElementSibling as HTMLElement | null) : over;
+      over.classList.add(after ? "drop-after" : "drop-before");
+      drop = { folder: overGrid.dataset.dropFolder!, before: next?.dataset.host ?? null };
+    } else if (overGroup) {
+      overGroup.classList.add("drop-into");
+      drop = { folder: overGroup.dataset.openFolder!, before: null };
+    } else if (overGrid && !over) {
+      overGrid.classList.add("drop-into");
+      drop = { folder: overGrid.dataset.dropFolder!, before: null };
+    }
+  };
+  const up = () => {
+    removeEventListener("pointermove", move);
+    removeEventListener("pointerup", up);
+    if (!ghost) return;
+    ghost.remove();
+    document.body.classList.remove("no-select");
+    card.classList.remove("dragging");
+    clear();
+    dragJustEnded = true;
+    setTimeout(() => (dragJustEnded = false));
+    if (drop) moveHost(id, drop.folder, drop.before === id ? null : drop.before);
+  };
+  addEventListener("pointermove", move);
+  addEventListener("pointerup", up);
+});
+// A drag ends with a click on the card under the pointer: do not connect.
+els.page.addEventListener("click", (e) => dragJustEnded && (e.stopImmediatePropagation(), e.preventDefault()), true);
+
+/** Put host `id` into `folder` before host `before` (end when null); renumber that group and save what changed. */
+async function moveHost(id: string, folder: string, before: string | null) {
+  const h = state.hosts.find((x) => x.id === id);
+  if (!h) return;
+  const from = h.folder;
+  const list = state.hosts.filter((x) => x.folder === folder && x.id !== id).sort(byOrder);
+  const at = before ? list.findIndex((x) => x.id === before) : -1;
+  list.splice(at < 0 ? list.length : at, 0, h);
+  const changed = list.filter((x, i) => {
+    if (x.order === i + 1 && x.folder === folder) return false;
+    x.order = i + 1;
+    x.folder = folder;
+    return true;
+  });
+  if (!changed.length) return;
+  refreshResults();
+  try {
+    for (const x of changed) await api.saveHost(x);
+    await reload();
+    scheduleSync();
+    if (from !== folder) toast(`Moved to ${folder || "No group"}`, "ok");
+  } catch (err) {
+    toast(String(err), "err");
+    await reload();
+  }
+}
 
 els.page.addEventListener("contextmenu", (e) => {
   const card = (e.target as HTMLElement).closest<HTMLElement>("[data-host]");
@@ -1136,6 +1232,8 @@ function renderEditor() {
           placeholder="${proto === "serial" ? "/dev/ttyUSB0 or COM3" : "IP or hostname"}" spellcheck="false" ${proto === "serial" ? 'list="dl-ports"' : ""} /></label>
         <datalist id="dl-ports"></datalist>
       </div>
+      <label class="nearby-opt" title="Send files to Kermius / LocalSend at this address, e.g. across a VPN where devices cannot discover each other" ${proto === "serial" || !desktop ? "hidden" : ""}>
+        <input type="checkbox" id="e-nearby" ${h.nearby ? "checked" : ""} /> Use this address for Nearby Share</label>
       ${protoNote(proto)}
       <div class="panel">
         <h5>General</h5>
@@ -1221,6 +1319,7 @@ function readEditor() {
   h.privateKey = v("e-key");
   h.keyPassphrase = v("e-keypass");
   Object.assign(h, readPickers(els.drawer));
+  h.nearby = $<HTMLInputElement>("#e-nearby", els.drawer).checked;
   h.jumpHostId = v("e-jump");
   h.proxy = v("e-proxy").trim();
   h.agentForward = $<HTMLInputElement>("#e-agent", els.drawer).checked;
@@ -1526,6 +1625,6 @@ function webUnlock(): Promise<void> {
     runDueJobs(folderSync);
     setInterval(() => runDueJobs(folderSync), 60_000);
   }
-  if (desktop) initNearby(rerenderNearby).catch((e) => console.error(e));
+  if (desktop) initNearby(rerenderNearby, () => state.hosts, onNearby).catch((e) => console.error(e));
   setInterval(renderSyncFoot, 30_000);
 })();

@@ -358,6 +358,11 @@ fn nearby_refresh(nearby: State<Arc<nearby::Nearby>>) -> Res<()> {
 }
 
 #[tauri::command]
+async fn nearby_probe(nearby: State<'_, Arc<nearby::Nearby>>, addresses: Vec<String>) -> Res<Vec<nearby::Device>> {
+    Ok(nearby.probe(addresses).await)
+}
+
+#[tauri::command]
 fn nearby_send(nearby: State<Arc<nearby::Nearby>>, fingerprint: String, paths: Vec<String>) -> Res<String> {
     nearby.send(&fingerprint, paths)
 }
@@ -1152,6 +1157,7 @@ pub fn run() {
             nearby_stop,
             nearby_refresh,
             nearby_send,
+            nearby_probe,
             nearby_respond,
             nearby_cancel,
             nearby_open_folder,

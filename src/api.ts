@@ -40,6 +40,10 @@ export interface Host {
   /** SSH: NAME=value per line. */
   env?: string;
   startupSnippetId?: string;
+  /** Position within its group (drag & drop); ties sort by name. */
+  order?: number;
+  /** Also reach this address with Nearby Share (e.g. across a VPN, where discovery cannot). */
+  nearby?: boolean;
   updatedAt: number;
   deleted: boolean;
 }
@@ -266,6 +270,7 @@ const tauriApi = {
   nearbyStart: () => invoke<NearbyStatus>("nearby_start"),
   nearbyStop: () => invoke<void>("nearby_stop"),
   nearbyRefresh: () => invoke<void>("nearby_refresh"),
+  nearbyProbe: (addresses: string[]) => invoke<NearbyDevice[]>("nearby_probe", { addresses }),
   nearbySend: (fingerprint: string, paths: string[]) => invoke<string>("nearby_send", { fingerprint, paths }),
   nearbyRespond: (id: string, accept: boolean) => invoke<void>("nearby_respond", { id, accept }),
   nearbyCancel: (id: string) => invoke<void>("nearby_cancel", { id }),
