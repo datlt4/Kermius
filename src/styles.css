@@ -716,3 +716,20 @@ details .field + .field { margin-top: 10px; }
 .test-log { margin: 10px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; background: rgba(127, 127, 127, 0.1); color: var(--muted); }
 .test-log.ok { border-left: 3px solid #3fb950; }
 .test-log.err { border-left: 3px solid #f85149; }
+.nb-me { flex: 0 1 auto; gap: 14px; }
+.nb-dev .nb-actions { display: flex; gap: 4px; }
+.nb-dev.drop { border-color: var(--accent); background: rgba(91, 140, 255, 0.12); }
+.nb-hint { font-size: 12px; margin: 8px 2px 0; }
+.nb-searching { display: flex; align-items: center; gap: 8px; padding: 18px 4px; }
+.nb-searching .i { animation: spin 1.6s linear infinite; }
+.nb-trs { display: flex; flex-direction: column; gap: 6px; }
+.nb-tr { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); }
+.nb-tr-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.nb-tr .bar { height: 5px; border-radius: 5px; background: #343a49; overflow: hidden; }
+.nb-tr .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.2s; }
+.nb-tr.done .bar i { background: #3fb950; }
+.nb-tr.failed .bar i, .nb-tr.declined .bar i, .nb-tr.cancelled .bar i { background: #f85149; }
+.nb-dir { font-size: 18px; width: 18px; text-align: center; color: var(--muted); }
+.nb-req-files { max-height: 240px; overflow: auto; margin: 10px 0 16px; font-size: 13px; }
+.nb-req-files div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.nb-req-files span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

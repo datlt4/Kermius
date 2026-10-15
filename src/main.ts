@@ -7,6 +7,7 @@ import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
 import { VncTab } from "./vnc";
 import { checkUpdate, pendingUpdate, updateDialog } from "./update";
 import { sshExportDialog } from "./sshexport";
+import { bindNearby, initNearby, renderNearby } from "./nearby";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
@@ -16,7 +17,7 @@ import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
 /** Open tabs: terminals (SSH / local) and SFTP file managers. */
 type Tab = Session | FilesTab | VncTab;
 
-type View = "hosts" | "keychain" | "forwarding" | "foldersync" | "snippets" | "settings";
+type View = "hosts" | "keychain" | "forwarding" | "foldersync" | "nearby" | "snippets" | "settings";
 
 const state = {
   hosts: [] as Host[],
@@ -117,6 +118,7 @@ function renderSidebar() {
     ["keychain", "key", "Keychain"],
     ["forwarding", "forward", "Port Forwarding"],
     ...(desktop ? [["foldersync", "folders", "Folder Sync"] as [View, string, string]] : []),
+    ...(isWeb ? [] : [["nearby", "share", "Nearby Share"] as [View, string, string]]),
     ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
   ];
@@ -356,6 +358,7 @@ function renderPage() {
   else if (state.view === "snippets") renderSnippets();
   else if (state.view === "keychain") renderKeychain(els.page, keychain);
   else if (state.view === "foldersync") renderFolderSync(els.page, folderSync);
+  else if (state.view === "nearby") renderNearby(els.page);
   else renderSettings();
 }
 
@@ -721,6 +724,10 @@ const folderSync: FolderSyncCtx = {
   },
 };
 bindFolderSync(els.page, folderSync, onFolderSync);
+
+const onNearby = () => state.view === "nearby" && state.active === "home";
+const rerenderNearby = () => onNearby() && renderNearby(els.page);
+bindNearby(els.page, rerenderNearby, onNearby);
 
 // ---------- snippets ----------
 
@@ -1519,5 +1526,6 @@ function webUnlock(): Promise<void> {
     runDueJobs(folderSync);
     setInterval(() => runDueJobs(folderSync), 60_000);
   }
+  if (!isWeb) initNearby(rerenderNearby).catch((e) => console.error(e));
   setInterval(renderSyncFoot, 30_000);
 })();
