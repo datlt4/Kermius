@@ -68,7 +68,9 @@ export interface NearbyStatus {
   dir: string;
   devices: NearbyDevice[];
   error: string;
-  /** Command opening the port in this computer's firewall ("" = no firewall found). */
+  /** Devices could not connect here: a firewall blocks the port. */
+  blocked: boolean;
+  /** Command opening the port in this computer's firewall ("" = unknown firewall). */
   firewall: string;
 }
 
