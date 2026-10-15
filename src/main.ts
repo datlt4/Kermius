@@ -970,6 +970,8 @@ els.page.addEventListener("change", (e) => {
 function renderSettings() {
   const s = state.sync ?? { url: "", token: "", passphrase: "", lastSync: 0 };
   const p = loadPrefs();
+  // Re-renders (font size, sync save…) keep the scroll position.
+  const scroll = els.page.querySelector(".content.settings")?.scrollTop ?? 0;
   els.page.innerHTML = `
     <div class="content settings">
       <h2>Settings</h2>
@@ -1021,6 +1023,7 @@ echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
       </div>`}
       <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts${isWeb ? "" : ` · <button class="link-btn" data-set="check-update">Check for updates</button>`}</p>
     </div>`;
+  $(".content.settings", els.page).scrollTop = scroll;
   if (desktop)
     api.autostartGet().then((on) => {
       const c = $<HTMLInputElement>("#s-autostart", els.page);
