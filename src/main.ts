@@ -5,6 +5,7 @@ import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderK
 import { FilesTab } from "./files";
 import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
 import { VncTab } from "./vnc";
+import { checkUpdate, pendingUpdate, updateDialog } from "./update";
 import { sshExportDialog } from "./sshexport";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
@@ -149,7 +150,9 @@ function renderSyncFoot() {
     else if (s.lastSync) (text = `Synced ${ago(s.lastSync)}`), (cls = "ok");
     else text = "Not synced yet";
   }
-  els.foot.innerHTML = `<button class="sync-pill ${cls}" title="${esc(state.syncError)}">${icon("sync", 14)}<span class="grow">${text}</span><span class="ver">v${state.version}</span></button>`;
+  const upd = pendingUpdate();
+  els.foot.innerHTML = `${upd ? `<button class="update-pill" data-update title="Kermius ${esc(upd.version)} is available">${icon("import", 14)}<span class="grow">Update to v${esc(upd.version)}</span></button>` : ""}
+    <button class="sync-pill ${cls}" title="${esc(state.syncError)}">${icon("sync", 14)}<span class="grow">${text}</span><span class="ver">v${state.version}</span></button>`;
 }
 
 function ago(ts: number) {
@@ -185,7 +188,9 @@ els.side.addEventListener("click", (e) => {
   goHome();
 });
 
-els.foot.addEventListener("click", () => {
+els.foot.addEventListener("click", (e) => {
+  const upd = pendingUpdate();
+  if (upd && (e.target as HTMLElement).closest("[data-update]")) return updateDialog(upd);
   if (state.sync?.url) runSync(true);
   else {
     state.view = "settings";
@@ -909,7 +914,7 @@ echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
           <select id="s-renderer">${RENDERERS.map(([v, l]) => `<option value="${v}" ${(localStorage.getItem("kermius.renderer") ?? "") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
           <small>If tmux/htop borders look broken or columns drift (e.g. with display scaling), try Canvas.</small></label>
       </div>`}
-      <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>
+      <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts${isWeb ? "" : ` · <button class="link-btn" data-set="check-update">Check for updates</button>`}</p>
     </div>`;
   if (desktop)
     api.autostartGet().then((on) => {
@@ -950,6 +955,8 @@ els.page.addEventListener("click", async (e) => {
     state.sync = settings;
     if (settings.url) await runSync(true);
     renderSettings();
+  } else if (a === "check-update") {
+    checkUpdate(true, renderSyncFoot);
   } else if (a === "ssh-import") {
     try {
       const r = await api.sshConfigImport();
@@ -1436,6 +1443,10 @@ function webUnlock(): Promise<void> {
   activate("home");
   runSync(false);
   setInterval(() => runSync(false), 60_000);
+  if (!isWeb) {
+    setTimeout(() => checkUpdate(false, renderSyncFoot), 15_000);
+    setInterval(() => checkUpdate(false, renderSyncFoot), 6 * 3600_000);
+  }
   if (desktop) {
     await loadJobs();
     await listenFolderSync(folderSync);
