@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "1.37.0"
+version = "1.37.1"
 edition = "2021"
 license = "MIT"
 
@@ -53,6 +53,10 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 portable-pty = "0.9"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# WKWebView scroll view tweaks (safe-area insets, keyboard).
+objc2 = "0.6"
 
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 # Opens what the file picker returns (Android content://, iOS security-scoped file://) for Nearby Share.
