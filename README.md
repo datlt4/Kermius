@@ -92,6 +92,14 @@ Folder Sync (two-way sync / mirror between disks or with SSH hosts) uses rsync. 
 
 Watching only runs while Kermius is open. On Linux, very large trees may hit the inotify watch limit; raise it with `echo fs.inotify.max_user_watches=1048576 | sudo tee /etc/sysctl.d/99-zz-inotify.conf && sudo sysctl -p /etc/sysctl.d/99-zz-inotify.conf` (the `99-zz-` name makes it win over a lower value in `/etc/sysctl.conf`).
 
+## Nearby Share
+
+![Nearby Share](docs/nearby-share.png)
+
+Send and receive files on the local network (desktop). It speaks the [LocalSend](https://localsend.org) v2 protocol, so it works with the LocalSend apps on phones and computers as well as other Kermius devices. Incoming files need your approval and go to the Downloads folder.
+
+Devices find each other by UDP multicast, which does not cross VPNs or routers. For those, tick **Use this address for Nearby Share** on a host: it appears under *Your hosts* and is reached directly at its address (greyed out while Kermius / LocalSend is not running there). The setting syncs with your hosts.
+
 ## Keyboard shortcuts
 
 | Keys | Action |

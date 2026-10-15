@@ -1232,6 +1232,8 @@ function renderEditor() {
           placeholder="${proto === "serial" ? "/dev/ttyUSB0 or COM3" : "IP or hostname"}" spellcheck="false" ${proto === "serial" ? 'list="dl-ports"' : ""} /></label>
         <datalist id="dl-ports"></datalist>
       </div>
+      <label class="nearby-opt" title="Send files to Kermius / LocalSend at this address, e.g. across a VPN where devices cannot discover each other" ${proto === "serial" || !desktop ? "hidden" : ""}>
+        <input type="checkbox" id="e-nearby" ${h.nearby ? "checked" : ""} /> Use this address for Nearby Share</label>
       ${protoNote(proto)}
       <div class="panel">
         <h5>General</h5>
@@ -1317,6 +1319,7 @@ function readEditor() {
   h.privateKey = v("e-key");
   h.keyPassphrase = v("e-keypass");
   Object.assign(h, readPickers(els.drawer));
+  h.nearby = $<HTMLInputElement>("#e-nearby", els.drawer).checked;
   h.jumpHostId = v("e-jump");
   h.proxy = v("e-proxy").trim();
   h.agentForward = $<HTMLInputElement>("#e-agent", els.drawer).checked;
@@ -1622,6 +1625,6 @@ function webUnlock(): Promise<void> {
     runDueJobs(folderSync);
     setInterval(() => runDueJobs(folderSync), 60_000);
   }
-  if (desktop) initNearby(rerenderNearby).catch((e) => console.error(e));
+  if (desktop) initNearby(rerenderNearby, () => state.hosts, onNearby).catch((e) => console.error(e));
   setInterval(renderSyncFoot, 30_000);
 })();
