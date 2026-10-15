@@ -85,7 +85,7 @@ async function pasteClipboard() {
   else selection.push({ kind: "text", text });
 }
 
-let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "", firewall: "" };
+let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "", blocked: false, firewall: "" };
 const transfers = new Map<string, NearbyTransfer>();
 let busy = false;
 let hosts: () => Host[] = () => [];
@@ -185,7 +185,11 @@ export async function initNearby(rerender: () => void, savedHosts: () => Host[],
   hosts = savedHosts;
   setInterval(() => active() && probeHosts(rerender), 15_000);
   await listen<NearbyEvent>("nearby", ({ payload: ev }) => {
-    if (ev.kind === "devices") status.devices = ev.devices;
+    if (ev.kind === "devices") {
+      status.devices = ev.devices;
+      // The firewall check (blocked) changes with what devices report.
+      api.nearbyStatus().then((s) => ((status = s), rerender())).catch(() => {});
+    }
     else if (ev.kind === "request") {
       // The save folder can change (e.g. storage permission granted on Android 10).
       api.nearbyStatus().then((s) => (status = s)).finally(() => requestDialog(ev.id, ev.alias, ev.files, ev.count, ev.total));
@@ -331,9 +335,10 @@ export function renderNearby(root: HTMLElement) {
       <div class="nb-save">${icon("folder", 14)}<span>Received files go to</span><code title="${esc(status.dir)}">${esc(status.dir)}</code>
         ${phone ? "" : `<button class="btn ghost sm" data-nb="pick-dir">Change…</button>`}
         ${savedDir() && !phone ? `<button class="btn ghost sm" data-nb="reset-dir" title="Back to the Downloads folder">Use Downloads</button>` : ""}</div>
-      ${on && status.firewall
-        ? `<div class="nb-fw">${icon("lock", 14)}<span>The firewall on this computer blocks other devices from connecting (they may see it but cannot send). Allow the port:</span>
-            <code>${esc(status.firewall)}</code><button class="btn ghost sm" data-nb="copy-fw">${icon("copy", 13)} Copy</button></div>`
+      ${on && status.blocked
+        ? `<div class="nb-fw">${icon("lock", 14)}<span>Other devices see this ${phone ? "device" : "computer"} but cannot connect to it: a firewall blocks port ${status.port}.
+            ${status.firewall ? "Allow it with:" : `Allow incoming TCP port ${status.port} in the firewall.`}</span>
+            ${status.firewall ? `<code>${esc(status.firewall)}</code><button class="btn ghost sm" data-nb="copy-fw">${icon("copy", 13)} Copy</button>` : ""}</div>`
         : ""}
       ${!on
         ? `<div class="empty">${icon("share", 40)}<h3>Nearby Share</h3>

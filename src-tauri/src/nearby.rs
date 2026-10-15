@@ -98,7 +98,10 @@ pub struct Status {
     pub dir: String,
     pub devices: Vec<Device>,
     pub error: String,
-    /// Command opening the port when a firewall here may block other devices ("" = none found).
+    /// Other devices answered our announcement by UDP because they could not connect here
+    /// (and none ever did): a firewall blocks the port.
+    pub blocked: bool,
+    /// Command opening the port in this computer's firewall ("" = unknown firewall).
     pub firewall: String,
 }
 
@@ -147,6 +150,10 @@ pub struct Nearby {
     port: Mutex<u16>,
     running: Mutex<Option<CancellationToken>>,
     firewall: Mutex<String>,
+    /// A device on the network connected to our HTTP server.
+    inbound: std::sync::atomic::AtomicBool,
+    /// UDP answers to our announcement: sent by devices that could not connect to us.
+    udp_replies: std::sync::atomic::AtomicUsize,
     /// Where received files go; None = the Downloads folder.
     save_dir: Mutex<Option<PathBuf>>,
     udp: Mutex<Option<Arc<tokio::net::UdpSocket>>>,
@@ -346,6 +353,8 @@ impl Nearby {
             port: Mutex::new(PORT),
             running: Mutex::new(None),
             firewall: Mutex::new(String::new()),
+            inbound: Default::default(),
+            udp_replies: Default::default(),
             save_dir: Mutex::new(None),
             udp: Mutex::new(None),
             error: Mutex::new(String::new()),
@@ -407,6 +416,7 @@ impl Nearby {
             dir: self.save_dir().to_string_lossy().into_owned(),
             devices,
             error: self.error.lock().clone(),
+            blocked: self.udp_replies.load(Ordering::Relaxed) > 0 && !self.inbound.load(Ordering::Relaxed),
             firewall: self.firewall.lock().clone(),
         }
     }
@@ -452,6 +462,8 @@ impl Nearby {
         };
         *self.port.lock() = listener.local_addr().map_err(|e| e.to_string())?.port();
         *self.firewall.lock() = firewall_hint(*self.port.lock());
+        self.inbound.store(false, Ordering::Relaxed);
+        self.udp_replies.store(0, Ordering::Relaxed);
         // iOS blocks multicast without an Apple entitlement: then only saved addresses are reached.
         let udp = udp_socket().map(Arc::new);
         let token = CancellationToken::new();
@@ -493,6 +505,9 @@ impl Nearby {
                         continue;
                     }
                     me.add_device(from.ip(), &info);
+                    if info.announce == Some(false) && me.udp_replies.fetch_add(1, Ordering::Relaxed) == 0 {
+                        me.emit(Event::Devices { devices: me.status().devices });
+                    }
                     if info.announce == Some(true) {
                         let me = me.clone();
                         let sock = sock.clone();
@@ -503,6 +518,13 @@ impl Nearby {
             self.announce_with(udp);
         }
         Ok(())
+    }
+
+    /// Another device reached our HTTP server, so the port is open.
+    fn note_inbound(&self, ip: IpAddr) {
+        if !ip.is_loopback() && !self.inbound.swap(true, Ordering::Relaxed) {
+            self.emit(Event::Devices { devices: self.status().devices });
+        }
     }
 
     /// Reply to an announcement: HTTP register, or a UDP multicast reply when that fails.
@@ -559,6 +581,7 @@ impl Nearby {
     /// Forget known devices and ask everyone to answer again.
     pub fn refresh(self: &Arc<Self>) -> Result<(), String> {
         let sock = self.udp.lock().clone().ok_or("Nearby sharing is off")?;
+        self.udp_replies.store(0, Ordering::Relaxed);
         self.devices.lock().clear();
         self.emit(Event::Devices { devices: vec![] });
         self.announce_with(sock);
@@ -890,6 +913,7 @@ fn mime(p: &Path) -> &'static str {
 type Svc = AxState<Arc<Nearby>>;
 
 async fn register(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Json(info): Json<Info>) -> Json<Info> {
+    me.note_inbound(addr.ip());
     me.add_device(addr.ip(), &info);
     Json(me.info(None))
 }
@@ -912,6 +936,7 @@ struct PrepareRes {
 }
 
 async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Json(req): Json<PrepareReq>) -> Result<Json<PrepareRes>, StatusCode> {
+    me.note_inbound(addr.ip());
     if req.files.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
