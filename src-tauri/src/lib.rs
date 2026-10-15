@@ -6,6 +6,8 @@ mod watch;
 mod local;
 mod model;
 mod proto;
+mod nearby;
+mod proxy;
 mod ssh;
 mod sshconfig;
 mod update;
@@ -310,6 +312,71 @@ fn ssh_connect(
     let sid = uuid::Uuid::new_v4().to_string();
     state.sessions.lock().insert(sid.clone(), (tx, flow));
     Ok(sid)
+}
+
+/// Connect and authenticate an (unsaved) host, then disconnect; returns the connection log.
+#[tauri::command]
+async fn ssh_test(state: State<'_, AppState>, host: Host) -> Res<Vec<String>> {
+    let host = state.store.state.lock().vault.resolve(host);
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink = lines.clone();
+    let log: ssh::Logger = Arc::new(move |m| sink.lock().push(m));
+    let result = ssh::connect(state.store.clone(), &host, log).await;
+    let mut lines = std::mem::take(&mut *lines.lock());
+    match result {
+        Ok(handle) => {
+            let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
+            lines.push("Authentication succeeded".into());
+            Ok(lines)
+        }
+        Err(e) => {
+            lines.push(e);
+            Err(lines.join("\n"))
+        }
+    }
+}
+
+#[tauri::command]
+fn nearby_status(nearby: State<Arc<nearby::Nearby>>) -> nearby::Status {
+    nearby.status()
+}
+
+#[tauri::command]
+async fn nearby_start(nearby: State<'_, Arc<nearby::Nearby>>) -> Res<nearby::Status> {
+    nearby.start().await?;
+    Ok(nearby.status())
+}
+
+#[tauri::command]
+fn nearby_stop(nearby: State<Arc<nearby::Nearby>>) {
+    nearby.stop();
+}
+
+#[tauri::command]
+fn nearby_refresh(nearby: State<Arc<nearby::Nearby>>) -> Res<()> {
+    nearby.refresh()
+}
+
+#[tauri::command]
+fn nearby_send(nearby: State<Arc<nearby::Nearby>>, fingerprint: String, paths: Vec<String>) -> Res<String> {
+    nearby.send(&fingerprint, paths)
+}
+
+#[tauri::command]
+fn nearby_respond(nearby: State<Arc<nearby::Nearby>>, id: String, accept: bool) {
+    nearby.respond(&id, accept);
+}
+
+/// Open the folder received files are saved to.
+#[tauri::command]
+fn nearby_open_folder(app: tauri::AppHandle) -> Res<()> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_path(nearby::download_dir().to_string_lossy(), None::<&str>).map_err(e)
+}
+
+#[tauri::command]
+fn nearby_cancel(nearby: State<Arc<nearby::Nearby>>, id: String) {
+    nearby.cancel(&id);
 }
 
 /// Whether `name` is an executable on PATH.
@@ -1059,6 +1126,7 @@ pub fn run() {
                 app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             }
+            app.manage(nearby::Nearby::new(app.handle().clone()));
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
                 store: Arc::new(store),
@@ -1078,6 +1146,15 @@ pub fn run() {
             delete_host,
             import_termix,
             ssh_config_preview,
+            ssh_test,
+            nearby_status,
+            nearby_start,
+            nearby_stop,
+            nearby_refresh,
+            nearby_send,
+            nearby_respond,
+            nearby_cancel,
+            nearby_open_folder,
             ssh_config_export,
             ssh_config_import,
             list_snippets,

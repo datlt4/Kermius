@@ -311,6 +311,7 @@ details .field + .field { margin-top: 10px; }
 .tmux-row button { font-family: inherit; font-size: 12.5px; white-space: nowrap; background: #23324d; }
 .tmux-row .prefix { background: #33405a; color: var(--accent); font-family: "JetBrains Mono", monospace; }
 .keybar .tmux-btn { color: #9fc0ff; }
+.keybar .kbd-btn { display: grid; place-items: center; }
 
 /* ---------- popups ---------- */
 .ctx {
@@ -712,3 +713,24 @@ details .field + .field { margin-top: 10px; }
 /* Touchpad pointer: an arrow drawn over the remote screen (its tip is the hot spot). */
 .vnc-cursor { position: absolute; left: 0; top: 0; z-index: 3; width: 16px; height: 22px; pointer-events: none; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='22' viewBox='0 0 16 22'%3E%3Cpath d='M1 1v17l4.5-4.3 3 6.8 2.8-1.2-3-6.6H14z' fill='white' stroke='black' stroke-width='1.3' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat; }
 .vnc-cursor[hidden] { display: none; }
+.cred-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.test-log { margin: 10px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; background: rgba(127, 127, 127, 0.1); color: var(--muted); }
+.test-log.ok { border-left: 3px solid #3fb950; }
+.test-log.err { border-left: 3px solid #f85149; }
+.nb-me { flex: 0 1 auto; gap: 14px; }
+.nb-dev .nb-actions { display: flex; gap: 4px; }
+.nb-dev.drop { border-color: var(--accent); background: rgba(91, 140, 255, 0.12); }
+.nb-hint { font-size: 12px; margin: 8px 2px 0; }
+.nb-searching { display: flex; align-items: center; gap: 8px; padding: 18px 4px; }
+.nb-searching .i { animation: spin 1.6s linear infinite; }
+.nb-trs { display: flex; flex-direction: column; gap: 6px; }
+.nb-tr { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); }
+.nb-tr-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.nb-tr .bar { height: 5px; border-radius: 5px; background: #343a49; overflow: hidden; }
+.nb-tr .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.2s; }
+.nb-tr.done .bar i { background: #3fb950; }
+.nb-tr.failed .bar i, .nb-tr.declined .bar i, .nb-tr.cancelled .bar i { background: #f85149; }
+.nb-dir { font-size: 18px; width: 18px; text-align: center; color: var(--muted); }
+.nb-req-files { max-height: 240px; overflow: auto; margin: 10px 0 16px; font-size: 13px; }
+.nb-req-files div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.nb-req-files span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

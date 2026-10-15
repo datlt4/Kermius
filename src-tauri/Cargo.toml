@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "1.28.2"
+version = "1.30.0"
 edition = "2021"
 license = "MIT"
 
@@ -26,12 +26,18 @@ argon2 = "0.5"
 rand = "0.8"
 base64 = "0.22"
 dirs = "6"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 anyhow = "1"
 parking_lot = "0.12"
 png = "0.17"
 russh-sftp = "3"
 notify = "8"
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "json", "query"] }
+socket2 = { version = "0.6", features = ["all"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+rcgen = "0.14"
+sha2 = "0.10"
 
 [profile.release]
 lto = true
