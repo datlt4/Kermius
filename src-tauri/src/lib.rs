@@ -6,6 +6,7 @@ mod watch;
 mod local;
 mod model;
 mod proto;
+mod proxy;
 mod ssh;
 mod sshconfig;
 mod update;
@@ -310,6 +311,28 @@ fn ssh_connect(
     let sid = uuid::Uuid::new_v4().to_string();
     state.sessions.lock().insert(sid.clone(), (tx, flow));
     Ok(sid)
+}
+
+/// Connect and authenticate an (unsaved) host, then disconnect; returns the connection log.
+#[tauri::command]
+async fn ssh_test(state: State<'_, AppState>, host: Host) -> Res<Vec<String>> {
+    let host = state.store.state.lock().vault.resolve(host);
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink = lines.clone();
+    let log: ssh::Logger = Arc::new(move |m| sink.lock().push(m));
+    let result = ssh::connect(state.store.clone(), &host, log).await;
+    let mut lines = std::mem::take(&mut *lines.lock());
+    match result {
+        Ok(handle) => {
+            let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
+            lines.push("Authentication succeeded".into());
+            Ok(lines)
+        }
+        Err(e) => {
+            lines.push(e);
+            Err(lines.join("\n"))
+        }
+    }
 }
 
 /// Whether `name` is an executable on PATH.
@@ -1078,6 +1101,7 @@ pub fn run() {
             delete_host,
             import_termix,
             ssh_config_preview,
+            ssh_test,
             ssh_config_export,
             ssh_config_import,
             list_snippets,

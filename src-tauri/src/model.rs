@@ -33,6 +33,16 @@ pub struct Host {
     pub protocol: String,
     /// Serial only; 0 = 115200.
     pub baud: u32,
+    /// SSH: reach the host through this other vault host (a bastion / jump host).
+    pub jump_host_id: String,
+    /// SSH: `socks5://[user:pass@]host:port` or `http://[user:pass@]host:port`.
+    pub proxy: String,
+    /// SSH: forward the local ssh-agent to the host.
+    pub agent_forward: bool,
+    /// SSH: environment variables sent before the shell starts, one `NAME=value` per line.
+    pub env: String,
+    /// SSH: snippet typed into the shell once it opens.
+    pub startup_snippet_id: String,
     /// VNC only: watch without sending mouse/keyboard input.
     pub view_only: bool,
     /// VNC only: do not sync the clipboard with the remote desktop.
