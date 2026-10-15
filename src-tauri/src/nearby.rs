@@ -745,13 +745,22 @@ impl Nearby {
                 .iter()
                 .map(|uri| {
                     use std::os::fd::AsRawFd;
-                    let f = self.open_source(Path::new(uri)).map_err(|e| format!("{uri}: {e}"))?;
+                    let mut f = self.open_source(Path::new(uri)).map_err(|e| format!("{uri}: {e}"))?;
                     let size = f.metadata().map(|m| m.len()).unwrap_or(0);
                     // The descriptor of a picked file usually links to its real path, which has the name.
-                    let name = std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd()))
+                    let mut name = std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd()))
                         .ok()
                         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                         .unwrap_or_else(|| uri_name(uri));
+                    // Photo pickers may only give a numeric id: add the extension of the actual content.
+                    if Path::new(&name).extension().is_none() {
+                        let mut head = [0u8; 12];
+                        if std::io::Read::read_exact(&mut f, &mut head).is_ok() {
+                            if let Some(ext) = sniff_ext(&head) {
+                                name = format!("{name}.{ext}");
+                            }
+                        }
+                    }
                     let meta = FileMeta { id: uuid::Uuid::new_v4().to_string(), file_type: mime(Path::new(&name)).into(), file_name: name, size, sha256: None, preview: None };
                     Ok((Source::Path(PathBuf::from(uri)), meta))
                 })
@@ -769,6 +778,21 @@ impl Nearby {
         }
         std::fs::File::open(path)
     }
+}
+
+/// File extension from the first bytes of common photo / video formats.
+#[cfg_attr(desktop, allow(dead_code))]
+fn sniff_ext(h: &[u8; 12]) -> Option<&'static str> {
+    Some(match h {
+        [0xFF, 0xD8, 0xFF, ..] => "jpg",
+        [0x89, b'P', b'N', b'G', ..] => "png",
+        [b'G', b'I', b'F', b'8', ..] => "gif",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P'] => "webp",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', b'c' | b'x'] => "heic",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'q', b't', ..] => "mov",
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => "mp4",
+        _ => return None,
+    })
 }
 
 /// Last segment of a content:// or file:// URI, decoded ("primary:Download/a.txt" → "a.txt").
@@ -1016,6 +1040,20 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "").unwrap();
         assert_eq!(target_path(&dir, "a.txt"), dir.join("a (1).txt"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sniffs_media_types() {
+        let mut h = [0u8; 12];
+        h[..4].copy_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0]);
+        assert_eq!(sniff_ext(&h), Some("jpg"));
+        h.copy_from_slice(b"\0\0\0\x18ftypheic");
+        assert_eq!(sniff_ext(&h), Some("heic"));
+        h.copy_from_slice(b"\0\0\0\x18ftypisom");
+        assert_eq!(sniff_ext(&h), Some("mp4"));
+        h.copy_from_slice(b"\0\0\0\x14ftypqt  ");
+        assert_eq!(sniff_ext(&h), Some("mov"));
+        assert_eq!(sniff_ext(&[0u8; 12]), None);
     }
 
     #[test]
