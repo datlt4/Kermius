@@ -119,7 +119,7 @@ function renderSidebar() {
     ["keychain", "key", "Keychain"],
     ["forwarding", "forward", "Port Forwarding"],
     ...(desktop ? [["foldersync", "folders", "Folder Sync"] as [View, string, string]] : []),
-    ...(desktop ? [["nearby", "share", "Nearby Share"] as [View, string, string]] : []),
+    ...(nearbyOn ? [["nearby", "share", "Nearby Share"] as [View, string, string]] : []),
     ["snippets", "code", "Snippets"],
     ["settings", "settings", "Settings"],
   ];
@@ -246,6 +246,8 @@ if (window.visualViewport) {
 }
 
 const desktop = !isWeb && !/Android|iPhone|iPad/i.test(navigator.userAgent);
+/** Nearby Share: desktop and Android (iOS multicast needs an Apple entitlement). */
+const nearbyOn = desktop || (!isWeb && /Android/i.test(navigator.userAgent));
 els.tabs.setAttribute("data-tauri-drag-region", "");
 
 els.tabs.addEventListener("click", (e) => {
@@ -1132,6 +1134,7 @@ addEventListener("pointerdown", (e) => {
 
 function openEditor(h: Host) {
   state.editing = structuredClone(h);
+  els.drawer.innerHTML = "";
   renderEditor();
   els.shell.classList.add("drawer-open");
   requestAnimationFrame(() => $<HTMLInputElement>("#e-address", els.drawer)?.focus());
@@ -1216,6 +1219,8 @@ function loadSerialHints() {
 function renderEditor() {
   const h = state.editing!;
   const proto = h.protocol || "ssh";
+  // Re-renders (add a rule, a jump host…) keep the scroll position.
+  const scroll = els.drawer.querySelector(".drawer-body")?.scrollTop ?? 0;
   els.drawer.innerHTML = `
     <div class="drawer-head">
       <button class="icon-btn" data-ed="close">${icon("back")}</button>
@@ -1232,8 +1237,9 @@ function renderEditor() {
           placeholder="${proto === "serial" ? "/dev/ttyUSB0 or COM3" : "IP or hostname"}" spellcheck="false" ${proto === "serial" ? 'list="dl-ports"' : ""} /></label>
         <datalist id="dl-ports"></datalist>
       </div>
-      <label class="nearby-opt" title="Send files to Kermius / LocalSend at this address, e.g. across a VPN where devices cannot discover each other" ${proto === "serial" || !desktop ? "hidden" : ""}>
-        <input type="checkbox" id="e-nearby" ${h.nearby ? "checked" : ""} /> Use this address for Nearby Share</label>
+      <label class="toggle-row nearby-opt" ${proto === "serial" || !nearbyOn ? "hidden" : ""}><span><b>Use this address for Nearby Share</b>
+        <small class="muted">Send files to Kermius / LocalSend here, e.g. across a VPN where devices cannot see each other</small></span>
+        <input type="checkbox" class="toggle" id="e-nearby" ${h.nearby ? "checked" : ""} /></label>
       ${protoNote(proto)}
       <div class="panel">
         <h5>General</h5>
@@ -1255,8 +1261,8 @@ function renderEditor() {
         </div>
         <div ${isSsh(h) ? "" : "hidden"}>${credentialPickers(h.identityId, h.keyId, keychain)}</div>
         <div class="vnc-opts" ${proto === "vnc" ? "" : "hidden"}>
-          <label class="check"><input type="checkbox" id="e-vnc-control" ${h.viewOnly ? "" : "checked"} /> Allow control (mouse and keyboard)</label>
-          <label class="check"><input type="checkbox" id="e-vnc-clip" ${h.noClipboard ? "" : "checked"} /> Share clipboard</label>
+          <label class="toggle-row"><span><b>Allow control</b><small class="muted">Mouse and keyboard; off = view only</small></span><input type="checkbox" class="toggle" id="e-vnc-control" ${h.viewOnly ? "" : "checked"} /></label>
+          <label class="toggle-row"><span><b>Share clipboard</b><small class="muted">Copy and paste between this device and the remote desktop</small></span><input type="checkbox" class="toggle" id="e-vnc-clip" ${h.noClipboard ? "" : "checked"} /></label>
         </div>
         <label class="field" ${proto === "serial" ? "hidden" : ""}><span>${proto === "vnc" ? "VNC password" : "Password"}</span>
           <div class="input-group"><input id="e-pass" type="password" value="${esc(h.password)}" autocomplete="off" />
@@ -1274,13 +1280,11 @@ function renderEditor() {
       </div>
       <div class="panel" ${isSsh(h) ? "" : "hidden"}>
         <h5>Advanced</h5>
-        <label class="field"><span>Jump host</span><select id="e-jump"><option value="">None (connect directly)</option>${state.hosts
-          .filter((x) => x.id !== h.id && isSsh(x))
-          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-          .map((x) => `<option value="${x.id}" ${x.id === h.jumpHostId ? "selected" : ""}>${esc(x.name)} (${esc(x.address)})</option>`).join("")}</select></label>
+        ${jumpChainHtml(h)}
         <label class="field"><span>Proxy</span><input id="e-proxy" value="${esc(h.proxy ?? "")}" placeholder="socks5://user:pass@host:1080 or http://host:3128" spellcheck="false" /></label>
-        <label class="check"><input type="checkbox" id="e-agent" ${h.agentForward ? "checked" : ""} /> Agent forwarding <small class="muted">(remote can use your local ssh-agent keys)</small></label>
-        <label class="field"><span>Environment variables <small class="muted">NAME=value per line; the server must allow them (AcceptEnv)</small></span>
+        <label class="toggle-row adv-toggle"><span><b>Agent forwarding</b><small class="muted">The remote can use the keys in your local ssh-agent</small></span>
+          <input type="checkbox" class="toggle" id="e-agent" ${h.agentForward ? "checked" : ""} /></label>
+        <label class="field env-field"><span>Environment variables <small class="muted">NAME=value per line; the server must allow them (AcceptEnv)</small></span>
           <textarea id="e-env" rows="2" spellcheck="false" placeholder="LANG=en_US.UTF-8">${esc(h.env ?? "")}</textarea></label>
         <label class="field"><span>Startup snippet</span><select id="e-snippet"><option value="">None</option>${state.snippets
           .map((s) => `<option value="${s.id}" ${s.id === h.startupSnippetId ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></label>
@@ -1300,7 +1304,29 @@ function renderEditor() {
       <div class="grow"></div>
       <button class="btn primary" data-ed="save">Save</button>
     </div>`;
+  els.drawer.querySelector(".drawer-body")!.scrollTop = scroll;
   loadSerialHints();
+}
+
+/** Hops in connection order (older hosts have a single jumpHostId). */
+const jumpChainOf = (h: Host) => (h.jumpChain?.length ? h.jumpChain : h.jumpHostId ? [h.jumpHostId] : []);
+
+function jumpChainHtml(h: Host) {
+  const chain = jumpChainOf(h);
+  const opts = (sel: string) =>
+    state.hosts
+      .filter((x) => x.id !== h.id && isSsh(x))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+      .map((x) => `<option value="${x.id}" ${x.id === sel ? "selected" : ""}>${esc(x.name)} (${esc(x.address)})</option>`)
+      .join("");
+  return `<div class="field"><span>Jump hosts <small class="muted">${chain.length ? "connected in this order" : "none: connects directly"}</small></span>
+    <div class="jump-chain">
+      ${chain.length ? `<div class="jc-node">${icon("monitor", 14)} This device</div>` : ""}
+      ${chain.map((id, i) => `<div class="jc-arrow">↓</div><div class="jc-row"><span class="jc-n">${i + 1}</span><select data-jc="${i}"><option value="">Pick a host…</option>${opts(id)}</select>
+        <button class="icon-btn" data-ed="jc-rm" data-i="${i}" title="Remove">${icon("x", 14)}</button></div>`).join("")}
+      ${chain.length ? `<div class="jc-arrow">↓</div><div class="jc-node">${icon("server", 14)} ${esc(h.name || h.address || "This host")}</div>` : ""}
+    </div>
+    <button class="btn ghost sm" data-ed="jc-add">${icon("plus", 14)} Add jump host</button></div>`;
 }
 
 /** Pull form values into state.editing. */
@@ -1320,7 +1346,8 @@ function readEditor() {
   h.keyPassphrase = v("e-keypass");
   Object.assign(h, readPickers(els.drawer));
   h.nearby = $<HTMLInputElement>("#e-nearby", els.drawer).checked;
-  h.jumpHostId = v("e-jump");
+  h.jumpChain = [...els.drawer.querySelectorAll<HTMLSelectElement>("[data-jc]")].map((s) => s.value);
+  h.jumpHostId = "";
   h.proxy = v("e-proxy").trim();
   h.agentForward = $<HTMLInputElement>("#e-agent", els.drawer).checked;
   h.env = v("e-env").trim();
@@ -1372,6 +1399,14 @@ els.drawer.addEventListener("click", async (e) => {
       readEditor();
       h.tunnels.splice(+b.dataset.i!, 1);
       return renderEditor();
+    case "jc-add":
+      readEditor();
+      h.jumpChain = [...jumpChainOf(h), ""];
+      return renderEditor();
+    case "jc-rm":
+      readEditor();
+      h.jumpChain = jumpChainOf(h).filter((_, i) => i !== +b.dataset.i!);
+      return renderEditor();
     case "to-keychain":
       readEditor();
       return credentialsToKeychain(h);
@@ -1383,7 +1418,7 @@ els.drawer.addEventListener("click", async (e) => {
       out.textContent = "Connecting…";
       b.setAttribute("disabled", "");
       try {
-        out.textContent = (await api.sshTest(h)).join("\n");
+        out.textContent = (await api.sshTest({ ...h, jumpChain: h.jumpChain?.filter(Boolean) })).join("\n");
         out.classList.add("ok");
       } catch (err) {
         out.textContent = String(err);
@@ -1437,6 +1472,7 @@ async function saveEditor() {
     return false;
   }
   if (!h.name) h.name = h.address;
+  h.jumpChain = h.jumpChain?.filter(Boolean);
   try {
     const saved = await api.saveHost(h);
     state.editing = saved;
@@ -1625,6 +1661,6 @@ function webUnlock(): Promise<void> {
     runDueJobs(folderSync);
     setInterval(() => runDueJobs(folderSync), 60_000);
   }
-  if (desktop) initNearby(rerenderNearby, () => state.hosts, onNearby).catch((e) => console.error(e));
+  if (nearbyOn) initNearby(rerenderNearby, () => state.hosts, onNearby).catch((e) => console.error(e));
   setInterval(renderSyncFoot, 30_000);
 })();
