@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "kermius"
-version = "1.37.0"
+version = "1.37.1"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",
@@ -2976,6 +2976,7 @@ dependencies = [
  "futures-util",
  "libc",
  "notify",
+ "objc2",
  "parking_lot",
  "png 0.17.16",
  "portable-pty",

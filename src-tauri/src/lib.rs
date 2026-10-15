@@ -1125,6 +1125,22 @@ pub fn cli_import(path: &str) -> anyhow::Result<String> {
     Ok(format!("Imported from {path}: {} added, {} updated", report.added, report.updated))
 }
 
+/// iOS: WKWebView's scroll view shrinks the page by the safe areas (CSS already pads them,
+/// leaving a gap) and scrolls it up under the status bar when the keyboard opens; the page
+/// sizes itself to the visual viewport instead.
+#[cfg(target_os = "ios")]
+fn ios_fix_webview(webview: tauri::webview::PlatformWebview) {
+    use objc2::{msg_send, runtime::AnyObject};
+    unsafe {
+        let wk = webview.inner() as *mut AnyObject;
+        let scroll: *mut AnyObject = msg_send![wk, scrollView];
+        // UIScrollViewContentInsetAdjustmentNever
+        let _: () = msg_send![scroll, setContentInsetAdjustmentBehavior: 2isize];
+        let _: () = msg_send![scroll, setScrollEnabled: false];
+        let _: () = msg_send![scroll, setBounces: false];
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1140,6 +1156,10 @@ pub fn run() {
             }
             #[cfg(mobile)]
             app.handle().plugin(tauri_plugin_fs::init())?;
+            #[cfg(target_os = "ios")]
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.with_webview(ios_fix_webview);
+            }
             app.manage(nearby::Nearby::new(app.handle().clone()));
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
