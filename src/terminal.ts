@@ -67,7 +67,7 @@ const coarse = matchMedia("(pointer: coarse)").matches;
 /** On-screen key row for touch devices (Termius-style), with an optional tmux row. */
 const KEYS: Record<string, string> = {
   Esc: "\x1b", Tab: "\t", "↑": "\x1b[A", "↓": "\x1b[B", "→": "\x1b[C", "←": "\x1b[D",
-  PgUp: "\x1b[5~", PgDn: "\x1b[6~", Home: "\x1b[H", End: "\x1b[F",
+  PgUp: "\x1b[5~", PgDn: "\x1b[6~", Home: "\x1b[H", End: "\x1b[F", "^D": "\x04",
 };
 
 /** tmux commands: [label, keys typed after the prefix]. */
@@ -77,15 +77,37 @@ const TMUX: [string, string][] = [
   ["Zoom", "z"], ["Scroll", "["], ["Sessions", "s"], ["Rename", ","], ["Detach", "d"], ["Kill pane", "x"],
 ];
 
+/** Full key panel (one tap opens it): [section, [label, sequence, title?][]]. */
+const PANEL: [string, [string, string, string?][]][] = [
+  ["Keys", [["Esc", "\x1b"], ["Tab", "\t"], ["⇧Tab", "\x1b[Z"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["←", "\x1b[D"], ["→", "\x1b[C"],
+    ["Home", "\x1b[H"], ["End", "\x1b[F"], ["PgUp", "\x1b[5~"], ["PgDn", "\x1b[6~"], ["Ins", "\x1b[2~"], ["Del", "\x1b[3~"], ["⌫", "\x7f"], ["⏎", "\r"]]],
+  ["Function", [["F1", "\x1bOP"], ["F2", "\x1bOQ"], ["F3", "\x1bOR"], ["F4", "\x1bOS"], ["F5", "\x1b[15~"], ["F6", "\x1b[17~"],
+    ["F7", "\x1b[18~"], ["F8", "\x1b[19~"], ["F9", "\x1b[20~"], ["F10", "\x1b[21~"], ["F11", "\x1b[23~"], ["F12", "\x1b[24~"]]],
+  ["Ctrl", [["^C", "\x03", "Interrupt"], ["^D", "\x04", "End of input / logout"], ["^Z", "\x1a", "Suspend"], ["^L", "\x0c", "Clear screen"],
+    ["^R", "\x12", "Search history"], ["^A", "\x01", "Start of line"], ["^E", "\x05", "End of line"], ["^U", "\x15", "Delete to start"],
+    ["^K", "\x0b", "Delete to end"], ["^W", "\x17", "Delete word"], ["^Y", "\x19", "Paste deleted text"], ["^\\", "\x1c", "Quit"],
+    ["^O", "\x0f", "Save (nano)"], ["^X", "\x18", "Exit (nano)"], ["^S", "\x13", "Pause output"], ["^Q", "\x11", "Resume output"],
+    ["^←", "\x1b[1;5D", "Word left"], ["^→", "\x1b[1;5C", "Word right"]]],
+  ["Alt", [["M-b", "\x1bb", "Word back"], ["M-f", "\x1bf", "Word forward"], ["M-d", "\x1bd", "Delete word forward"],
+    ["M-⌫", "\x1b\x7f", "Delete word back"], ["M-.", "\x1b.", "Last argument"], [":wq", "\x1b:wq\r", "vim: save and quit"], [":q!", "\x1b:q!\r", "vim: quit without saving"]]],
+  ["Symbols", "| ~ / \\ - _ = + ` ' \" : ; < > { } [ ] ( ) $ & * # ! ? @ % ^".split(" ").map((c) => [c, c] as [string, string])],
+];
+const PANEL_KEYS = PANEL.flatMap(([, keys]) => keys);
+
 const tmuxPrefix = () => (localStorage.getItem("kermius.tmuxPrefix") === "C-a" ? "C-a" : "C-b");
 
 function keybarHtml() {
   const key = (k: string, label = k) => `<button data-k="${k}">${label}</button>`;
+  let n = 0;
+  const panel = PANEL.map(([title, keys]) => `<div class="kp-sec"><span>${title}</span><div class="kp-keys">${keys
+    .map(([label, , tip]) => `<button data-pk="${n++}" ${tip ? `title="${esc(tip)}"` : ""}>${esc(label)}</button>`)
+    .join("")}${title === "Keys" ? `<button data-k="paste" class="kp-wide">${icon("paste", 14)} Paste</button>` : ""}</div></div>`).join("");
   return `<div class="keys">
+    <div class="keys-panel" hidden>${panel}</div>
     <div class="keybar tmux-row" hidden><button data-k="prefix" class="prefix" title="tmux prefix">${tmuxPrefix()}</button>${TMUX.map(
       ([label, keys]) => `<button data-tmux="${esc(keys)}">${label}</button>`,
     ).join("")}</div>
-    <div class="keybar"><button data-k="kbd" class="kbd-btn" title="Show the keyboard">${icon("keyboard", 17)}</button>${["Esc", "Tab", "Ctrl", "Alt"].map((k) => key(k)).join("")}<button data-k="tmux" class="tmux-btn">tmux</button>${["↑", "↓", "←", "→", "PgUp", "PgDn", "Home", "End", "|", "/", "-", "~"].map((k) => key(k)).join("")}</div>
+    <div class="keybar"><button data-k="kbd" class="kbd-btn" title="Show the keyboard">${icon("keyboard", 17)}</button><button data-k="more" class="kbd-btn" title="All keys">${icon("grid", 16)}</button>${["Esc", "Tab", "Ctrl", "Alt"].map((k) => key(k)).join("")}<button data-k="tmux" class="tmux-btn">tmux</button>${key("^D")}${["↑", "↓", "←", "→", "PgUp", "PgDn", "Home", "End", "|", "/", "-", "~"].map((k) => key(k)).join("")}</div>
   </div>`;
 }
 
@@ -308,10 +330,17 @@ export class Session {
       if (k === "Ctrl" || k === "Alt") {
         const on = k === "Ctrl" ? (this.ctrl = !this.ctrl) : (this.alt = !this.alt);
         b.classList.toggle("on", on);
-      } else if (k === "tmux") {
-        const row = this.el.querySelector<HTMLElement>(".tmux-row")!;
+      } else if (k === "tmux" || k === "more") {
+        // The terminal shrinks to make room (the ResizeObserver on .term refits it).
+        const row = this.el.querySelector<HTMLElement>(k === "tmux" ? ".tmux-row" : ".keys-panel")!;
         row.hidden = !row.hidden;
         b.classList.toggle("on", !row.hidden);
+      } else if (k === "paste") {
+        this.paste();
+      } else if (b.dataset.pk !== undefined) {
+        const [, seq] = PANEL_KEYS[+b.dataset.pk];
+        // Single characters still take the Ctrl/Alt toggles; sequences are sent as they are.
+        this.send(seq, seq.length > 1);
       } else if (k === "kbd") {
         const show = ta.inputMode === "none";
         ta.inputMode = show ? "text" : "none";
@@ -393,7 +422,7 @@ export class Session {
     new ResizeObserver(() => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => this.refit());
-    }).observe(this.el);
+    }).observe(this.el.querySelector(".term")!);
     this.refit();
     this.connect();
   }

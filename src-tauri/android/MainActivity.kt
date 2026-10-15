@@ -2,6 +2,7 @@ package com.koi.kermius
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -20,9 +21,15 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
-    // Edge-to-edge ignores adjustResize: keep the WebView above the on-screen keyboard ourselves.
-    ViewCompat.setOnApplyWindowInsetsListener(findViewById<View>(android.R.id.content)) { v, insets ->
-      v.setPadding(0, 0, 0, insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+    // Edge-to-edge ignores adjustResize: keep the WebView between the status bar and the
+    // keyboard / navigation bar ourselves (a WebView that does not reach the screen edges gets
+    // no safe-area insets), painting the gaps in the app's background colour.
+    val content = findViewById<View>(android.R.id.content)
+    content.setBackgroundColor(Color.parseColor("#14161d"))
+    ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
+      val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+      val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+      v.setPadding(0, bars.top, 0, maxOf(ime, bars.bottom))
       insets
     }
     // A stray back swipe should not leave the app: ask for a second one within 2 s.
