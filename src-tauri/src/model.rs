@@ -146,11 +146,14 @@ pub fn now_ms() -> i64 {
 }
 
 /// Per-item last-writer-wins merge keyed by id.
-fn merge_items<T: Clone>(a: &[T], b: &[T], id: fn(&T) -> &str, ts: fn(&T) -> i64) -> Vec<T> {
+fn merge_items<T: Clone + Serialize>(a: &[T], b: &[T], id: fn(&T) -> &str, ts: fn(&T) -> i64) -> Vec<T> {
+    // Equal timestamps with different content (e.g. a field an older version dropped): pick the
+    // same copy on every device, so they converge instead of overwriting each other.
+    let tie_wins = |new: &T, old: &T| serde_json::to_string(new).ok() > serde_json::to_string(old).ok();
     let mut out: Vec<T> = a.to_vec();
     for item in b {
         match out.iter_mut().find(|x| id(x) == id(item)) {
-            Some(x) if ts(item) > ts(x) => *x = item.clone(),
+            Some(x) if ts(item) > ts(x) || (ts(item) == ts(x) && tie_wins(item, x)) => *x = item.clone(),
             Some(_) => {}
             None => out.push(item.clone()),
         }
@@ -239,6 +242,16 @@ mod tests {
         let names: Vec<_> = m.hosts.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, ["new", "a-only", "b-only"]);
         assert_eq!(merge(&b, &a).hosts.len(), 3);
+    }
+
+    #[test]
+    fn merge_ties_converge() {
+        // Same updatedAt, different content (a device updated from a version without `order`):
+        // both directions must pick the same copy, or devices overwrite each other forever.
+        let ordered = Vault { hosts: vec![Host { order: 3.0, ..host("1", "x", 5) }], ..Default::default() };
+        let plain = Vault { hosts: vec![host("1", "x", 5)], ..Default::default() };
+        assert_eq!(merge(&ordered, &plain).hosts[0].order, 3.0);
+        assert_eq!(merge(&plain, &ordered).hosts[0].order, 3.0);
     }
 
     #[test]
