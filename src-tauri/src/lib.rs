@@ -8,6 +8,7 @@ mod model;
 mod proto;
 mod ssh;
 mod sshconfig;
+mod update;
 mod store;
 mod sync;
 mod termix;
@@ -235,6 +236,20 @@ fn ssh_config_preview(state: State<AppState>, host_ids: Vec<String>, with_keys: 
     sshconfig::render(&state.store.state.lock().vault, &host_ids, with_keys, with_passwords).config
 }
 
+/// Import hosts from `~/.ssh/config` (with its Includes).
+#[tauri::command]
+fn ssh_config_import(state: State<AppState>) -> Res<termix::ImportReport> {
+    let home = dirs::home_dir().ok_or("No home folder")?;
+    let file = home.join(".ssh").join("config");
+    if !file.exists() {
+        return Err(format!("{} not found", file.display()));
+    }
+    let entries = sshconfig::parse(&file, &home);
+    let report = sshconfig::import(&mut state.store.state.lock().vault, entries);
+    state.store.save().map_err(e)?;
+    Ok(report)
+}
+
 /// Write the hosts into `~/.ssh/config` (Kermius block) and their keys into `~/.ssh/kermius/`.
 #[tauri::command]
 fn ssh_config_export(state: State<AppState>, host_ids: Vec<String>, with_keys: bool, with_passwords: bool) -> Res<String> {
@@ -338,6 +353,28 @@ fn serial_ports() -> Vec<String> {
     Vec::new()
 }
 
+/// Newest release if it is newer than this app (None when up to date).
+#[tauri::command]
+async fn update_check(app: tauri::AppHandle) -> Res<Option<update::UpdateInfo>> {
+    update::check(&app).await
+}
+
+/// Desktop: download, install and restart.
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle, on_progress: Channel<(u64, u64)>) -> Res<()> {
+    update::install(&app, on_progress).await
+}
+
+/// Open a link in the system browser (phones download the APK there).
+#[tauri::command]
+fn open_url(app: tauri::AppHandle, url: String) -> Res<()> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("https://github.com/datlt4/Kermius/") {
+        return Err("Only Kermius release links can be opened".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(e)
+}
+
 /// Whether Kermius starts when the user logs in.
 #[tauri::command]
 fn autostart_get(app: tauri::AppHandle) -> bool {
@@ -395,13 +432,10 @@ fn vnc_password(state: State<AppState>, host_id: String) -> Res<String> {
     Ok(state.host(&host_id)?.password)
 }
 
-/// Binary write (raw body) to a session; header `sid`.
+/// Binary write to a session (VNC client messages: small, so JSON is fine).
 #[tauri::command]
-fn session_write(state: State<AppState>, request: tauri::ipc::Request<'_>) -> Res<()> {
-    let sid = request.headers().get("sid").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let tauri::ipc::InvokeBody::Raw(data) = request.body() else { return Err("Expected raw bytes".into()) };
-    send_cmd(&state, &sid, ssh::Cmd::Data(data.clone()));
-    Ok(())
+fn session_write(state: State<AppState>, sid: String, data: Vec<u8>) {
+    send_cmd(&state, &sid, ssh::Cmd::Data(data));
 }
 
 #[tauri::command]
@@ -1018,9 +1052,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(desktop)]
-            app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
+            {
+                app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
                 store: Arc::new(store),
@@ -1041,6 +1079,7 @@ pub fn run() {
             import_termix,
             ssh_config_preview,
             ssh_config_export,
+            ssh_config_import,
             list_snippets,
             save_snippet,
             delete_snippet,
@@ -1069,6 +1108,9 @@ pub fn run() {
             local_has_password,
             serial_ports,
             autostart_get,
+            update_check,
+            update_install,
+            open_url,
             autostart_set,
             serial_setup_command,
             vnc_open,

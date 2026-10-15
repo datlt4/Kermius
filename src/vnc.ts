@@ -3,6 +3,8 @@ import { Channel } from "@tauri-apps/api/core";
 import { api, type Host, type Status } from "./api";
 import { esc, toast } from "./ui";
 
+const coarse = matchMedia("(pointer: coarse)").matches;
+
 /** WebSocket-shaped channel noVNC can attach to (it checks these properties exist). */
 class IpcChannel {
   binaryType = "arraybuffer";
@@ -91,6 +93,269 @@ type RfbInternals = {
 /** RFB encoding numbers → names (data rectangles only). */
 const ENCODINGS: Record<number, string> = { 0: "Raw", 1: "CopyRect", 2: "RRE", 5: "Hextile", 6: "Zlib", 7: "Tight", 16: "ZRLE", 21: "JPEG", 50: "H.264", [-260]: "TightPNG" };
 
+/** noVNC internals used for touch input and zoom (pinned noVNC 1.7). */
+type RfbTouch = {
+  _canvas: HTMLCanvasElement;
+  _screen: HTMLElement;
+  _gestures?: { detach(): void };
+  _sendMouse(x: number, y: number, mask: number): void;
+  _updateScale(): void;
+  clipViewport: boolean;
+  _display: {
+    scale: number;
+    width: number;
+    height: number;
+    _viewportLoc: { x: number; y: number; w: number; h: number };
+    absX(x: number): number;
+    absY(y: number): number;
+    viewportChangeSize(w: number, h: number): void;
+    viewportChangePos(dx: number, dy: number): void;
+  };
+};
+
+const LEFT = 1;
+const RIGHT = 4;
+const WHEEL_UP = 8;
+const WHEEL_DOWN = 16;
+
+/**
+ * Touch input for VNC (replaces noVNC's tap-to-click gestures). Touchpad mode (default), like a laptop
+ * touchpad: one finger moves the pointer by the swipe distance, tap = left click (two taps = double
+ * click), tap then touch and move = drag. Direct mode: the pointer goes where the finger is, double tap
+ * = left click, double tap + hold + move = drag. Both: two-finger tap or long press (0.7 s) = right
+ * click, pinch = zoom, two fingers = pan when zoomed (scroll otherwise). When zoomed, the view follows
+ * the pointer (touchpad) or the finger (direct) near its edges.
+ */
+function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
+  rfb._gestures?.detach();
+  rfb.clipViewport = true;
+  const d = rfb._display;
+  const screen = rfb._screen;
+  let zoom = 1;
+
+  // Pointer position in remote (framebuffer) pixels, drawn locally so it is easy to follow.
+  const cursor = { x: 0, y: 0 };
+  const mark = document.createElement("div");
+  mark.className = "vnc-cursor";
+  screen.append(mark);
+
+  const screenRect = () => screen.getBoundingClientRect();
+  const canvasRect = () => rfb._canvas.getBoundingClientRect();
+  const drawCursor = () => {
+    const vp = d._viewportLoc;
+    const c = canvasRect();
+    const s = screenRect();
+    mark.hidden = !touchpad();
+    mark.style.transform = `translate(${c.left - s.left + (cursor.x - vp.x) * d.scale}px, ${c.top - s.top + (cursor.y - vp.y) * d.scale}px)`;
+  };
+  const applyZoom = () => {
+    const r = screenRect();
+    if (!d.width || !r.width) return;
+    const sc = Math.min(r.width / d.width, r.height / d.height) * zoom;
+    d.scale = sc;
+    d.viewportChangeSize(r.width / sc, r.height / sc);
+    d.viewportChangePos(0, 0);
+    drawCursor();
+  };
+  // noVNC resets the scale on every resize; put the zoom back afterwards.
+  const updateScale = rfb._updateScale.bind(rfb);
+  rfb._updateScale = () => {
+    updateScale();
+    applyZoom();
+  };
+  applyZoom();
+  cursor.x = d.width / 2;
+  cursor.y = d.height / 2;
+  drawCursor();
+
+  let mask = 0;
+  /** Send the pointer at `cursor` (remote pixels). */
+  const send = (m = mask) => {
+    const vp = d._viewportLoc;
+    rfb._sendMouse((cursor.x - vp.x) * d.scale, (cursor.y - vp.y) * d.scale, m);
+    drawCursor();
+  };
+  /** Direct mode: the pointer goes under the finger. */
+  const toFinger = (cx: number, cy: number) => {
+    const c = canvasRect();
+    cursor.x = (cx - c.left) / d.scale + d._viewportLoc.x;
+    cursor.y = (cy - c.top) / d.scale + d._viewportLoc.y;
+  };
+  const click = (button: number) => {
+    send(0);
+    send(button);
+    send(0);
+  };
+  /** Zoomed in: scroll the view so the pointer stays a margin away from its edges. */
+  const follow = () => {
+    if (zoom <= 1) return;
+    const vp = d._viewportLoc;
+    const m = 40 / d.scale;
+    const dx = cursor.x < vp.x + m ? cursor.x - m - vp.x : cursor.x > vp.x + vp.w - m ? cursor.x + m - vp.x - vp.w : 0;
+    const dy = cursor.y < vp.y + m ? cursor.y - m - vp.y : cursor.y > vp.y + vp.h - m ? cursor.y + m - vp.y - vp.h : 0;
+    if (dx || dy) d.viewportChangePos(dx, dy);
+  };
+
+  // Direct mode edge pan: while the finger rests near an edge of the zoomed view, scroll that way.
+  let finger = { x: 0, y: 0 };
+  let edgeRaf = 0;
+  const edgeStep = () => {
+    edgeRaf = 0;
+    if (zoom <= 1 || touchpad()) return;
+    const r = screenRect();
+    const zone = 44;
+    const speed = (dist: number) => (dist < zone ? ((zone - dist) / zone) * 18 : 0);
+    const dx = speed(finger.x - r.left) ? -speed(finger.x - r.left) : speed(r.right - finger.x);
+    const dy = speed(finger.y - r.top) ? -speed(finger.y - r.top) : speed(r.bottom - finger.y);
+    if (!dx && !dy) return;
+    d.viewportChangePos(dx / d.scale, dy / d.scale);
+    toFinger(finger.x, finger.y);
+    send(); // the pointer (and a drag) follows the moving view
+    edgeRaf = requestAnimationFrame(edgeStep);
+  };
+  const edgeStop = () => {
+    cancelAnimationFrame(edgeRaf);
+    edgeRaf = 0;
+  };
+
+  let start = { x: 0, y: 0, t: 0 };
+  let last = { x: 0, y: 0 };
+  let lastTap = { x: -999, y: -999, t: 0 };
+  let moved = false;
+  let longPress = 0;
+  let longDone = false;
+  let pinch: { dist: number; zoom: number; fbx: number; fby: number; my: number; mx0: number; my0: number; t: number; moved: boolean } | null = null;
+  let scrollAcc = 0;
+
+  const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+
+  const onStart = (e: TouchEvent) => {
+    e.preventDefault(); // no emulated mouse events (they would click)
+    clearTimeout(longPress);
+    if (e.touches.length === 2) {
+      if (mask) send((mask = 0));
+      const m = mid(e.touches);
+      const c = canvasRect();
+      pinch = { dist: dist(e.touches), zoom, fbx: (m.x - c.left) / d.scale + d._viewportLoc.x, fby: (m.y - c.top) / d.scale + d._viewportLoc.y, my: m.y, mx0: m.x, my0: m.y, t: Date.now(), moved: false };
+      scrollAcc = 0;
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    start = { x: t.clientX, y: t.clientY, t: Date.now() };
+    last = { x: t.clientX, y: t.clientY };
+    finger = { ...last };
+    moved = false;
+    longDone = false;
+    // In touchpad mode the second tap may land anywhere; in direct mode it must be near the first.
+    const near = touchpad() || Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 40;
+    if (Date.now() - lastTap.t < 320 && near) {
+      // Second tap: press now; releasing makes a click, moving first makes a drag.
+      lastTap.t = 0;
+      if (!touchpad()) toFinger(t.clientX, t.clientY);
+      send(0);
+      send((mask = LEFT));
+      return;
+    }
+    longPress = window.setTimeout(() => {
+      longDone = true;
+      if (!touchpad()) toFinger(start.x, start.y);
+      click(RIGHT);
+    }, 700);
+  };
+
+  const onMove = (e: TouchEvent) => {
+    e.preventDefault();
+    if (pinch && e.touches.length === 2) {
+      const m = mid(e.touches);
+      if (Math.abs(dist(e.touches) - pinch.dist) > 12 || Math.hypot(m.x - pinch.mx0, m.y - pinch.my0) > 12) pinch.moved = true;
+      const z = Math.min(6, Math.max(1, (pinch.zoom * dist(e.touches)) / pinch.dist));
+      if (z === 1 && pinch.zoom === 1) {
+        // Not zoomed: two fingers scroll the remote screen.
+        scrollAcc += m.y - pinch.my;
+        pinch.my = m.y;
+        while (Math.abs(scrollAcc) >= 30) {
+          click(scrollAcc > 0 ? WHEEL_UP : WHEEL_DOWN);
+          scrollAcc -= Math.sign(scrollAcc) * 30;
+        }
+        return;
+      }
+      zoom = z;
+      applyZoom();
+      // Keep the remote point that was under the fingers' midpoint under it.
+      const c = canvasRect();
+      d.viewportChangePos(pinch.fbx - (m.x - c.left) / d.scale - d._viewportLoc.x, pinch.fby - (m.y - c.top) / d.scale - d._viewportLoc.y);
+      drawCursor();
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (!moved && Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) {
+      moved = true;
+      clearTimeout(longPress);
+    }
+    const dx = t.clientX - last.x;
+    const dy = t.clientY - last.y;
+    last = { x: t.clientX, y: t.clientY };
+    finger = { ...last };
+    if (!moved || longDone) return;
+    if (touchpad()) {
+      // Same distance on screen as the swipe, a bit faster when swiping fast.
+      const accel = 1 + Math.min(1.5, Math.hypot(dx, dy) / 25);
+      cursor.x = Math.min(d.width - 1, Math.max(0, cursor.x + (dx * accel) / d.scale));
+      cursor.y = Math.min(d.height - 1, Math.max(0, cursor.y + (dy * accel) / d.scale));
+      follow();
+    } else {
+      toFinger(t.clientX, t.clientY);
+      if (!edgeRaf) edgeRaf = requestAnimationFrame(edgeStep);
+    }
+    send();
+  };
+
+  const onEnd = (e: TouchEvent) => {
+    e.preventDefault();
+    clearTimeout(longPress);
+    if (e.touches.length) return;
+    edgeStop();
+    if (pinch) {
+      // Two-finger tap: right click (at the pointer, or between the fingers in direct mode).
+      if (!pinch.moved && Date.now() - pinch.t < 350) {
+        if (!touchpad()) toFinger(pinch.mx0, pinch.my0);
+        click(RIGHT);
+      }
+      pinch = null;
+      return;
+    }
+    if (mask) {
+      send((mask = 0)); // ends the click or the drag
+      return;
+    }
+    if (!moved && !longDone && Date.now() - start.t < 300) {
+      lastTap = { x: start.x, y: start.y, t: Date.now() };
+      if (touchpad()) click(LEFT);
+    }
+  };
+
+  const opts = { passive: false } as const;
+  screen.addEventListener("touchstart", onStart, opts);
+  screen.addEventListener("touchmove", onMove, opts);
+  screen.addEventListener("touchend", onEnd, opts);
+  screen.addEventListener("touchcancel", onEnd, opts);
+  return {
+    fit() {
+      zoom = 1;
+      applyZoom();
+    },
+    redraw: drawCursor,
+    dispose() {
+      edgeStop();
+      clearTimeout(longPress);
+      mark.remove();
+    },
+  };
+}
+
 const fmtRate = (b: number) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB/s` : `${(b / 1024).toFixed(0)} KB/s`);
 
 type Rfb = {
@@ -121,6 +386,7 @@ export class VncTab {
       <div class="vnc-stats" ${localStorage.getItem("kermius.vncStats") === "0" ? "hidden" : ""}></div>
       <div class="sess-tools"><button data-v="cad" title="Send Ctrl+Alt+Del">Ctrl+Alt+Del</button>
         <button data-v="control" class="${host.viewOnly ? "" : "on"}" title="Send mouse and keyboard to the remote (off = view only)">Control</button>
+        ${coarse ? `<button data-v="touchpad" class="${localStorage.getItem("kermius.vncTouchpad") === "0" ? "" : "on"}" title="On: swipe to move the pointer like a touchpad. Off: the pointer goes where you touch">Touchpad</button>` : ""}
         <button data-v="scale" class="on" title="Fit the remote screen to the window">Fit</button>
         <button data-v="stats" class="${localStorage.getItem("kermius.vncStats") === "0" ? "" : "on"}" title="Frame rate, latency and encoding">Stats</button></div>
       <div class="overlay"></div>`;
@@ -136,7 +402,13 @@ export class VncTab {
         box.hidden = !box.hidden;
         t.closest("button")!.classList.toggle("on", !box.hidden);
         localStorage.setItem("kermius.vncStats", box.hidden ? "0" : "1");
-      } else if (v === "scale" && this.rfb) {
+      } else if (v === "touchpad") {
+        const on = localStorage.getItem("kermius.vncTouchpad") === "0";
+        localStorage.setItem("kermius.vncTouchpad", on ? "1" : "0");
+        t.closest("button")!.classList.toggle("on", on);
+        this.touch?.redraw();
+      } else if (v === "scale" && this.touch) this.touch.fit();
+      else if (v === "scale" && this.rfb) {
         this.rfb.scaleViewport = !this.rfb.scaleViewport;
         t.closest("button")!.classList.toggle("on", this.rfb.scaleViewport);
       }
@@ -182,7 +454,10 @@ export class VncTab {
       const rfb = new RFB(screen, channel) as unknown as Rfb;
       this.rfb = rfb;
       this.watchSteps(rfb as unknown as RfbInternals, channel);
-      rfb.scaleViewport = this.el.querySelector('[data-v="scale"]')!.classList.contains("on");
+      this.touch?.dispose();
+      this.touch = null;
+      if (coarse) this.touch = touchInput(rfb as unknown as RfbTouch, () => localStorage.getItem("kermius.vncTouchpad") !== "0");
+      else rfb.scaleViewport = this.el.querySelector('[data-v="scale"]')!.classList.contains("on");
       rfb.background = "#0b0d12";
       rfb.viewOnly = !this.el.querySelector('[data-v="control"]')!.classList.contains("on");
       if (!this.host.noClipboard) {
@@ -225,6 +500,7 @@ export class VncTab {
   }
 
   private statsTimer = 0;
+  private touch: ReturnType<typeof touchInput> | null = null;
   private stepTimer = 0;
   private logs: string[] = [];
 
@@ -371,6 +647,7 @@ export class VncTab {
   applyPrefs() {}
 
   dispose() {
+    this.touch?.dispose();
     clearInterval(this.statsTimer);
     clearInterval(this.stepTimer);
     removeEventListener("focus", this.onFocus);

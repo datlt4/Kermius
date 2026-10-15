@@ -30,6 +30,8 @@
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; height: 100%; overflow: hidden; }
+/* Follows the visible area, so an on-screen keyboard shrinks the app instead of covering it. */
+#app { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--vv-h, 100%); }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
 input, textarea { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
@@ -303,6 +305,12 @@ details .field + .field { margin-top: 10px; }
 .keybar { display: flex; gap: 6px; padding: 6px 8px calc(6px + var(--safe-bottom)); overflow-x: auto; background: var(--bg-side); border-top: 1px solid var(--border); flex: none; }
 .keybar button { min-width: 42px; height: 34px; padding: 0 10px; border-radius: 8px; background: #262b37; font-family: "JetBrains Mono", monospace; font-size: 13px; }
 .keybar button.on { background: var(--accent); color: #fff; }
+.keys { flex: none; }
+.keys .keybar + .keybar { border-top: 0; }
+.tmux-row { padding-bottom: 0 !important; }
+.tmux-row button { font-family: inherit; font-size: 12.5px; white-space: nowrap; background: #23324d; }
+.tmux-row .prefix { background: #33405a; color: var(--accent); font-family: "JetBrains Mono", monospace; }
+.keybar .tmux-btn { color: #9fc0ff; }
 
 /* ---------- popups ---------- */
 .ctx {
@@ -347,7 +355,6 @@ details .field + .field { margin-top: 10px; }
   .toolbar .btn span { display: none; }
   .content { padding: 4px 12px 24px; }
   .grid { grid-template-columns: 1fr; gap: 8px; }
-  .seg { display: none; }
   .term { padding: 4px 2px 2px 6px; }
   .tun-row { flex-wrap: wrap; }
 }
@@ -681,3 +688,27 @@ details .field + .field { margin-top: 10px; }
 .vnc-step code { flex: 1; min-width: 0; padding: 6px 8px; font-size: 11.5px; color: var(--text); background: #171a22; border-radius: 6px; overflow-x: auto; white-space: nowrap; }
 .vnc-opts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .session.vnc:not(.live) .vnc-stats { display: none; }
+
+/* switch-style checkbox */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 0; cursor: pointer; }
+.toggle-row span { display: flex; flex-direction: column; gap: 3px; }
+.toggle-row b { font-weight: 500; }
+.toggle-row small { font-size: 12px; }
+.toggle { appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 50px !important; height: 28px; margin: 0; padding: 0 !important; border-radius: 999px; background: #3a4152; border: 0 !important; cursor: pointer; transition: background 0.2s; }
+.toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); transition: transform 0.2s var(--ease); }
+.toggle:checked { background: var(--accent); }
+.toggle:checked::after { transform: translateX(22px); }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* updates */
+.update-pill { display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 6px; padding: 7px 10px; border-radius: 9px; font-size: 12.5px; font-weight: 600; color: #fff; background: linear-gradient(135deg, #30c8c2, #4c52e2); }
+.update-pill:hover { filter: brightness(1.1); }
+.upd-modal { width: min(520px, 92vw); }
+.upd-notes { max-height: 260px; overflow: auto; margin: 10px 0; padding: 10px 12px; font-size: 12.5px; white-space: pre-wrap; background: #171a22; border-radius: 8px; }
+.upd-progress { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.upd-progress .bar { height: 6px; border-radius: 6px; background: #343a49; overflow: hidden; }
+.upd-progress .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.2s; }
+.link-btn { color: var(--accent); text-decoration: underline; font-size: inherit; }
+/* Touchpad pointer: an arrow drawn over the remote screen (its tip is the hot spot). */
+.vnc-cursor { position: absolute; left: 0; top: 0; z-index: 3; width: 16px; height: 22px; pointer-events: none; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='22' viewBox='0 0 16 22'%3E%3Cpath d='M1 1v17l4.5-4.3 3 6.8 2.8-1.2-3-6.6H14z' fill='white' stroke='black' stroke-width='1.3' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat; }
+.vnc-cursor[hidden] { display: none; }

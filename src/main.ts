@@ -5,6 +5,7 @@ import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderK
 import { FilesTab } from "./files";
 import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
 import { VncTab } from "./vnc";
+import { checkUpdate, pendingUpdate, updateDialog } from "./update";
 import { sshExportDialog } from "./sshexport";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
@@ -28,7 +29,8 @@ const state = {
   folder: null as string | null,
   tag: null as string | null,
   query: "",
-  layout: (localStorage.getItem("kermius.layout") as "grid" | "list") || "grid",
+  // Phones default to the list; tablets and desktops to the grid.
+  layout: (localStorage.getItem("kermius.layout") as "grid" | "list") || (matchMedia("(max-width: 760px)").matches ? "list" : "grid"),
   /** Root view: folder cards, or every host in collapsible per-group sections. */
   mode: (localStorage.getItem("kermius.mode") as "groups" | "sections") || "groups",
   collapsed: new Set<string>(JSON.parse(localStorage.getItem("kermius.collapsed") || "[]")),
@@ -148,7 +150,9 @@ function renderSyncFoot() {
     else if (s.lastSync) (text = `Synced ${ago(s.lastSync)}`), (cls = "ok");
     else text = "Not synced yet";
   }
-  els.foot.innerHTML = `<button class="sync-pill ${cls}" title="${esc(state.syncError)}">${icon("sync", 14)}<span class="grow">${text}</span><span class="ver">v${state.version}</span></button>`;
+  const upd = pendingUpdate();
+  els.foot.innerHTML = `${upd ? `<button class="update-pill" data-update title="Kermius ${esc(upd.version)} is available">${icon("import", 14)}<span class="grow">Update to v${esc(upd.version)}</span></button>` : ""}
+    <button class="sync-pill ${cls}" title="${esc(state.syncError)}">${icon("sync", 14)}<span class="grow">${text}</span><span class="ver">v${state.version}</span></button>`;
 }
 
 function ago(ts: number) {
@@ -184,7 +188,9 @@ els.side.addEventListener("click", (e) => {
   goHome();
 });
 
-els.foot.addEventListener("click", () => {
+els.foot.addEventListener("click", (e) => {
+  const upd = pendingUpdate();
+  if (upd && (e.target as HTMLElement).closest("[data-update]")) return updateDialog(upd);
   if (state.sync?.url) runSync(true);
   else {
     state.view = "settings";
@@ -224,6 +230,18 @@ function renderTabs() {
 }
 
 // Custom title bar: window controls live in the tab bar (desktop only).
+// Mobile keyboards cover the page without resizing it: size the app to the visual viewport instead.
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const fitViewport = () => {
+    document.documentElement.style.setProperty("--vv-h", `${vv.height}px`);
+    document.documentElement.style.setProperty("--vv-top", `${vv.offsetTop}px`);
+  };
+  vv.addEventListener("resize", fitViewport);
+  vv.addEventListener("scroll", fitViewport);
+  fitViewport();
+}
+
 const desktop = !isWeb && !/Android|iPhone|iPad/i.test(navigator.userAgent);
 els.tabs.setAttribute("data-tauri-drag-region", "");
 
@@ -317,6 +335,7 @@ function openFiles(h: Host) {
 }
 
 els.terms.addEventListener("kermius-files", (e) => openFiles((e as CustomEvent).detail.host as Host));
+els.terms.addEventListener("kermius-host-saved", () => reload().then(scheduleSync));
 
 function closeSession(id: string) {
   const i = state.sessions.findIndex((s) => s.id === id);
@@ -864,7 +883,8 @@ function renderSettings() {
       </div>
       ${desktop ? `<div class="panel">
         <div class="panel-head">${icon("settings")}<div><h3>General</h3></div></div>
-        <label class="check"><input type="checkbox" id="s-autostart" /> Start Kermius when I log in <small class="muted">(Folder Sync watchers start with it)</small></label>
+        <label class="toggle-row"><span><b>Start Kermius when I log in</b><small class="muted">Folder Sync watchers start with it</small></span>
+          <input type="checkbox" class="toggle" id="s-autostart" /></label>
       </div>` : ""}
       ${isWeb ? "" : `<div class="panel">
         <div class="panel-head">${icon("import")}<div><h3>Import from Termix</h3><p class="muted">Termix → Host Manager → Export (JSON). Existing hosts are updated, not duplicated.</p></div></div>
@@ -872,8 +892,8 @@ function renderSettings() {
         <div class="row"><button class="btn" data-set="import">Import</button></div>
       </div>
       <div class="panel">
-        <div class="panel-head">${icon("terminal")}<div><h3>Export to ~/.ssh/config</h3><p class="muted">Pick groups and hosts to use with the regular <code>ssh</code> command, scp, VS Code Remote…</p></div></div>
-        <div class="row"><button class="btn" data-set="ssh-export">Choose hosts…</button></div>
+        <div class="panel-head">${icon("terminal")}<div><h3>~/.ssh/config</h3><p class="muted">Import its hosts (keys from IdentityFile are read; a missing password is asked on the first connect), or export hosts for the regular <code>ssh</code> command, scp, VS Code Remote…</p></div></div>
+        <div class="row"><button class="btn" data-set="ssh-import">${icon("import", 15)} Import</button><button class="btn" data-set="ssh-export">Export…</button></div>
       </div>
       <div class="panel">
         <div class="panel-head">${icon("terminal")}<div><h3>Terminal</h3></div></div>
@@ -894,7 +914,7 @@ echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
           <select id="s-renderer">${RENDERERS.map(([v, l]) => `<option value="${v}" ${(localStorage.getItem("kermius.renderer") ?? "") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
           <small>If tmux/htop borders look broken or columns drift (e.g. with display scaling), try Canvas.</small></label>
       </div>`}
-      <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts</p>
+      <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts${isWeb ? "" : ` · <button class="link-btn" data-set="check-update">Check for updates</button>`}</p>
     </div>`;
   if (desktop)
     api.autostartGet().then((on) => {
@@ -935,6 +955,17 @@ els.page.addEventListener("click", async (e) => {
     state.sync = settings;
     if (settings.url) await runSync(true);
     renderSettings();
+  } else if (a === "check-update") {
+    checkUpdate(true, renderSyncFoot);
+  } else if (a === "ssh-import") {
+    try {
+      const r = await api.sshConfigImport();
+      toast(`~/.ssh/config: ${r.added} added, ${r.skipped} already in Kermius (skipped)${r.updated ? `, ${r.updated} got a key` : ""}`, "ok");
+      await reload();
+      scheduleSync();
+    } catch (err) {
+      toast(String(err), "err");
+    }
   } else if (a === "ssh-export") {
     sshExportDialog(state.hosts.filter(isSsh));
   } else if (a === "import") {
@@ -1412,6 +1443,10 @@ function webUnlock(): Promise<void> {
   activate("home");
   runSync(false);
   setInterval(() => runSync(false), 60_000);
+  if (!isWeb) {
+    setTimeout(() => checkUpdate(false, renderSyncFoot), 15_000);
+    setInterval(() => checkUpdate(false, renderSyncFoot), 6 * 3600_000);
+  }
   if (desktop) {
     await loadJobs();
     await listenFolderSync(folderSync);
