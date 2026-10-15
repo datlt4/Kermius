@@ -96,7 +96,7 @@ Watching only runs while Kermius is open. On Linux, very large trees may hit the
 
 ![Nearby Share](docs/nearby-share.png)
 
-Send and receive files on the local network (desktop). It speaks the [LocalSend](https://localsend.org) v2 protocol, so it works with the LocalSend apps on phones and computers as well as other Kermius devices. Incoming files need your approval and go to the Downloads folder.
+Send and receive files on the local network (desktop). It speaks the [LocalSend](https://localsend.org) v2 protocol, so it works with the LocalSend apps on phones and computers as well as other Kermius devices. Incoming files need your approval and go to the Downloads folder, or a folder you pick on the Nearby Share page (per device).
 
 Devices find each other by UDP multicast, which does not cross VPNs or routers. For those, tick **Use this address for Nearby Share** on a host: it appears under *Your hosts* and is reached directly at its address (greyed out while Kermius / LocalSend is not running there). The setting syncs with your hosts.
 
