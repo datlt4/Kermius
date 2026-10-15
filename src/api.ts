@@ -68,6 +68,8 @@ export interface NearbyStatus {
   dir: string;
   devices: NearbyDevice[];
   error: string;
+  /** Command opening the port in this computer's firewall ("" = no firewall found). */
+  firewall: string;
 }
 
 export interface NearbyTransfer {
