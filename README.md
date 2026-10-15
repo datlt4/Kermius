@@ -9,6 +9,8 @@ A fast, Termius-style SSH client built with Tauri 2 (Rust + TypeScript), with se
 - **Mosh**, **Telnet** (auto-login), **serial** consoles and **VNC** remote desktops (noVNC) in tabs
 - **Copy password** from host cards, the right-click menu, the editor, or the terminal toolbar
 - Local port forwarding rules per host
+- Jump hosts, SOCKS5/HTTP proxies, agent forwarding, environment variables and a startup snippet per host
+- **Nearby Share** (desktop): send and receive files on the local network, compatible with the [LocalSend](https://localsend.org) apps
 - Trust-on-first-use host key checking (synced across devices)
 - Local vault encrypted at rest (XChaCha20-Poly1305)
 - Sync to your own server; data is encrypted on-device with Argon2id(passphrase) — the server only sees ciphertext

@@ -44,6 +44,44 @@ export interface Host {
   deleted: boolean;
 }
 
+export interface NearbyDevice {
+  fingerprint: string;
+  alias: string;
+  deviceModel: string;
+  /** mobile | desktop | web | headless | server */
+  deviceType: string;
+  ip: string;
+  port: number;
+  https: boolean;
+}
+
+export interface NearbyStatus {
+  running: boolean;
+  alias: string;
+  port: number;
+  dir: string;
+  devices: NearbyDevice[];
+  error: string;
+}
+
+export interface NearbyTransfer {
+  id: string;
+  peer: string;
+  incoming: boolean;
+  files: number;
+  total: number;
+  done: number;
+  state: "waiting" | "active" | "done" | "declined" | "failed" | "cancelled";
+  error: string;
+  dir: string;
+}
+
+export type NearbyEvent =
+  | { kind: "devices"; devices: NearbyDevice[] }
+  | { kind: "request"; id: string; alias: string; files: [string, number][] }
+  | { kind: "requestGone"; id: string }
+  | ({ kind: "transfer" } & NearbyTransfer);
+
 export interface Key {
   id: string;
   label: string;
@@ -224,6 +262,14 @@ const tauriApi = {
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
   sshTest: (host: Host) => invoke<string[]>("ssh_test", { host }),
+  nearbyStatus: () => invoke<NearbyStatus>("nearby_status"),
+  nearbyStart: () => invoke<NearbyStatus>("nearby_start"),
+  nearbyStop: () => invoke<void>("nearby_stop"),
+  nearbyRefresh: () => invoke<void>("nearby_refresh"),
+  nearbySend: (fingerprint: string, paths: string[]) => invoke<string>("nearby_send", { fingerprint, paths }),
+  nearbyRespond: (id: string, accept: boolean) => invoke<void>("nearby_respond", { id, accept }),
+  nearbyCancel: (id: string) => invoke<void>("nearby_cancel", { id }),
+  nearbyOpenFolder: () => invoke<void>("nearby_open_folder"),
   sshConfigImport: () => invoke<{ added: number; updated: number; skipped: number }>("ssh_config_import"),
   sshConfigPreview: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
     invoke<string>("ssh_config_preview", { hostIds, withKeys, withPasswords }),
