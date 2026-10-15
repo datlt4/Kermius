@@ -877,7 +877,8 @@ function renderSettings() {
       </div>
       ${desktop ? `<div class="panel">
         <div class="panel-head">${icon("settings")}<div><h3>General</h3></div></div>
-        <label class="check"><input type="checkbox" id="s-autostart" /> Start Kermius when I log in <small class="muted">(Folder Sync watchers start with it)</small></label>
+        <label class="toggle-row"><span><b>Start Kermius when I log in</b><small class="muted">Folder Sync watchers start with it</small></span>
+          <input type="checkbox" class="toggle" id="s-autostart" /></label>
       </div>` : ""}
       ${isWeb ? "" : `<div class="panel">
         <div class="panel-head">${icon("import")}<div><h3>Import from Termix</h3><p class="muted">Termix → Host Manager → Export (JSON). Existing hosts are updated, not duplicated.</p></div></div>
