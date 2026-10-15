@@ -1161,6 +1161,24 @@ function renderEditor() {
           <label class="field"><textarea id="e-key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" spellcheck="false">${esc(h.privateKey)}</textarea></label>
           <label class="field"><span>Key passphrase</span><input id="e-keypass" type="password" value="${esc(h.keyPassphrase)}" /></label>
         </details>
+        <div class="cred-actions" ${isSsh(h) ? "" : "hidden"}>
+          <button class="btn ghost sm" data-ed="to-keychain" title="Move these credentials into an identity, shared by other hosts and synced">${icon("key", 14)} Save to Keychain</button>
+          ${isWeb ? "" : `<button class="btn ghost sm" data-ed="test">${icon("plug", 14)} Test connection</button>`}
+        </div>
+        <pre class="test-log" hidden></pre>
+      </div>
+      <div class="panel" ${isSsh(h) ? "" : "hidden"}>
+        <h5>Advanced</h5>
+        <label class="field"><span>Jump host</span><select id="e-jump"><option value="">None (connect directly)</option>${state.hosts
+          .filter((x) => x.id !== h.id && isSsh(x))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+          .map((x) => `<option value="${x.id}" ${x.id === h.jumpHostId ? "selected" : ""}>${esc(x.name)} (${esc(x.address)})</option>`).join("")}</select></label>
+        <label class="field"><span>Proxy</span><input id="e-proxy" value="${esc(h.proxy ?? "")}" placeholder="socks5://user:pass@host:1080 or http://host:3128" spellcheck="false" /></label>
+        <label class="check"><input type="checkbox" id="e-agent" ${h.agentForward ? "checked" : ""} /> Agent forwarding <small class="muted">(remote can use your local ssh-agent keys)</small></label>
+        <label class="field"><span>Environment variables <small class="muted">NAME=value per line; the server must allow them (AcceptEnv)</small></span>
+          <textarea id="e-env" rows="2" spellcheck="false" placeholder="LANG=en_US.UTF-8">${esc(h.env ?? "")}</textarea></label>
+        <label class="field"><span>Startup snippet</span><select id="e-snippet"><option value="">None</option>${state.snippets
+          .map((s) => `<option value="${s.id}" ${s.id === h.startupSnippetId ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></label>
       </div>
       <div class="panel" ${proto === "ssh" ? "" : "hidden"}>
         <h5>Port forwarding <small class="muted">local → remote</small></h5>
@@ -1196,6 +1214,11 @@ function readEditor() {
   h.privateKey = v("e-key");
   h.keyPassphrase = v("e-keypass");
   Object.assign(h, readPickers(els.drawer));
+  h.jumpHostId = v("e-jump");
+  h.proxy = v("e-proxy").trim();
+  h.agentForward = $<HTMLInputElement>("#e-agent", els.drawer).checked;
+  h.env = v("e-env").trim();
+  h.startupSnippetId = v("e-snippet");
   h.notes = v("e-notes");
   h.tunnels = [...els.drawer.querySelectorAll<HTMLElement>(".tun-row")].map((r) => {
     const f = (k: string) => $<HTMLInputElement>(`[data-f="${k}"]`, r).value.trim();
@@ -1243,6 +1266,28 @@ els.drawer.addEventListener("click", async (e) => {
       readEditor();
       h.tunnels.splice(+b.dataset.i!, 1);
       return renderEditor();
+    case "to-keychain":
+      readEditor();
+      return credentialsToKeychain(h);
+    case "test": {
+      readEditor();
+      const out = $<HTMLElement>(".test-log", els.drawer);
+      out.hidden = false;
+      out.className = "test-log";
+      out.textContent = "Connecting…";
+      b.setAttribute("disabled", "");
+      try {
+        out.textContent = (await api.sshTest(h)).join("\n");
+        out.classList.add("ok");
+      } catch (err) {
+        out.textContent = String(err);
+        out.classList.add("err");
+      } finally {
+        b.removeAttribute("disabled");
+        out.scrollTop = out.scrollHeight;
+      }
+      return;
+    }
     case "delete":
       return deleteHost(h);
     case "connect":
@@ -1296,6 +1341,27 @@ async function saveEditor() {
   } catch (err) {
     toast(String(err), "err");
     return false;
+  }
+}
+
+/** Move the host's own username/password/key into a new identity (and key) and link it. */
+async function credentialsToKeychain(h: Host) {
+  if (!h.username && !h.password && !h.privateKey.trim()) return toast("Enter a username, password or key first", "err");
+  const name = h.name || h.address;
+  try {
+    let keyId = h.keyId;
+    if (h.privateKey.trim()) {
+      const key = await api.saveKey({ id: "", label: `${name} key`, privateKey: h.privateKey, passphrase: h.keyPassphrase, publicKey: "", updatedAt: 0, deleted: false });
+      keyId = key.id;
+    }
+    const identity = await api.saveIdentity({ id: "", label: `${h.username || "user"}@${name}`, username: h.username, password: h.password, keyId, updatedAt: 0, deleted: false });
+    Object.assign(h, { identityId: identity.id, keyId: "", username: "", password: "", privateKey: "", keyPassphrase: "" });
+    await reload();
+    scheduleSync();
+    renderEditor();
+    toast(`Saved to Keychain as ${identity.label}; save the host to keep the link`, "ok");
+  } catch (err) {
+    toast(String(err), "err");
   }
 }
 

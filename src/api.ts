@@ -32,6 +32,14 @@ export interface Host {
   baud: number;
   viewOnly?: boolean;
   noClipboard?: boolean;
+  /** SSH: id of the host to hop through. */
+  jumpHostId?: string;
+  /** SSH: socks5://[user:pass@]host:port or http://… */
+  proxy?: string;
+  agentForward?: boolean;
+  /** SSH: NAME=value per line. */
+  env?: string;
+  startupSnippetId?: string;
   updatedAt: number;
   deleted: boolean;
 }
@@ -215,6 +223,7 @@ const tauriApi = {
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
+  sshTest: (host: Host) => invoke<string[]>("ssh_test", { host }),
   sshConfigImport: () => invoke<{ added: number; updated: number; skipped: number }>("ssh_config_import"),
   sshConfigPreview: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
     invoke<string>("ssh_config_preview", { hostIds, withKeys, withPasswords }),

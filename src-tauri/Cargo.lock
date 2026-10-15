@@ -2845,7 +2845,7 @@ dependencies = [
 
 [[package]]
 name = "kermius"
-version = "1.28.2"
+version = "1.29.0"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",

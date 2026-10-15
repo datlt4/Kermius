@@ -23,6 +23,8 @@ pub struct Client {
     known_id: String,
     mismatch: Option<String>,
     log: Logger,
+    /// The jump host connection this one runs through; kept alive with it.
+    _jump: Option<Arc<Handle<Client>>>,
 }
 
 impl client::Handler for Client {
@@ -57,14 +59,51 @@ impl client::Handler for Client {
         let _ = self.store.save();
         Ok(true)
     }
+
+    /// Agent forwarding: pipe the server's agent channel to the local ssh-agent.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        #[cfg(unix)]
+        if let Some(sock) = std::env::var_os("SSH_AUTH_SOCK") {
+            if let Ok(mut agent) = tokio::net::UnixStream::connect(sock).await {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut ch = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut ch, &mut agent).await;
+                });
+                return Ok(());
+            }
+        }
+        (self.log)("Agent forwarding requested, but no local ssh-agent is running".into());
+        let _ = (channel, reply);
+        Ok(())
+    }
 }
 
 pub fn known_id(host: &Host) -> String {
     format!("{}:{}", host.address, host.port)
 }
 
-/// Connect and authenticate (key first, then password, then keyboard-interactive).
+/// Connect and authenticate (key first, then password, then keyboard-interactive), directly,
+/// through the host's proxy, or through its jump host.
 pub async fn connect(store: Arc<Store>, host: &Host, log: Logger) -> Result<Handle<Client>, String> {
+    connect_depth(store, host.clone(), log, 0).await
+}
+
+fn connect_depth(
+    store: Arc<Store>,
+    host: Host,
+    log: Logger,
+    depth: u32,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Handle<Client>, String>> + Send>> {
+    Box::pin(async move { connect_inner(store, &host, log, depth).await })
+}
+
+async fn connect_inner(store: Arc<Store>, host: &Host, log: Logger, depth: u32) -> Result<Handle<Client>, String> {
     let config = Arc::new(client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 5,
@@ -72,16 +111,42 @@ pub async fn connect(store: Arc<Store>, host: &Host, log: Logger) -> Result<Hand
         ..Default::default()
     });
     log(format!("Starting a new connection to \"{}\" port {}", host.address, host.port));
-    log(format!("Resolving \"{}\"", host.address));
-    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.address.as_str(), host.port))
-        .await
-        .map_err(|e| format!("Address resolution failed: {e}"))?
-        .collect();
-    let ips: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
-    log(format!("Resolved to {}", ips.join(", ")));
-    log(format!("Connecting to {} port {}", ips.first().cloned().unwrap_or_default(), host.port));
-    let handler = Client { store, known_id: known_id(host), mismatch: None, log: log.clone() };
-    let mut handle = match tokio::time::timeout(Duration::from_secs(15), client::connect(config, &addrs[..], handler)).await {
+    let mut handler = Client { store: store.clone(), known_id: known_id(host), mismatch: None, log: log.clone(), _jump: None };
+    let connecting = async {
+        if !host.jump_host_id.is_empty() {
+            if depth >= 3 {
+                return Err("Too many nested jump hosts".to_string());
+            }
+            let jump = {
+                let st = store.state.lock();
+                let h = st.vault.hosts.iter().find(|h| h.id == host.jump_host_id && !h.deleted).cloned().ok_or("The jump host no longer exists")?;
+                st.vault.resolve(h)
+            };
+            log(format!("Connecting through jump host \"{}\"", jump.name));
+            let jl = log.clone();
+            let jlog: Logger = Arc::new(move |m| jl(format!("  [jump] {m}")));
+            let jh = connect_depth(store.clone(), jump, jlog, depth + 1).await?;
+            log(format!("Opening a tunnel to {}:{} through the jump host", host.address, host.port));
+            let ch = jh.channel_open_direct_tcpip(host.address.as_str(), host.port as u32, "127.0.0.1", 0).await.map_err(|e| format!("Jump host could not reach {}:{}: {e}", host.address, host.port))?;
+            handler._jump = Some(Arc::new(jh));
+            Ok(tokio::time::timeout(Duration::from_secs(15), client::connect_stream(config, ch.into_stream(), handler)).await)
+        } else if !host.proxy.trim().is_empty() {
+            log(format!("Connecting through proxy {}", host.proxy.split('@').next_back().unwrap_or("")));
+            let s = crate::proxy::connect(&host.proxy, &host.address, host.port).await?;
+            Ok(tokio::time::timeout(Duration::from_secs(15), client::connect_stream(config, s, handler)).await)
+        } else {
+            log(format!("Resolving \"{}\"", host.address));
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.address.as_str(), host.port))
+                .await
+                .map_err(|e| format!("Address resolution failed: {e}"))?
+                .collect();
+            let ips: Vec<String> = addrs.iter().map(|a| a.ip().to_string()).collect();
+            log(format!("Resolved to {}", ips.join(", ")));
+            log(format!("Connecting to {} port {}", ips.first().cloned().unwrap_or_default(), host.port));
+            Ok(tokio::time::timeout(Duration::from_secs(15), client::connect(config, &addrs[..], handler)).await)
+        }
+    };
+    let mut handle = match connecting.await? {
         Err(_) => return Err("Connection timed out".into()),
         Ok(Err(russh::Error::UnknownKey)) => {
             return Err(format!("{HOSTKEY_MISMATCH}: the host key of {} has changed", known_id(host)))
@@ -242,14 +307,30 @@ pub fn spawn_shell(
             let log: Logger = Arc::new(move |message| {
                 let _ = status.send(Status::Log { message });
             });
-            let handle = Arc::new(connect(store, &host, log.clone()).await?);
+            let handle = Arc::new(connect(store.clone(), &host, log.clone()).await?);
             log("Opening session channel".into());
             let mut ch = handle.channel_open_session().await.map_err(|e| e.to_string())?;
             log(format!("Requesting PTY {cols}x{rows}"));
             ch.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
+            // Servers only accept variables listed in their AcceptEnv; the rest are ignored.
+            for (name, value) in host.env.lines().filter_map(|l| l.trim().split_once('=')) {
+                let _ = ch.set_env(false, name.trim(), value.trim()).await;
+            }
+            if host.agent_forward {
+                log("Requesting agent forwarding".into());
+                let _ = ch.agent_forward(false).await;
+            }
             log("Starting shell".into());
             ch.request_shell(false).await.map_err(|e| e.to_string())?;
             let _ = on_status.send(Status::Connected);
+            let snippet = {
+                let st = store.state.lock();
+                st.vault.snippets.iter().find(|s| !s.deleted && !host.startup_snippet_id.is_empty() && s.id == host.startup_snippet_id).map(|s| s.script.clone())
+            };
+            if let Some(script) = snippet {
+                log("Running the startup snippet".into());
+                ch.data_bytes(format!("{}\n", script.trim_end()).into_bytes()).await.map_err(|e| e.to_string())?;
+            }
 
             // Coalesce output into ~4ms frames so heavy output doesn't flood IPC.
             let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
