@@ -119,26 +119,42 @@ const WHEEL_UP = 8;
 const WHEEL_DOWN = 16;
 
 /**
- * Touch input for VNC (replaces noVNC's tap-to-click gestures):
- * one finger moves the pointer, double tap = left click, double tap + hold + drag = left drag,
- * long press (0.7 s) = right click, pinch = zoom, two fingers = pan when zoomed (scroll otherwise),
- * and a finger near an edge pans the zoomed view that way. Returns { fit, dispose }.
+ * Touch input for VNC (replaces noVNC's tap-to-click gestures). Touchpad mode (default): one finger
+ * moves the pointer by the swipe distance, like a laptop touchpad; direct mode: the pointer goes where
+ * the finger is. Both: double tap = left click, double tap + hold + move = left drag, long press (0.7 s)
+ * = right click, pinch = zoom, two fingers = pan when zoomed (scroll otherwise). When zoomed, the view
+ * follows the pointer (touchpad) or the finger (direct) near its edges.
  */
-function touchInput(rfb: RfbTouch) {
+function touchInput(rfb: RfbTouch, touchpad: () => boolean) {
   rfb._gestures?.detach();
   rfb.clipViewport = true;
   const d = rfb._display;
   const screen = rfb._screen;
   let zoom = 1;
 
+  // Pointer position in remote (framebuffer) pixels, drawn locally so it is easy to follow.
+  const cursor = { x: 0, y: 0 };
+  const mark = document.createElement("div");
+  mark.className = "vnc-cursor";
+  screen.append(mark);
+
   const screenRect = () => screen.getBoundingClientRect();
+  const canvasRect = () => rfb._canvas.getBoundingClientRect();
+  const drawCursor = () => {
+    const vp = d._viewportLoc;
+    const c = canvasRect();
+    const s = screenRect();
+    mark.hidden = !touchpad();
+    mark.style.transform = `translate(${c.left - s.left + (cursor.x - vp.x) * d.scale}px, ${c.top - s.top + (cursor.y - vp.y) * d.scale}px)`;
+  };
   const applyZoom = () => {
     const r = screenRect();
     if (!d.width || !r.width) return;
-    const s = Math.min(r.width / d.width, r.height / d.height) * zoom;
-    d.scale = s;
-    d.viewportChangeSize(r.width / s, r.height / s);
+    const sc = Math.min(r.width / d.width, r.height / d.height) * zoom;
+    d.scale = sc;
+    d.viewportChangeSize(r.width / sc, r.height / sc);
     d.viewportChangePos(0, 0);
+    drawCursor();
   };
   // noVNC resets the scale on every resize; put the zoom back afterwards.
   const updateScale = rfb._updateScale.bind(rfb);
@@ -147,41 +163,54 @@ function touchInput(rfb: RfbTouch) {
     applyZoom();
   };
   applyZoom();
+  cursor.x = d.width / 2;
+  cursor.y = d.height / 2;
+  drawCursor();
 
-  const local = (cx: number, cy: number) => {
-    const r = rfb._canvas.getBoundingClientRect();
-    return { x: cx - r.left, y: cy - r.top };
-  };
   let mask = 0;
-  let pointer = { x: 0, y: 0 }; // last finger position (client coordinates)
-  const move = (cx: number, cy: number, m = mask) => {
-    pointer = { x: cx, y: cy };
-    const p = local(cx, cy);
-    rfb._sendMouse(p.x, p.y, m);
+  /** Send the pointer at `cursor` (remote pixels). */
+  const send = (m = mask) => {
+    const vp = d._viewportLoc;
+    rfb._sendMouse((cursor.x - vp.x) * d.scale, (cursor.y - vp.y) * d.scale, m);
+    drawCursor();
   };
-  const click = (cx: number, cy: number, button: number) => {
-    move(cx, cy, 0);
-    move(cx, cy, button);
-    move(cx, cy, 0);
+  /** Direct mode: the pointer goes under the finger. */
+  const toFinger = (cx: number, cy: number) => {
+    const c = canvasRect();
+    cursor.x = (cx - c.left) / d.scale + d._viewportLoc.x;
+    cursor.y = (cy - c.top) / d.scale + d._viewportLoc.y;
+  };
+  const click = (button: number) => {
+    send(0);
+    send(button);
+    send(0);
+  };
+  /** Zoomed in: scroll the view so the pointer stays a margin away from its edges. */
+  const follow = () => {
+    if (zoom <= 1) return;
+    const vp = d._viewportLoc;
+    const m = 40 / d.scale;
+    const dx = cursor.x < vp.x + m ? cursor.x - m - vp.x : cursor.x > vp.x + vp.w - m ? cursor.x + m - vp.x - vp.w : 0;
+    const dy = cursor.y < vp.y + m ? cursor.y - m - vp.y : cursor.y > vp.y + vp.h - m ? cursor.y + m - vp.y - vp.h : 0;
+    if (dx || dy) d.viewportChangePos(dx, dy);
   };
 
-  // Edge pan: while a finger rests near an edge of the zoomed view, scroll that way.
+  // Direct mode edge pan: while the finger rests near an edge of the zoomed view, scroll that way.
+  let finger = { x: 0, y: 0 };
   let edgeRaf = 0;
   const edgeStep = () => {
     edgeRaf = 0;
-    if (zoom <= 1) return;
+    if (zoom <= 1 || touchpad()) return;
     const r = screenRect();
     const zone = 44;
     const speed = (dist: number) => (dist < zone ? ((zone - dist) / zone) * 18 : 0);
-    const dx = speed(pointer.x - r.left) ? -speed(pointer.x - r.left) : speed(r.right - pointer.x);
-    const dy = speed(pointer.y - r.top) ? -speed(pointer.y - r.top) : speed(r.bottom - pointer.y);
+    const dx = speed(finger.x - r.left) ? -speed(finger.x - r.left) : speed(r.right - finger.x);
+    const dy = speed(finger.y - r.top) ? -speed(finger.y - r.top) : speed(r.bottom - finger.y);
     if (!dx && !dy) return;
     d.viewportChangePos(dx / d.scale, dy / d.scale);
-    move(pointer.x, pointer.y); // the pointer (and a drag) follows the moving view
+    toFinger(finger.x, finger.y);
+    send(); // the pointer (and a drag) follows the moving view
     edgeRaf = requestAnimationFrame(edgeStep);
-  };
-  const edgeWatch = () => {
-    if (!edgeRaf) edgeRaf = requestAnimationFrame(edgeStep);
   };
   const edgeStop = () => {
     cancelAnimationFrame(edgeRaf);
@@ -189,11 +218,12 @@ function touchInput(rfb: RfbTouch) {
   };
 
   let start = { x: 0, y: 0, t: 0 };
+  let last = { x: 0, y: 0 };
   let lastTap = { x: -999, y: -999, t: 0 };
   let moved = false;
   let longPress = 0;
   let longDone = false;
-  let pinch: { dist: number; zoom: number; fbx: number; fby: number; mx: number; my: number } | null = null;
+  let pinch: { dist: number; zoom: number; fbx: number; fby: number; my: number } | null = null;
   let scrollAcc = 0;
 
   const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
@@ -203,28 +233,34 @@ function touchInput(rfb: RfbTouch) {
     e.preventDefault(); // no emulated mouse events (they would click)
     clearTimeout(longPress);
     if (e.touches.length === 2) {
-      if (mask) move(pointer.x, pointer.y, (mask = 0));
+      if (mask) send((mask = 0));
       const m = mid(e.touches);
-      const p = local(m.x, m.y);
-      pinch = { dist: dist(e.touches), zoom, fbx: p.x / d.scale + d._viewportLoc.x, fby: p.y / d.scale + d._viewportLoc.y, mx: m.x, my: m.y };
+      const c = canvasRect();
+      pinch = { dist: dist(e.touches), zoom, fbx: (m.x - c.left) / d.scale + d._viewportLoc.x, fby: (m.y - c.top) / d.scale + d._viewportLoc.y, my: m.y };
       scrollAcc = 0;
       return;
     }
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
     start = { x: t.clientX, y: t.clientY, t: Date.now() };
+    last = { x: t.clientX, y: t.clientY };
+    finger = { ...last };
     moved = false;
     longDone = false;
-    if (Date.now() - lastTap.t < 320 && Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 40) {
+    // In touchpad mode the second tap may land anywhere; in direct mode it must be near the first.
+    const near = touchpad() || Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 40;
+    if (Date.now() - lastTap.t < 320 && near) {
       // Second tap: press now; releasing makes a click, moving first makes a drag.
       lastTap.t = 0;
-      move(t.clientX, t.clientY, 0);
-      move(t.clientX, t.clientY, (mask = LEFT));
+      if (!touchpad()) toFinger(t.clientX, t.clientY);
+      send(0);
+      send((mask = LEFT));
       return;
     }
     longPress = window.setTimeout(() => {
       longDone = true;
-      click(start.x, start.y, RIGHT);
+      if (!touchpad()) toFinger(start.x, start.y);
+      click(RIGHT);
     }, 700);
   };
 
@@ -238,8 +274,7 @@ function touchInput(rfb: RfbTouch) {
         scrollAcc += m.y - pinch.my;
         pinch.my = m.y;
         while (Math.abs(scrollAcc) >= 30) {
-          const b = scrollAcc > 0 ? WHEEL_UP : WHEEL_DOWN;
-          click(m.x, m.y, b);
+          click(scrollAcc > 0 ? WHEEL_UP : WHEEL_DOWN);
           scrollAcc -= Math.sign(scrollAcc) * 30;
         }
         return;
@@ -247,8 +282,9 @@ function touchInput(rfb: RfbTouch) {
       zoom = z;
       applyZoom();
       // Keep the remote point that was under the fingers' midpoint under it.
-      const r = rfb._canvas.getBoundingClientRect();
-      d.viewportChangePos(pinch.fbx - (m.x - r.left) / d.scale - d._viewportLoc.x, pinch.fby - (m.y - r.top) / d.scale - d._viewportLoc.y);
+      const c = canvasRect();
+      d.viewportChangePos(pinch.fbx - (m.x - c.left) / d.scale - d._viewportLoc.x, pinch.fby - (m.y - c.top) / d.scale - d._viewportLoc.y);
+      drawCursor();
       return;
     }
     if (e.touches.length !== 1) return;
@@ -257,9 +293,22 @@ function touchInput(rfb: RfbTouch) {
       moved = true;
       clearTimeout(longPress);
     }
+    const dx = t.clientX - last.x;
+    const dy = t.clientY - last.y;
+    last = { x: t.clientX, y: t.clientY };
+    finger = { ...last };
     if (!moved || longDone) return;
-    move(t.clientX, t.clientY);
-    edgeWatch();
+    if (touchpad()) {
+      // Same distance on screen as the swipe, a bit faster when swiping fast.
+      const accel = 1 + Math.min(1.5, Math.hypot(dx, dy) / 25);
+      cursor.x = Math.min(d.width - 1, Math.max(0, cursor.x + (dx * accel) / d.scale));
+      cursor.y = Math.min(d.height - 1, Math.max(0, cursor.y + (dy * accel) / d.scale));
+      follow();
+    } else {
+      toFinger(t.clientX, t.clientY);
+      if (!edgeRaf) edgeRaf = requestAnimationFrame(edgeStep);
+    }
+    send();
   };
 
   const onEnd = (e: TouchEvent) => {
@@ -272,7 +321,7 @@ function touchInput(rfb: RfbTouch) {
       return;
     }
     if (mask) {
-      move(pointer.x, pointer.y, (mask = 0)); // ends the click or the drag
+      send((mask = 0)); // ends the click or the drag
       return;
     }
     if (!moved && !longDone && Date.now() - start.t < 300) lastTap = { x: start.x, y: start.y, t: Date.now() };
@@ -288,9 +337,11 @@ function touchInput(rfb: RfbTouch) {
       zoom = 1;
       applyZoom();
     },
+    redraw: drawCursor,
     dispose() {
       edgeStop();
       clearTimeout(longPress);
+      mark.remove();
     },
   };
 }
@@ -325,6 +376,7 @@ export class VncTab {
       <div class="vnc-stats" ${localStorage.getItem("kermius.vncStats") === "0" ? "hidden" : ""}></div>
       <div class="sess-tools"><button data-v="cad" title="Send Ctrl+Alt+Del">Ctrl+Alt+Del</button>
         <button data-v="control" class="${host.viewOnly ? "" : "on"}" title="Send mouse and keyboard to the remote (off = view only)">Control</button>
+        ${coarse ? `<button data-v="touchpad" class="${localStorage.getItem("kermius.vncTouchpad") === "0" ? "" : "on"}" title="On: swipe to move the pointer like a touchpad. Off: the pointer goes where you touch">Touchpad</button>` : ""}
         <button data-v="scale" class="on" title="Fit the remote screen to the window">Fit</button>
         <button data-v="stats" class="${localStorage.getItem("kermius.vncStats") === "0" ? "" : "on"}" title="Frame rate, latency and encoding">Stats</button></div>
       <div class="overlay"></div>`;
@@ -340,6 +392,11 @@ export class VncTab {
         box.hidden = !box.hidden;
         t.closest("button")!.classList.toggle("on", !box.hidden);
         localStorage.setItem("kermius.vncStats", box.hidden ? "0" : "1");
+      } else if (v === "touchpad") {
+        const on = localStorage.getItem("kermius.vncTouchpad") === "0";
+        localStorage.setItem("kermius.vncTouchpad", on ? "1" : "0");
+        t.closest("button")!.classList.toggle("on", on);
+        this.touch?.redraw();
       } else if (v === "scale" && this.touch) this.touch.fit();
       else if (v === "scale" && this.rfb) {
         this.rfb.scaleViewport = !this.rfb.scaleViewport;
@@ -389,7 +446,7 @@ export class VncTab {
       this.watchSteps(rfb as unknown as RfbInternals, channel);
       this.touch?.dispose();
       this.touch = null;
-      if (coarse) this.touch = touchInput(rfb as unknown as RfbTouch);
+      if (coarse) this.touch = touchInput(rfb as unknown as RfbTouch, () => localStorage.getItem("kermius.vncTouchpad") !== "0");
       else rfb.scaleViewport = this.el.querySelector('[data-v="scale"]')!.classList.contains("on");
       rfb.background = "#0b0d12";
       rfb.viewOnly = !this.el.querySelector('[data-v="control"]')!.classList.contains("on");
