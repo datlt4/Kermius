@@ -186,9 +186,24 @@ fn hostname() -> String {
 }
 
 fn download_dir() -> PathBuf {
-    // Android: apps may create files in the shared Download folder without a permission (Android 11+).
+    // Android 11+ lets apps create files in the shared Download folder; Android 10 and older
+    // need the storage permission (asked at start), else the app's own folder is used.
     if cfg!(target_os = "android") {
-        return PathBuf::from("/storage/emulated/0/Download");
+        // Remember success only: the permission may be granted after the first check.
+        static SHARED_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let shared = PathBuf::from("/storage/emulated/0/Download");
+        if SHARED_OK.load(Ordering::Relaxed) {
+            return shared;
+        }
+        let probe = shared.join(format!(".kermius-{}", uuid::Uuid::new_v4()));
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            SHARED_OK.store(true, Ordering::Relaxed);
+            return shared;
+        }
+        let own = PathBuf::from("/storage/emulated/0/Android/data/com.koi.kermius/files/Download");
+        let _ = std::fs::create_dir_all(&own);
+        return own;
     }
     dirs::download_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir)
 }
@@ -689,7 +704,9 @@ impl Nearby {
         };
         let r = self.client.post(url).header("content-length", meta.size).body(body).send().await.map_err(|e| err_chain(&e))?;
         if !r.status().is_success() {
-            return Err(format!("{}: HTTP {}", meta.file_name, r.status().as_u16()));
+            let code = r.status().as_u16();
+            let why = r.text().await.unwrap_or_default();
+            return Err(format!("{}: HTTP {code}{}", meta.file_name, if why.is_empty() { String::new() } else { format!(" ({})", why.trim()) }));
         }
         if matches!(src, Source::Text(_)) {
             done.fetch_add(meta.size, Ordering::Relaxed);
@@ -902,13 +919,13 @@ struct UploadQuery {
     token: String,
 }
 
-async fn upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Query(q): Query<UploadQuery>, body: Body) -> StatusCode {
+async fn upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Query(q): Query<UploadQuery>, body: Body) -> (StatusCode, String) {
     let (meta, done, dir) = {
         let s = me.session.lock();
-        let Some(s) = s.as_ref().filter(|s| s.id == q.session_id && s.ip == addr.ip()) else { return StatusCode::FORBIDDEN };
+        let Some(s) = s.as_ref().filter(|s| s.id == q.session_id && s.ip == addr.ip()) else { return (StatusCode::FORBIDDEN, String::new()) };
         match s.files.get(&q.file_id) {
             Some((t, m)) if *t == q.token => (m.clone(), s.done.clone(), s.dir.clone()),
-            _ => return StatusCode::FORBIDDEN,
+            _ => return (StatusCode::FORBIDDEN, String::new()),
         }
     };
     let path = target_path(&dir, &meta.file_name);
@@ -935,13 +952,15 @@ async fn upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Qu
     .await;
     if let Err(e) = result {
         let _ = tokio::fs::remove_file(&path).await;
+        // The sender shows this text (e.g. a folder the phone does not let us write to).
+        let msg = format!("{}: {e}", path.display());
         let mut s = me.session.lock();
         if let Some(mut sess) = s.take_if(|s| s.id == q.session_id) {
             sess.transfer.state = "failed".into();
-            sess.transfer.error = format!("{}: {e}", meta.file_name);
+            sess.transfer.error = msg.clone();
             me.emit(Event::Transfer(sess.transfer));
         }
-        return StatusCode::INTERNAL_SERVER_ERROR;
+        return (StatusCode::INTERNAL_SERVER_ERROR, msg);
     }
     let mut s = me.session.lock();
     if let Some(sess) = s.as_mut().filter(|s| s.id == q.session_id) {
@@ -955,7 +974,7 @@ async fn upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Qu
             me.emit(Event::Transfer(sess.transfer.clone()));
         }
     }
-    StatusCode::OK
+    (StatusCode::OK, String::new())
 }
 
 #[derive(Deserialize)]

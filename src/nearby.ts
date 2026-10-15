@@ -187,7 +187,8 @@ export async function initNearby(rerender: () => void, savedHosts: () => Host[],
   await listen<NearbyEvent>("nearby", ({ payload: ev }) => {
     if (ev.kind === "devices") status.devices = ev.devices;
     else if (ev.kind === "request") {
-      requestDialog(ev.id, ev.alias, ev.files, ev.count, ev.total);
+      // The save folder can change (e.g. storage permission granted on Android 10).
+      api.nearbyStatus().then((s) => (status = s)).finally(() => requestDialog(ev.id, ev.alias, ev.files, ev.count, ev.total));
       notify("info", "Nearby Share", `${ev.alias} wants to send ${ev.count} file(s)`, "nearby");
     } else if (ev.kind === "message") {
       messageDialog(ev.alias, ev.text);
@@ -267,7 +268,7 @@ function transferRow(t: NearbyTransfer) {
   const live = t.state === "waiting" || t.state === "active";
   return `<div class="nb-tr ${t.state}">
     <span class="nb-dir" title="${t.incoming ? "Received" : "Sent"}">${t.incoming ? "↓" : "↑"}</span>
-    <div class="nb-tr-body"><div><b>${esc(t.peer)}</b> <span class="muted">· ${t.state === "done" ? (t.incoming ? "received" : "sent") : t.incoming ? "receiving" : "sending"} ${t.files.toLocaleString()} file${t.files === 1 ? "" : "s"}</span></div>
+    <div class="nb-tr-body"><div><b>${esc(t.peer)}</b> <span class="muted">· ${({ done: t.incoming ? "received" : "sent", failed: "failed:", declined: "declined:", cancelled: "cancelled:" } as Record<string, string>)[t.state] ?? (t.incoming ? "receiving" : "sending")} ${t.files.toLocaleString()} file${t.files === 1 ? "" : "s"}</span></div>
       <div class="bar"><i style="width:${pct}%"></i></div><small class="muted">${esc(label[t.state])}</small></div>
     ${live ? `<button class="btn ghost sm" data-nb="cancel" data-id="${t.id}">Cancel</button>`
       : t.incoming && t.state === "done" && !phone ? `<button class="btn ghost sm" data-nb="open">${icon("folder", 14)} Open</button>` : ""}

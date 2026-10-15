@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
-import { bellButton, onNotesChange, toggleNotesPanel } from "./notify";
+import { bellButton, initOsNotifications, onNotesChange, toggleNotesPanel } from "./notify";
 import { VncTab } from "./vnc";
 import { checkUpdate, pendingUpdate, updateDialog } from "./update";
 import { sshExportDialog } from "./sshexport";
@@ -1661,6 +1661,7 @@ function webUnlock(): Promise<void> {
     runDueJobs(folderSync);
     setInterval(() => runDueJobs(folderSync), 60_000);
   }
+  initOsNotifications();
   if (nearbyOn) initNearby(rerenderNearby, () => state.hosts, onNearby).catch((e) => console.error(e));
   setInterval(renderSyncFoot, 30_000);
 })();
