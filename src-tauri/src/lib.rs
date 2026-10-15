@@ -8,6 +8,7 @@ mod model;
 mod proto;
 mod ssh;
 mod sshconfig;
+mod update;
 mod store;
 mod sync;
 mod termix;
@@ -350,6 +351,28 @@ fn serial_ports() -> Vec<String> {
     return proto::serial_ports();
     #[cfg(not(desktop))]
     Vec::new()
+}
+
+/// Newest release if it is newer than this app (None when up to date).
+#[tauri::command]
+async fn update_check(app: tauri::AppHandle) -> Res<Option<update::UpdateInfo>> {
+    update::check(&app).await
+}
+
+/// Desktop: download, install and restart.
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle, on_progress: Channel<(u64, u64)>) -> Res<()> {
+    update::install(&app, on_progress).await
+}
+
+/// Open a link in the system browser (phones download the APK there).
+#[tauri::command]
+fn open_url(app: tauri::AppHandle, url: String) -> Res<()> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("https://github.com/datlt4/Kermius/") {
+        return Err("Only Kermius release links can be opened".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(e)
 }
 
 /// Whether Kermius starts when the user logs in.
@@ -1029,9 +1052,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(desktop)]
-            app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
+            {
+                app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
                 store: Arc::new(store),
@@ -1081,6 +1108,9 @@ pub fn run() {
             local_has_password,
             serial_ports,
             autostart_get,
+            update_check,
+            update_install,
+            open_url,
             autostart_set,
             serial_setup_command,
             vnc_open,

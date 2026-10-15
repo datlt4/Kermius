@@ -153,6 +153,14 @@ export type Status =
   | { type: "upload"; progress: number }
   | { type: "rtt"; micros: number };
 
+export interface UpdateInfo {
+  version: string;
+  notes: string;
+  /** "install" (desktop), "download" (Android APK) or "none" (iOS). */
+  action: string;
+  url: string;
+}
+
 export const emptyHost = (): Host => ({
   id: "", name: "", address: "", port: 22, username: "", password: "", privateKey: "",
   keyPassphrase: "", folder: "", tags: [], notes: "", tunnels: [], identityId: "", keyId: "", protocol: "ssh", baud: 0, updatedAt: 0, deleted: false,
@@ -237,6 +245,9 @@ const tauriApi = {
   sessionWrite: (sid: string, bytes: Uint8Array) => invoke<void>("session_write", { sid, data: Array.from(bytes) }),
   serialPorts: () => invoke<string[]>("serial_ports"),
   autostartGet: () => invoke<boolean>("autostart_get"),
+  updateCheck: () => invoke<UpdateInfo | null>("update_check"),
+  updateInstall: (onProgress: Channel<[number, number]>) => invoke<void>("update_install", { onProgress }),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
   autostartSet: (enabled: boolean) => invoke<void>("autostart_set", { enabled }),
   serialSetupCommand: () => invoke<string>("serial_setup_command"),
   trustNewHostKey: (hostId: string) => invoke<void>("trust_new_host_key", { hostId }),
