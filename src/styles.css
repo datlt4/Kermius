@@ -275,7 +275,7 @@ details .field + .field { margin-top: 10px; }
 /* ---------- terminal sessions ---------- */
 .terms { background: var(--bg); }
 .session { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.term { flex: 1; min-height: 0; padding: 8px 4px 4px 12px; }
+.term { flex: 1; min-height: 0; padding: 8px 4px 4px 12px; overflow: hidden; }
 .term .xterm { height: 100%; }
 .term .xterm-viewport { background: transparent !important; }
 .term .composition-view { display: none !important; }
@@ -302,10 +302,16 @@ details .field + .field { margin-top: 10px; }
   box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.8); animation: rise 0.25s var(--ease);
 }
 @keyframes rise { from { transform: translateY(12px); opacity: 0; } }
-.keybar { display: flex; gap: 6px; padding: 6px 8px calc(6px + var(--safe-bottom)); overflow-x: auto; background: var(--bg-side); border-top: 1px solid var(--border); flex: none; }
-.keybar button { min-width: 42px; height: 34px; padding: 0 10px; border-radius: 8px; background: #262b37; font-family: "JetBrains Mono", monospace; font-size: 13px; }
+.keybar { display: flex; gap: 6px; padding: 6px 8px; overflow-x: auto; background: var(--bg-side); border-top: 1px solid var(--border); flex: none; }
+.keybar button, .kp-keys button { flex: none; display: grid; place-items: center; min-width: 42px; height: 34px; padding: 0 10px; border-radius: 8px; background: #262b37; font-family: "JetBrains Mono", monospace; font-size: 13px; white-space: nowrap; }
 .keybar button.on { background: var(--accent); color: #fff; }
-.keys { flex: none; }
+.keys { flex: none; padding-bottom: var(--safe-bottom); background: var(--bg-side); }
+.keys-panel { max-height: 42vh; overflow-y: auto; padding: 8px 8px 2px; border-top: 1px solid var(--border); background: var(--bg-side); }
+.kp-sec { margin-bottom: 8px; }
+.kp-sec > span { display: block; margin: 0 0 4px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.kp-keys { display: flex; flex-wrap: wrap; gap: 6px; }
+.kp-keys button:active, .keybar button:active { background: #353c4c; }
+.kp-keys .kp-wide { display: flex; gap: 6px; }
 .keys .keybar + .keybar { border-top: 0; }
 .tmux-row { padding-bottom: 0 !important; }
 .tmux-row button { font-family: inherit; font-size: 12.5px; white-space: nowrap; background: #23324d; }
@@ -755,7 +761,7 @@ details .field + .field { margin-top: 10px; }
 .toggle.sm::after { width: 16px; height: 16px; }
 .toggle.sm:checked::after { transform: translateX(16px); }
 .nb-sel-btns { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.nb-pick { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 92px; padding: 12px 0 10px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); font-size: 13px; transition: background 0.15s, border-color 0.15s; }
+.nb-pick { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1 1 64px; max-width: 110px; padding: 12px 0 10px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); font-size: 13px; transition: background 0.15s, border-color 0.15s; }
 .nb-pick:hover { background: var(--card-hover); border-color: var(--border-strong); }
 .nb-drop { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 46px; padding: 8px 10px; border: 1.5px dashed var(--border-strong); border-radius: 12px; }
 .nb-drop.drop { border-color: var(--accent); background: rgba(91, 140, 255, 0.08); }

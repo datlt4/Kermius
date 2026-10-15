@@ -301,6 +301,7 @@ function selectionHtml() {
       <label class="nb-clear"><input type="checkbox" class="toggle sm" id="nb-clear" ${clearAfter() ? "checked" : ""} /> Clear after sending</label></div>
     <div class="nb-sel-btns">
       <button class="nb-pick" data-nb="files">${icon("file", 18)}<span>File</span></button>
+      ${phone ? `<button class="nb-pick" data-nb="media">${icon("image", 18)}<span>Media</span></button>` : ""}
       ${phone ? "" : `<button class="nb-pick" data-nb="folder">${icon("folder", 18)}<span>Folder</span></button>`}
       <button class="nb-pick" data-nb="text">${icon("edit", 18)}<span>Text</span></button>
       <button class="nb-pick" data-nb="paste">${icon("paste", 18)}<span>Paste</span></button>
@@ -389,6 +390,12 @@ export function bindNearby(root: HTMLElement, rerender: () => void, active: () =
         const dir = b.dataset.nb === "folder";
         const picked = await openDialog({ multiple: true, directory: dir });
         if (picked) addPaths(Array.isArray(picked) ? picked : [picked], dir);
+        return rerender();
+      }
+      case "media": {
+        // Photos and videos from the gallery (Android photo picker / iOS Photos).
+        const picked = await openDialog({ multiple: true, pickerMode: "media" });
+        if (picked) addPaths(Array.isArray(picked) ? picked : [picked]);
         return rerender();
       }
       case "text": {
