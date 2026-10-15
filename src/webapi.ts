@@ -167,6 +167,7 @@ export const webApi: Api = {
   nearbyCancel: unsupported,
   nearbyOpenFolder: unsupported,
   nearbySetDir: unsupported,
+  nearbySetAlias: unsupported,
   sshConfigExport: unsupported,
   fsyncRaiseInotifyRemote: unsupported,
   fsyncImportStignore: unsupported,

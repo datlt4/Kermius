@@ -72,6 +72,8 @@ export interface NearbyStatus {
   blocked: boolean;
   /** Command opening the port in this computer's firewall ("" = unknown firewall). */
   firewall: string;
+  /** This device's addresses and host names. */
+  own: string[];
 }
 
 export interface NearbyTransfer {
@@ -285,6 +287,8 @@ const tauriApi = {
   nearbyOpenFolder: () => invoke<void>("nearby_open_folder"),
   /** "" = the Downloads folder. */
   nearbySetDir: (dir: string) => invoke<NearbyStatus>("nearby_set_dir", { dir }),
+  /** "" = the device's host name. */
+  nearbySetAlias: (alias: string) => invoke<NearbyStatus>("nearby_set_alias", { alias }),
   sshConfigImport: () => invoke<{ added: number; updated: number; skipped: number }>("ssh_config_import"),
   sshConfigPreview: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
     invoke<string>("ssh_config_preview", { hostIds, withKeys, withPasswords }),

@@ -380,6 +380,12 @@ fn nearby_open_folder(app: tauri::AppHandle, nearby: State<Arc<nearby::Nearby>>)
 }
 
 #[tauri::command]
+fn nearby_set_alias(nearby: State<Arc<nearby::Nearby>>, alias: String) -> nearby::Status {
+    nearby.set_alias(&alias);
+    nearby.status()
+}
+
+#[tauri::command]
 fn nearby_set_dir(nearby: State<Arc<nearby::Nearby>>, dir: String) -> Res<nearby::Status> {
     nearby.set_save_dir(&dir)?;
     Ok(nearby.status())
@@ -1191,6 +1197,7 @@ pub fn run() {
             nearby_cancel,
             nearby_open_folder,
             nearby_set_dir,
+            nearby_set_alias,
             ssh_config_export,
             ssh_config_import,
             list_snippets,
