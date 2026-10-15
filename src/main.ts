@@ -330,6 +330,7 @@ function openFiles(h: Host) {
 }
 
 els.terms.addEventListener("kermius-files", (e) => openFiles((e as CustomEvent).detail.host as Host));
+els.terms.addEventListener("kermius-host-saved", () => reload().then(scheduleSync));
 
 function closeSession(id: string) {
   const i = state.sessions.findIndex((s) => s.id === id);
@@ -886,8 +887,8 @@ function renderSettings() {
         <div class="row"><button class="btn" data-set="import">Import</button></div>
       </div>
       <div class="panel">
-        <div class="panel-head">${icon("terminal")}<div><h3>Export to ~/.ssh/config</h3><p class="muted">Pick groups and hosts to use with the regular <code>ssh</code> command, scp, VS Code Remote…</p></div></div>
-        <div class="row"><button class="btn" data-set="ssh-export">Choose hosts…</button></div>
+        <div class="panel-head">${icon("terminal")}<div><h3>~/.ssh/config</h3><p class="muted">Import its hosts (keys from IdentityFile are read; a missing password is asked on the first connect), or export hosts for the regular <code>ssh</code> command, scp, VS Code Remote…</p></div></div>
+        <div class="row"><button class="btn" data-set="ssh-import">${icon("import", 15)} Import</button><button class="btn" data-set="ssh-export">Export…</button></div>
       </div>
       <div class="panel">
         <div class="panel-head">${icon("terminal")}<div><h3>Terminal</h3></div></div>
@@ -949,6 +950,15 @@ els.page.addEventListener("click", async (e) => {
     state.sync = settings;
     if (settings.url) await runSync(true);
     renderSettings();
+  } else if (a === "ssh-import") {
+    try {
+      const r = await api.sshConfigImport();
+      toast(`Imported from ~/.ssh/config: ${r.added} added, ${r.updated} updated`, "ok");
+      await reload();
+      scheduleSync();
+    } catch (err) {
+      toast(String(err), "err");
+    }
   } else if (a === "ssh-export") {
     sshExportDialog(state.hosts.filter(isSsh));
   } else if (a === "import") {

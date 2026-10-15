@@ -446,7 +446,31 @@ export class Session {
     }
   }
 
+  /** Host without a stored password (e.g. imported from ~/.ssh/config) rejected: ask once, save, retry. */
+  private async askPassword() {
+    const h = this.host;
+    const pw = await promptDialog(`Password for ${h.username ? `${h.username}@` : ""}${h.address}`, "Saved with the host (encrypted, synced)", "", true);
+    if (!pw) return false;
+    try {
+      this.host = await api.saveHost({ ...h, password: pw });
+      this.el.dispatchEvent(new CustomEvent("kermius-host-saved", { bubbles: true }));
+      return true;
+    } catch (e) {
+      toast(String(e), "err");
+      return false;
+    }
+  }
+
   private fail(message: string) {
+    if (!this.local && isSsh(this.host) && !this.host.password && message === "Authentication failed") {
+      this.error = message;
+      this.addLog("Error: authentication failed; asking for the password");
+      this.setState("error");
+      this.askPassword().then((ok) => {
+        if (ok) this.connect();
+      });
+      return;
+    }
     // A dropped live session is worth a notification (the tab may be in the background).
     if (this.state === "connected" && !this.local) notify("warn", `${protocolLabel(this.host)} · ${this.host.name}`, message, "");
     this.error = message;

@@ -55,6 +55,8 @@ jobs:
             export JAVA_HOME="$JAVA_HOME_17_X64" NDK_HOME="$ANDROID_NDK_LATEST_HOME"
             echo "ANDROID_HOME=$ANDROID_HOME NDK_HOME=$NDK_HOME"; java -version
             npx tauri android init --ci
+            # init uses Tauri's default icons: put the Kermius ones in place.
+            cp -r src-tauri/icons/android/. src-tauri/gen/android/app/src/main/res/
             npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
           } 2>&1 | tee android-build.log
       - name: Sign APK
@@ -96,6 +98,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx tauri ios init --ci 2>&1 | tee ios-init.log
+      # init uses Tauri's default icons: put the Kermius ones in place.
+      - run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
       # Xcode's "Build Rust Code" phase only works while `tauri ios build` runs (it needs code
       # signing), so build the Rust static lib here and turn that phase into a no-op.
       - name: Build Rust library
