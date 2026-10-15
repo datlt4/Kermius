@@ -103,6 +103,8 @@ pub struct Status {
     pub blocked: bool,
     /// Command opening the port in this computer's firewall ("" = unknown firewall).
     pub firewall: String,
+    /// This device's addresses and host names: saved hosts pointing here are not shown.
+    pub own: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -146,7 +148,8 @@ pub struct Nearby {
     app: AppHandle,
     client: reqwest::Client,
     fingerprint: String,
-    alias: String,
+    /// Name shown to other devices (default: the host name).
+    alias: Mutex<String>,
     port: Mutex<u16>,
     running: Mutex<Option<CancellationToken>>,
     firewall: Mutex<String>,
@@ -349,7 +352,7 @@ impl Nearby {
             app,
             client,
             fingerprint,
-            alias: hostname(),
+            alias: Mutex::new(hostname()),
             port: Mutex::new(PORT),
             running: Mutex::new(None),
             firewall: Mutex::new(String::new()),
@@ -376,7 +379,7 @@ impl Nearby {
             o => o,
         };
         Info {
-            alias: self.alias.clone(),
+            alias: self.alias.lock().clone(),
             version: "2.1".into(),
             device_model: Some(model.into()),
             device_type: Some(if mobile { "mobile" } else { "desktop" }.into()),
@@ -390,6 +393,15 @@ impl Nearby {
 
     fn emit(&self, e: Event) {
         let _ = self.app.emit("nearby", e);
+    }
+
+    /// "" = back to the host name; announced again so others see the new name.
+    pub fn set_alias(self: &Arc<Self>, alias: &str) {
+        let alias = alias.trim();
+        *self.alias.lock() = if alias.is_empty() { hostname() } else { alias.chars().take(64).collect() };
+        if let Some(sock) = self.udp.lock().clone() {
+            self.announce_with(sock);
+        }
     }
 
     pub fn save_dir(&self) -> PathBuf {
@@ -411,13 +423,18 @@ impl Nearby {
         devices.sort_by(|a, b| a.alias.cmp(&b.alias));
         Status {
             running: self.running.lock().is_some(),
-            alias: self.alias.clone(),
+            alias: self.alias.lock().clone(),
             port: *self.port.lock(),
             dir: self.save_dir().to_string_lossy().into_owned(),
             devices,
             error: self.error.lock().clone(),
             blocked: self.udp_replies.load(Ordering::Relaxed) > 0 && !self.inbound.load(Ordering::Relaxed),
             firewall: self.firewall.lock().clone(),
+            own: local_ipv4()
+                .iter()
+                .map(|ip| ip.to_string())
+                .chain(["127.0.0.1".into(), "localhost".into(), "::1".into(), hostname(), format!("{}.local", hostname())])
+                .collect(),
         }
     }
 

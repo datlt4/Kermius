@@ -3,11 +3,33 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, type Host, type NearbyEvent, type NearbyStatus, type NearbyTransfer } from "./api";
 import { notify } from "./notify";
-import { esc, icon, morphHtml, toast } from "./ui";
+import { esc, icon, morphHtml, promptDialog, toast } from "./ui";
 
 const KEY = "kermius.nearby";
 /** Phones cannot open folders or pick a save folder (pickers return content:// URIs). */
 const phone = /Android|iPhone|iPad/i.test(navigator.userAgent);
+/** This device's name for others ("" = host name); not synced. */
+const ALIAS_KEY = "kermius.nearbyAlias";
+const savedAlias = () => {
+  try {
+    return localStorage.getItem(ALIAS_KEY) ?? "";
+  } catch {
+    return "";
+  }
+};
+
+async function setAlias(alias: string, rerender: () => void) {
+  try {
+    status = await api.nearbySetAlias(alias);
+    try {
+      alias.trim() ? localStorage.setItem(ALIAS_KEY, alias.trim()) : localStorage.removeItem(ALIAS_KEY);
+    } catch {}
+  } catch (e) {
+    toast(String(e), "err");
+  }
+  rerender();
+}
+
 /** This device's folder for received files ("" = Downloads); not synced. */
 const DIR_KEY = "kermius.nearbyDir";
 const savedDir = () => {
@@ -85,7 +107,7 @@ async function pasteClipboard() {
   else selection.push({ kind: "text", text });
 }
 
-let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "", blocked: false, firewall: "" };
+let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "", blocked: false, firewall: "", own: [] };
 const transfers = new Map<string, NearbyTransfer>();
 let busy = false;
 let hosts: () => Host[] = () => [];
@@ -95,7 +117,7 @@ let lastProbe = 0;
 
 /** Saved hosts marked for Nearby Share are asked directly (works across VPNs). */
 async function probeHosts(rerender: () => void) {
-  const list = hosts().filter((h) => h.nearby && h.address);
+  const list = hosts().filter((h) => h.nearby && h.address && !isSelf(h));
   if (!status.running || !list.length) return;
   lastProbe = Date.now();
   const found = await api.nearbyProbe([...new Set(list.map((h) => h.address))]).catch(() => []);
@@ -235,6 +257,7 @@ export async function initNearby(rerender: () => void, savedHosts: () => Host[],
     .catch(() => {});
   status = await api.nearbyStatus().catch(() => status);
   if (savedDir()) await setSaveDir(savedDir(), rerender);
+  if (savedAlias()) await setAlias(savedAlias(), rerender);
   if (enabled() && !status.running) await setRunning(true, rerender);
 }
 
@@ -279,8 +302,11 @@ function transferRow(t: NearbyTransfer) {
   </div>`;
 }
 
+/** Saved hosts that are this very device (its own LAN / VPN addresses) are left out. */
+const isSelf = (h: Host) => status.own.some((a) => a.toLowerCase() === h.address.trim().toLowerCase());
+
 function hostCards() {
-  const list = hosts().filter((h) => h.nearby && h.address).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const list = hosts().filter((h) => h.nearby && h.address && !isSelf(h)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   if (!list.length) return "";
   return `<h4 class="section">Your hosts</h4><div class="grid">${list
     .map((h) => {
@@ -324,7 +350,8 @@ export function renderNearby(root: HTMLElement) {
   const list = [...transfers.values()].reverse();
   const html = `
     <div class="toolbar nb-toolbar">
-      <label class="toggle-row nb-me"><span><b>Visible as “${esc(status.alias || "this device")}”</b>
+      <label class="toggle-row nb-me"><span><b>Visible as “${esc(status.alias || "this device")}”
+        <button class="icon-btn nb-rename" data-nb="rename" title="Change the name other devices see">${icon("edit", 14)}</button></b>
         <small class="muted">${on ? (status.error ? `Receiving on port ${status.port} · no automatic discovery` : `Discoverable on the local network · port ${status.port}`) : "Off: not discoverable, cannot send or receive"}</small></span>
         <input type="checkbox" class="toggle" id="nb-on" ${on ? "checked" : ""} ${busy ? "disabled" : ""} /></label>
       <div class="grow"></div>
@@ -390,6 +417,12 @@ export function bindNearby(root: HTMLElement, rerender: () => void, active: () =
       case "pick-dir": {
         const dir = await openDialog({ directory: true, defaultPath: status.dir });
         if (typeof dir === "string") await setSaveDir(dir, rerender);
+        return;
+      }
+      case "rename": {
+        e.preventDefault();
+        const name = await promptDialog("Name on the network", "Other devices (Kermius, LocalSend) see this name", status.alias);
+        if (name !== null) await setAlias(name, rerender);
         return;
       }
       case "copy-fw":

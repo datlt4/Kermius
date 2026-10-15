@@ -663,6 +663,18 @@ async fn delete(side: &Side, rels: &[String], tree: &Tree) -> Result<(), String>
 }
 
 /// rsync attribute flags for a job.
+/// `-s` keeps remote paths with spaces intact, but old servers (macOS ships rsync 2.6.9) reject
+/// it; rsync 3.2.4+ escapes such paths by default, so it is only needed with older clients.
+fn protect_args() -> Option<String> {
+    static OLD_CLIENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let old = *OLD_CLIENT.get_or_init(|| {
+        let out = std::process::Command::new("rsync").arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let ver: Vec<u32> = out.split_whitespace().skip_while(|w| *w != "version").nth(1).unwrap_or("0").split('.').filter_map(|n| n.parse().ok()).collect();
+        (ver.first().copied().unwrap_or(0), ver.get(1).copied().unwrap_or(0), ver.get(2).copied().unwrap_or(0)) < (3, 2, 4)
+    });
+    old.then(|| "-s".to_string())
+}
+
 fn attr_flags(job: &Job) -> Vec<String> {
     let mut f = vec![if job.follow_links { "-rLt" } else { "-rlt" }.to_string()];
     if job.keep_perms {
@@ -689,7 +701,8 @@ async fn copy(from: &Side, to: &Side, rels: &[String], job: &Job, emit: &Emit) -
     }
     std::fs::write(&list, buf).map_err(e)?;
     let mut args = attr_flags(job);
-    args.extend(["-s", "--partial-dir=.rsync-partial", "--info=progress2", "--from0"].map(String::from));
+    args.extend(protect_args());
+    args.extend(["--partial-dir=.rsync-partial", "--info=progress2", "--from0"].map(String::from));
     args.push(format!("--files-from={}", list.to_string_lossy()));
     let remote = [from, to].into_iter().find_map(|s| match s {
         Side::Remote { host, .. } => Some(host.id.clone()),
@@ -830,7 +843,8 @@ async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&Strin
     }
     phase(emit, "syncing", via.map(|v| format!("via {v}")).unwrap_or_default());
     let mut args = attr_flags(job);
-    args.extend(["-s", "-i", "--stats", "--partial-dir=.rsync-partial", "--info=progress2"].map(String::from));
+    args.extend(protect_args());
+    args.extend(["-i", "--stats", "--partial-dir=.rsync-partial", "--info=progress2"].map(String::from));
     if dry_run {
         args.push("-n".into());
     }
