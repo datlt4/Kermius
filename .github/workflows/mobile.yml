@@ -101,6 +101,14 @@ jobs:
       - run: npx tauri ios init --ci 2>&1 | tee ios-init.log
       # init uses Tauri's default icons: put the Kermius ones in place.
       - run: cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+      # Nearby Share: local network permission text; received files visible in the Files app.
+      - run: |
+          for P in src-tauri/gen/apple/*_iOS/Info.plist; do
+            /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string 'Kermius connects to your servers and sends files to nearby devices (Nearby Share).'" "$P" || true
+            /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$P" || true
+            /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$P" || true
+            /usr/libexec/PlistBuddy -c "Print" "$P" | grep -E "NSLocalNetwork|UIFileSharing|LSSupportsOpening"
+          done
       # Xcode's "Build Rust Code" phase only works while `tauri ios build` runs (it needs code
       # signing), so build the Rust static lib here and turn that phase into a no-op.
       - name: Build Rust library

@@ -1138,7 +1138,7 @@ pub fn run() {
                 app.handle().plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))?;
                 app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             }
-            #[cfg(target_os = "android")]
+            #[cfg(mobile)]
             app.handle().plugin(tauri_plugin_fs::init())?;
             app.manage(nearby::Nearby::new(app.handle().clone()));
             let store = Store::open(app.path().app_data_dir()?)?;
