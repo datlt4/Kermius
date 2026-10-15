@@ -85,7 +85,7 @@ async function pasteClipboard() {
   else selection.push({ kind: "text", text });
 }
 
-let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "" };
+let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "", firewall: "" };
 const transfers = new Map<string, NearbyTransfer>();
 let busy = false;
 let hosts: () => Host[] = () => [];
@@ -331,6 +331,10 @@ export function renderNearby(root: HTMLElement) {
       <div class="nb-save">${icon("folder", 14)}<span>Received files go to</span><code title="${esc(status.dir)}">${esc(status.dir)}</code>
         ${phone ? "" : `<button class="btn ghost sm" data-nb="pick-dir">Change…</button>`}
         ${savedDir() && !phone ? `<button class="btn ghost sm" data-nb="reset-dir" title="Back to the Downloads folder">Use Downloads</button>` : ""}</div>
+      ${on && status.firewall
+        ? `<div class="nb-fw">${icon("lock", 14)}<span>The firewall on this computer blocks other devices from connecting (they may see it but cannot send). Allow the port:</span>
+            <code>${esc(status.firewall)}</code><button class="btn ghost sm" data-nb="copy-fw">${icon("copy", 13)} Copy</button></div>`
+        : ""}
       ${!on
         ? `<div class="empty">${icon("share", 40)}<h3>Nearby Share</h3>
             <p>Send files to phones and computers on the same network, and receive from them.<br/>Works with the LocalSend app (Android, iOS, Windows, macOS, Linux) and other Kermius devices.</p>
@@ -383,6 +387,8 @@ export function bindNearby(root: HTMLElement, rerender: () => void, active: () =
         if (typeof dir === "string") await setSaveDir(dir, rerender);
         return;
       }
+      case "copy-fw":
+        return api.clipboardWrite(status.firewall).then(() => toast("Command copied; run it in a terminal on this computer", "ok"));
       case "reset-dir":
         return setSaveDir("", rerender);
       case "files":
