@@ -688,3 +688,14 @@ details .field + .field { margin-top: 10px; }
 .vnc-step code { flex: 1; min-width: 0; padding: 6px 8px; font-size: 11.5px; color: var(--text); background: #171a22; border-radius: 6px; overflow-x: auto; white-space: nowrap; }
 .vnc-opts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .session.vnc:not(.live) .vnc-stats { display: none; }
+
+/* switch-style checkbox */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 0; cursor: pointer; }
+.toggle-row span { display: flex; flex-direction: column; gap: 3px; }
+.toggle-row b { font-weight: 500; }
+.toggle-row small { font-size: 12px; }
+.toggle { appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 50px !important; height: 28px; margin: 0; padding: 0 !important; border-radius: 999px; background: #3a4152; border: 0 !important; cursor: pointer; transition: background 0.2s; }
+.toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); transition: transform 0.2s var(--ease); }
+.toggle:checked { background: var(--accent); }
+.toggle:checked::after { transform: translateX(22px); }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
