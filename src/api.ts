@@ -232,7 +232,8 @@ const tauriApi = {
   sshClose: (sid: string) => invoke<void>("ssh_close", { sid }),
   vncOpen: (hostId: string, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) => invoke<string>("vnc_open", { hostId, onData, onStatus }),
   vncPassword: (hostId: string) => invoke<string>("vnc_password", { hostId }),
-  sessionWrite: (sid: string, bytes: Uint8Array) => invoke<void>("session_write", bytes, { headers: { sid } }),
+  // Plain JSON arguments: Android's IPC bridge drops raw bodies' headers.
+  sessionWrite: (sid: string, bytes: Uint8Array) => invoke<void>("session_write", { sid, data: Array.from(bytes) }),
   serialPorts: () => invoke<string[]>("serial_ports"),
   autostartGet: () => invoke<boolean>("autostart_get"),
   autostartSet: (enabled: boolean) => invoke<void>("autostart_set", { enabled }),

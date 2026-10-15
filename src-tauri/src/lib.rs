@@ -395,13 +395,10 @@ fn vnc_password(state: State<AppState>, host_id: String) -> Res<String> {
     Ok(state.host(&host_id)?.password)
 }
 
-/// Binary write (raw body) to a session; header `sid`.
+/// Binary write to a session (VNC client messages: small, so JSON is fine).
 #[tauri::command]
-fn session_write(state: State<AppState>, request: tauri::ipc::Request<'_>) -> Res<()> {
-    let sid = request.headers().get("sid").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let tauri::ipc::InvokeBody::Raw(data) = request.body() else { return Err("Expected raw bytes".into()) };
-    send_cmd(&state, &sid, ssh::Cmd::Data(data.clone()));
-    Ok(())
+fn session_write(state: State<AppState>, sid: String, data: Vec<u8>) {
+    send_cmd(&state, &sid, ssh::Cmd::Data(data));
 }
 
 #[tauri::command]

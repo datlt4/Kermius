@@ -30,6 +30,8 @@
 
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; height: 100%; overflow: hidden; }
+/* Follows the visible area, so an on-screen keyboard shrinks the app instead of covering it. */
+#app { position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); height: var(--vv-h, 100%); }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
 input, textarea { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
@@ -303,6 +305,12 @@ details .field + .field { margin-top: 10px; }
 .keybar { display: flex; gap: 6px; padding: 6px 8px calc(6px + var(--safe-bottom)); overflow-x: auto; background: var(--bg-side); border-top: 1px solid var(--border); flex: none; }
 .keybar button { min-width: 42px; height: 34px; padding: 0 10px; border-radius: 8px; background: #262b37; font-family: "JetBrains Mono", monospace; font-size: 13px; }
 .keybar button.on { background: var(--accent); color: #fff; }
+.keys { flex: none; }
+.keys .keybar + .keybar { border-top: 0; }
+.tmux-row { padding-bottom: 0 !important; }
+.tmux-row button { font-family: inherit; font-size: 12.5px; white-space: nowrap; background: #23324d; }
+.tmux-row .prefix { background: #33405a; color: var(--accent); font-family: "JetBrains Mono", monospace; }
+.keybar .tmux-btn { color: #9fc0ff; }
 
 /* ---------- popups ---------- */
 .ctx {
@@ -347,7 +355,6 @@ details .field + .field { margin-top: 10px; }
   .toolbar .btn span { display: none; }
   .content { padding: 4px 12px 24px; }
   .grid { grid-template-columns: 1fr; gap: 8px; }
-  .seg { display: none; }
   .term { padding: 4px 2px 2px 6px; }
   .tun-row { flex-wrap: wrap; }
 }

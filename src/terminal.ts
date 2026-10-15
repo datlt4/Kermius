@@ -64,6 +64,31 @@ export type SessionState = "connecting" | "connected" | "closed" | "error";
 
 const coarse = matchMedia("(pointer: coarse)").matches;
 
+/** On-screen key row for touch devices (Termius-style), with an optional tmux row. */
+const KEYS: Record<string, string> = {
+  Esc: "\x1b", Tab: "\t", "↑": "\x1b[A", "↓": "\x1b[B", "→": "\x1b[C", "←": "\x1b[D",
+  PgUp: "\x1b[5~", PgDn: "\x1b[6~", Home: "\x1b[H", End: "\x1b[F",
+};
+
+/** tmux commands: [label, keys typed after the prefix]. */
+const TMUX: [string, string][] = [
+  ["New window", "c"], ["◀ Window", "p"], ["Window ▶", "n"], ["Windows", "w"],
+  ["Split ─", '"'], ["Split │", "%"], ["Pane ←", "\x1b[D"], ["Pane ↑", "\x1b[A"], ["Pane ↓", "\x1b[B"], ["Pane →", "\x1b[C"],
+  ["Zoom", "z"], ["Scroll", "["], ["Sessions", "s"], ["Rename", ","], ["Detach", "d"], ["Kill pane", "x"],
+];
+
+const tmuxPrefix = () => (localStorage.getItem("kermius.tmuxPrefix") === "C-a" ? "C-a" : "C-b");
+
+function keybarHtml() {
+  const key = (k: string, label = k) => `<button data-k="${k}">${label}</button>`;
+  return `<div class="keys">
+    <div class="keybar tmux-row" hidden><button data-k="prefix" class="prefix" title="tmux prefix">${tmuxPrefix()}</button>${TMUX.map(
+      ([label, keys]) => `<button data-tmux="${esc(keys)}">${label}</button>`,
+    ).join("")}</div>
+    <div class="keybar">${["Esc", "Tab", "Ctrl", "Alt"].map((k) => key(k)).join("")}<button data-k="tmux" class="tmux-btn">tmux</button>${["↑", "↓", "←", "→", "PgUp", "PgDn", "Home", "End", "|", "/", "-", "~"].map((k) => key(k)).join("")}</div>
+  </div>`;
+}
+
 /** SSH and mosh (which logs in over SSH) share keys, passwords and SFTP. */
 export const isSsh = (h: Host) => !h.protocol || h.protocol === "ssh" || h.protocol === "mosh";
 
@@ -103,6 +128,7 @@ export class Session {
   private retryTimer = 0;
   private tickTimer = 0;
   private ctrl = false;
+  private alt = false;
   private resizeTimer = 0;
 
   /** `host === null` opens a local shell. */
@@ -141,7 +167,7 @@ export class Session {
         <button data-t="paste-img" title="Paste image from clipboard (saved to a temp file)">${icon("paste", 15)}</button>
         <button data-t="password" title="Type this computer's password (e.g. for sudo)">${icon("key", 15)}</button>`
     }<div class="up-prog" hidden><div class="bar"><i></i></div><span></span></div></div><div class="overlay"></div>${
-      coarse ? `<div class="keybar">${["Esc", "Tab", "Ctrl", "↑", "↓", "←", "→", "|", "/", "-", "~"].map((k) => `<button data-k="${k}">${k}</button>`).join("")}</div>` : ""
+      coarse ? keybarHtml() : ""
     }`;
     this.overlay = this.el.querySelector(".overlay")!;
   }
@@ -269,16 +295,55 @@ export class Session {
         { label: "Clear", icon: "x", action: () => t.clear() },
       ]);
     });
-    this.el.querySelector(".keybar")?.addEventListener("click", (e) => {
-      const k = (e.target as HTMLElement).dataset.k;
-      if (!k) return;
-      const map: Record<string, string> = { Esc: "\x1b", Tab: "\t", "↑": "\x1b[A", "↓": "\x1b[B", "→": "\x1b[C", "←": "\x1b[D" };
-      if (k === "Ctrl") {
-        this.ctrl = !this.ctrl;
-        (e.target as HTMLElement).classList.toggle("on", this.ctrl);
-      } else this.send(map[k] ?? k);
+    const keys = this.el.querySelector<HTMLElement>(".keys");
+    // Keep the terminal focused, so the phone keyboard does not close and reopen on every key.
+    keys?.addEventListener("pointerdown", (e) => e.preventDefault());
+    keys?.addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLElement>("button");
+      if (!b) return;
+      const k = b.dataset.k;
+      const tmux = b.dataset.tmux;
+      if (k === "Ctrl" || k === "Alt") {
+        const on = k === "Ctrl" ? (this.ctrl = !this.ctrl) : (this.alt = !this.alt);
+        b.classList.toggle("on", on);
+      } else if (k === "tmux") {
+        const row = this.el.querySelector<HTMLElement>(".tmux-row")!;
+        row.hidden = !row.hidden;
+        b.classList.toggle("on", !row.hidden);
+      } else if (k === "prefix") {
+        const next = tmuxPrefix() === "C-b" ? "C-a" : "C-b";
+        localStorage.setItem("kermius.tmuxPrefix", next);
+        b.textContent = next;
+      } else if (tmux !== undefined) this.send(`${tmuxPrefix() === "C-a" ? "\x01" : "\x02"}${tmux}`, true);
+      else if (k) this.send(KEYS[k] ?? k);
       t.focus();
     });
+    // Swipes in full-screen apps (tmux, less, vim) become wheel events: xterm turns them into mouse
+    // wheel reports when the app tracks the mouse, or into arrow keys otherwise.
+    if (coarse) {
+      let lastY = 0;
+      let acc = 0;
+      termEl.addEventListener("touchstart", (e) => ((lastY = (e as TouchEvent).touches[0].clientY), (acc = 0)), { passive: true });
+      termEl.addEventListener(
+        "touchmove",
+        (e) => {
+          const te = e as TouchEvent;
+          if (t.buffer.active.type !== "alternate" || te.touches.length !== 1) return;
+          te.preventDefault();
+          const touch = te.touches[0];
+          acc += lastY - touch.clientY;
+          lastY = touch.clientY;
+          const cellH = (t as any)._core?._renderService?.dimensions?.css?.cell?.height || 16;
+          const lines = Math.trunc(acc / cellH);
+          if (!lines) return;
+          acc -= lines * cellH;
+          t.element?.querySelector(".xterm-screen")?.dispatchEvent(
+            new WheelEvent("wheel", { deltaY: lines * cellH, deltaMode: 0, clientX: touch.clientX, clientY: touch.clientY, bubbles: true, cancelable: true }),
+          );
+        },
+        { passive: false },
+      );
+    }
     this.el.querySelector(".sess-tools")?.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest<HTMLElement>("[data-t]")?.dataset.t;
       if (a === "files") this.el.dispatchEvent(new CustomEvent("kermius-files", { bubbles: true, detail: { host: this.host } }));
@@ -318,13 +383,19 @@ export class Session {
     this.term.refresh(0, this.term.rows - 1);
   }
 
-  private send(d: string) {
+  /** `raw`: already a complete key sequence (tmux commands), so Ctrl/Alt do not apply. */
+  private send(d: string, raw = false) {
     if (!this.sid || this.state !== "connected") return;
-    if (this.ctrl && d.length === 1) {
+    if (!raw && this.ctrl && d.length === 1) {
       const c = d.toUpperCase().charCodeAt(0);
       if (c >= 64 && c <= 95) d = String.fromCharCode(c & 31);
       this.ctrl = false;
       this.el.querySelector('.keybar [data-k="Ctrl"]')?.classList.remove("on");
+    }
+    if (!raw && this.alt) {
+      d = `\x1b${d}`;
+      this.alt = false;
+      this.el.querySelector('.keybar [data-k="Alt"]')?.classList.remove("on");
     }
     api.sshWrite(this.sid, d);
   }
