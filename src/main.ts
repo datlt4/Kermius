@@ -246,8 +246,8 @@ if (window.visualViewport) {
 }
 
 const desktop = !isWeb && !/Android|iPhone|iPad/i.test(navigator.userAgent);
-/** Nearby Share: desktop and Android (iOS multicast needs an Apple entitlement). */
-const nearbyOn = desktop || (!isWeb && /Android/i.test(navigator.userAgent));
+/** Nearby Share everywhere but the web; iOS has no multicast discovery, only saved addresses. */
+const nearbyOn = !isWeb;
 els.tabs.setAttribute("data-tauri-drag-region", "");
 
 els.tabs.addEventListener("click", (e) => {

@@ -186,6 +186,12 @@ fn hostname() -> String {
 }
 
 fn download_dir() -> PathBuf {
+    // iOS: the app's Documents folder, shown in the Files app (UIFileSharingEnabled).
+    if cfg!(target_os = "ios") {
+        let dir = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Documents");
+        let _ = std::fs::create_dir_all(&dir);
+        return dir;
+    }
     // Android 11+ lets apps create files in the shared Download folder; Android 10 and older
     // need the storage permission (asked at start), else the app's own folder is used.
     if cfg!(target_os = "android") {
@@ -418,11 +424,12 @@ impl Nearby {
             Err(_) => tokio::net::TcpListener::bind(("0.0.0.0", 0)).await.map_err(|e| e.to_string())?,
         };
         *self.port.lock() = listener.local_addr().map_err(|e| e.to_string())?.port();
-        let udp = Arc::new(udp_socket().map_err(|e| format!("Discovery socket: {e}"))?);
+        // iOS blocks multicast without an Apple entitlement: then only saved addresses are reached.
+        let udp = udp_socket().map(Arc::new);
         let token = CancellationToken::new();
         *self.running.lock() = Some(token.clone());
-        *self.udp.lock() = Some(udp.clone());
-        self.error.lock().clear();
+        *self.udp.lock() = udp.as_ref().ok().cloned();
+        *self.error.lock() = udp.as_ref().err().map(|e| format!("Discovery unavailable: {e}")).unwrap_or_default();
 
         let app = Router::new()
             .route(&format!("{API}/register"), post(register))
@@ -442,29 +449,31 @@ impl Nearby {
             }
         });
 
-        let me = self.clone();
-        let stop = token.clone();
-        let sock = udp.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                let (n, from) = tokio::select! {
-                    _ = stop.cancelled() => break,
-                    r = sock.recv_from(&mut buf) => match r { Ok(r) => r, Err(_) => continue },
-                };
-                let Ok(info) = serde_json::from_slice::<Info>(&buf[..n]) else { continue };
-                if info.fingerprint == me.fingerprint {
-                    continue;
+        if let Ok(udp) = udp {
+            let me = self.clone();
+            let stop = token.clone();
+            let sock = udp.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let (n, from) = tokio::select! {
+                        _ = stop.cancelled() => break,
+                        r = sock.recv_from(&mut buf) => match r { Ok(r) => r, Err(_) => continue },
+                    };
+                    let Ok(info) = serde_json::from_slice::<Info>(&buf[..n]) else { continue };
+                    if info.fingerprint == me.fingerprint {
+                        continue;
+                    }
+                    me.add_device(from.ip(), &info);
+                    if info.announce == Some(true) {
+                        let me = me.clone();
+                        let sock = sock.clone();
+                        tauri::async_runtime::spawn(async move { me.answer(&sock, from.ip(), &info).await });
+                    }
                 }
-                me.add_device(from.ip(), &info);
-                if info.announce == Some(true) {
-                    let me = me.clone();
-                    let sock = sock.clone();
-                    tauri::async_runtime::spawn(async move { me.answer(&sock, from.ip(), &info).await });
-                }
-            }
-        });
-        self.announce_with(udp);
+            });
+            self.announce_with(udp);
+        }
         Ok(())
     }
 
@@ -728,10 +737,10 @@ impl Nearby {
 }
 
 impl Nearby {
-    /// Android file pickers return content:// URIs instead of paths.
+    /// Phone file pickers return URIs (Android content://, iOS file://) instead of paths.
     fn collect(&self, paths: &[String]) -> Result<Vec<(Source, FileMeta)>, String> {
-        #[cfg(target_os = "android")]
-        if paths.iter().any(|p| p.starts_with("content://")) {
+        #[cfg(mobile)]
+        if paths.iter().any(|p| p.starts_with("content://") || p.starts_with("file://")) {
             return paths
                 .iter()
                 .map(|uri| {
@@ -752,8 +761,8 @@ impl Nearby {
     }
 
     fn open_source(&self, path: &Path) -> std::io::Result<std::fs::File> {
-        #[cfg(target_os = "android")]
-        if let Some(uri) = path.to_str().filter(|p| p.starts_with("content://")) {
+        #[cfg(mobile)]
+        if let Some(uri) = path.to_str().filter(|p| p.starts_with("content://") || p.starts_with("file://")) {
             use tauri_plugin_fs::FsExt;
             let url = tauri::Url::parse(uri).map_err(std::io::Error::other)?;
             return self.app.fs().open(tauri_plugin_fs::FilePath::Url(url), tauri_plugin_fs::OpenOptions::new().read(true).clone());
@@ -762,8 +771,8 @@ impl Nearby {
     }
 }
 
-/// Last segment of a content:// URI, decoded ("primary:Download/a.txt" → "a.txt").
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+/// Last segment of a content:// or file:// URI, decoded ("primary:Download/a.txt" → "a.txt").
+#[cfg_attr(desktop, allow(dead_code))]
 fn uri_name(uri: &str) -> String {
     let last = uri.rsplit('/').next().unwrap_or(uri);
     let mut bytes = vec![];

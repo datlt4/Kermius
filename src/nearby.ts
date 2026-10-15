@@ -320,7 +320,7 @@ export function renderNearby(root: HTMLElement) {
   const html = `
     <div class="toolbar nb-toolbar">
       <label class="toggle-row nb-me"><span><b>Visible as “${esc(status.alias || "this device")}”</b>
-        <small class="muted">${on ? `Discoverable on the local network · port ${status.port}` : "Off: not discoverable, cannot send or receive"}</small></span>
+        <small class="muted">${on ? (status.error ? `Receiving on port ${status.port} · no automatic discovery` : `Discoverable on the local network · port ${status.port}`) : "Off: not discoverable, cannot send or receive"}</small></span>
         <input type="checkbox" class="toggle" id="nb-on" ${on ? "checked" : ""} ${busy ? "disabled" : ""} /></label>
       <div class="grow"></div>
       ${on ? `<button class="btn sm" data-nb="refresh">${icon("sync", 14)} Refresh</button>` : ""}
@@ -340,8 +340,11 @@ export function renderNearby(root: HTMLElement) {
                 <div class="avatar" style="--h:${d.deviceType === "mobile" ? 150 : 215}">${icon(devIcon(d.deviceType), 20)}</div>
                 <div class="card-body"><div class="card-title">${esc(d.alias)}</div><div class="card-sub">${esc([d.deviceModel, d.ip].filter(Boolean).join(" · "))}</div></div></div>`).join("")}</div>
               <p class="muted nb-hint">${selection.length ? "Tap a device to send the selection." : "Add something to the selection, then tap a device."}${phone ? "" : " Files dropped on a device are sent right away."}</p>`
-            : `<div class="nb-searching muted">${icon("sync", 16)} Looking for devices… Open LocalSend or Kermius on another device in this network.
-                Across a VPN, tick “Use this address for Nearby Share” on the host instead.</div>`}
+            : status.error
+              ? `<div class="nb-searching muted">${icon("share", 16)} This device cannot discover others automatically (no multicast).
+                  Turn on “Use this address for Nearby Share” on a host to send to it; devices you reach this way can send back while Kermius is open.</div>`
+              : `<div class="nb-searching muted">${icon("sync", 16)} Looking for devices… Open LocalSend or Kermius on another device in this network.
+                Across a VPN, turn on “Use this address for Nearby Share” on the host instead.</div>`}
           ${list.length ? `<h4 class="section">Transfers</h4><div class="nb-trs">${list.map(transferRow).join("")}</div>` : ""}`}
     </div>`;
   if (root.querySelector(".nb-toolbar")) morphHtml(root, html);
