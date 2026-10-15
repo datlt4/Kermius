@@ -316,10 +316,26 @@ fn walk(root: &Path, start: Vec<PathBuf>, excludes: &[String], follow: bool, rep
     Ok(tree)
 }
 
-/// GNU find streamed over SSH, so progress can be reported while the remote walks the tree.
+/// Shell command listing `starts` (paths below `path`) as `kind\tsize\tmtime\tpath\0` records:
+/// GNU find where available, else Perl (macOS / BSD find has no -printf).
+fn find_cmd(path: &str, follow: bool, starts: &str) -> String {
+    const PERL: &str = r#"use File::Find; my $l = shift; find({ no_chdir => 1, follow_fast => $l, wanted => sub { return if $_ eq "."; my @s = $l ? stat($_) : lstat($_); return unless @s; my $t = -d _ ? "d" : !$l && -l _ ? "l" : "f"; print "$t\t$s[7]\t$s[9]\t$_\0" } }, @ARGV)"#;
+    format!(
+        "cd {} && if find --version >/dev/null 2>&1; then find {}{}{} \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%p\\0'; else LC_ALL=C perl -e {} {} {}; fi",
+        sh(path),
+        if follow { "-L " } else { "" },
+        starts,
+        // The root itself is not an entry; explicit start paths are.
+        if starts == "." { " -mindepth 1" } else { "" },
+        sh(PERL),
+        follow as u8,
+        starts
+    )
+}
+
+/// The remote tree streamed over SSH, so progress can be reported while the remote walks it.
 async fn scan_remote(handle: &Handle<Client>, path: &str, excludes: &[String], follow: bool, report: &(dyn Fn(Stats) + Send + Sync)) -> Result<Tree, String> {
-    let cmd = format!("cd {} && find {}. -mindepth 1 \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%P\\0'", sh(path), if follow { "-L " } else { "" });
-    remote_find(handle, &cmd, excludes, report).await
+    remote_find(handle, &find_cmd(path, follow, "."), excludes, report).await
 }
 
 /// Run a `find -printf '%y\t%s\t%T@\t<path>\0'` command; paths may start with "./".
@@ -358,7 +374,7 @@ async fn remote_find(handle: &Handle<Client>, cmd: &str, excludes: &[String], re
         }
     }
     if code != 0 {
-        return Err(format!("remote scan failed (GNU find required): {}", String::from_utf8_lossy(&err).trim()));
+        return Err(format!("remote scan failed: {}", String::from_utf8_lossy(&err).trim()));
     }
     (progress.report)(progress.stats);
     Ok(tree)
@@ -971,12 +987,7 @@ async fn scan_paths(side: &Side, job: &Job, prefixes: &[String]) -> Result<Tree,
             for chunk in prefixes.chunks(200) {
                 let args: Vec<String> = chunk.iter().map(|p| sh(&format!("./{p}"))).collect();
                 // Missing paths make find exit non-zero; whatever exists is still listed.
-                let cmd = format!(
-                    "cd {} && find {}{} \\( -type f -o -type d -o -type l \\) -printf '%y\\t%s\\t%T@\\t%p\\0' 2>/dev/null; true",
-                    sh(path),
-                    if follow { "-L " } else { "" },
-                    args.join(" ")
-                );
+                let cmd = format!("{} 2>/dev/null; true", find_cmd(path, follow, &args.join(" ")));
                 tree.extend(remote_find(handle, &cmd, &excludes, &|_| {}).await?);
             }
             Ok(tree)
@@ -1051,6 +1062,40 @@ fn summary(p: &Plan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Perl fallback (macOS remotes) must list the same records as GNU find.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn perl_find_matches_gnu_find() {
+        let dir = std::env::temp_dir().join(format!("kermius-find-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/b/c.txt"), "hello").unwrap();
+        std::fs::write(dir.join("top.bin"), [0u8; 3]).unwrap();
+        std::os::unix::fs::symlink("top.bin", dir.join("link")).unwrap();
+        let run = |cmd: String| {
+            let out = std::process::Command::new("sh").arg("-c").arg(cmd).output().unwrap().stdout;
+            let mut recs: Vec<String> = out
+                .split(|b| *b == 0)
+                .filter(|r| !r.is_empty())
+                .map(|r| {
+                    let r = String::from_utf8_lossy(r).replace("\t./", "\t");
+                    // GNU prints fractional mtimes.
+                    let f: Vec<&str> = r.split('\t').collect();
+                    format!("{}\t{}\t{}\t{}", f[0], f[1], f[2].split('.').next().unwrap(), f[3])
+                })
+                .collect();
+            recs.sort();
+            recs
+        };
+        for (follow, starts) in [(false, "."), (true, "."), (false, "./a ./top.bin ./missing")] {
+            let gnu = find_cmd(dir.to_str().unwrap(), follow, starts) + " 2>/dev/null; true";
+            let perl = gnu.replace("find --version", "false");
+            let (g, p) = (run(gnu), run(perl));
+            assert!(!g.is_empty());
+            assert_eq!(g, p, "follow={follow} starts={starts}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn m(size: u64, mtime: i64) -> Meta {
         Meta { dir: false, size, mtime }
