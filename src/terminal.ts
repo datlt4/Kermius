@@ -85,7 +85,7 @@ function keybarHtml() {
     <div class="keybar tmux-row" hidden><button data-k="prefix" class="prefix" title="tmux prefix">${tmuxPrefix()}</button>${TMUX.map(
       ([label, keys]) => `<button data-tmux="${esc(keys)}">${label}</button>`,
     ).join("")}</div>
-    <div class="keybar">${["Esc", "Tab", "Ctrl", "Alt"].map((k) => key(k)).join("")}<button data-k="tmux" class="tmux-btn">tmux</button>${["↑", "↓", "←", "→", "PgUp", "PgDn", "Home", "End", "|", "/", "-", "~"].map((k) => key(k)).join("")}</div>
+    <div class="keybar"><button data-k="kbd" class="kbd-btn" title="Show the keyboard">${icon("keyboard", 17)}</button>${["Esc", "Tab", "Ctrl", "Alt"].map((k) => key(k)).join("")}<button data-k="tmux" class="tmux-btn">tmux</button>${["↑", "↓", "←", "→", "PgUp", "PgDn", "Home", "End", "|", "/", "-", "~"].map((k) => key(k)).join("")}</div>
   </div>`;
 }
 
@@ -196,6 +196,8 @@ export class Session {
     });
     // WebKitGTK IME commits arrive via several events and xterm sends on more than one; send each once here.
     const ta = t.textarea!;
+    // Phones: taps and swipes only scroll; the keyboard opens from the ⌨ key.
+    if (coarse) ta.inputMode = "none";
     const termEl = this.el.querySelector(".term")!;
     let composing = false;
     let lastCommit = { d: "", t: 0 };
@@ -310,6 +312,14 @@ export class Session {
         const row = this.el.querySelector<HTMLElement>(".tmux-row")!;
         row.hidden = !row.hidden;
         b.classList.toggle("on", !row.hidden);
+      } else if (k === "kbd") {
+        const show = ta.inputMode === "none";
+        ta.inputMode = show ? "text" : "none";
+        b.classList.toggle("on", show);
+        // The keyboard follows the input mode only when focus changes.
+        ta.blur();
+        if (show) t.focus();
+        return;
       } else if (k === "prefix") {
         const next = tmuxPrefix() === "C-b" ? "C-a" : "C-b";
         localStorage.setItem("kermius.tmuxPrefix", next);
@@ -318,6 +328,18 @@ export class Session {
       else if (k) this.send(KEYS[k] ?? k);
       t.focus();
     });
+    // Keyboard closed by the system (back gesture): the view grows again, go back to scroll-only.
+    if (coarse) {
+      let lastH = innerHeight;
+      addEventListener("resize", () => {
+        if (this.el.isConnected && innerHeight - lastH > 80 && ta.inputMode === "text") {
+          ta.inputMode = "none";
+          ta.blur();
+          this.el.querySelector('.keybar [data-k="kbd"]')?.classList.remove("on");
+        }
+        lastH = innerHeight;
+      });
+    }
     // Swipes in full-screen apps (tmux, less, vim) become wheel events: xterm turns them into mouse
     // wheel reports when the app tracks the mouse, or into arrow keys otherwise.
     if (coarse) {
