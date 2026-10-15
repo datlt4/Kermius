@@ -2902,7 +2902,7 @@ dependencies = [
 
 [[package]]
 name = "kermius"
-version = "1.29.0"
+version = "1.29.1"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",
