@@ -222,7 +222,7 @@ function renderTabs() {
           <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
       )
       .join("")}
-    ${isWeb ? "" : `<button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>`}
+    ${isWeb || /iPhone|iPad/i.test(navigator.userAgent) ? "" : `<button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>`}
     <div class="grow" data-tauri-drag-region></div>
     ${state.sessions.some((s) => s.id === state.active && !s.local) ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
     ${bellButton()}
@@ -395,7 +395,7 @@ function renderHosts() {
   els.page.innerHTML = `
     <div class="toolbar">
       <label class="search">${icon("search")}<input placeholder="Search hosts, IPs, users, tags…  (Ctrl+K)" value="${esc(state.query)}" spellcheck="false" autocomplete="off" /></label>
-      ${isWeb ? "" : `<button class="btn" data-act="local">${icon("terminal", 16)}<span>Terminal</span></button>`}
+      ${isWeb || /iPhone|iPad/i.test(navigator.userAgent) ? "" : `<button class="btn" data-act="local">${icon("terminal", 16)}<span>Terminal</span></button>`}
       <button class="btn primary" data-act="new">${icon("plus", 16)}<span>New Host</span></button>
       <div class="seg">
         <button class="${state.mode === "groups" ? "on" : ""}" data-mode="groups" title="Group cards">${icon("folder", 16)}</button>
