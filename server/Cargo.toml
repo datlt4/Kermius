@@ -1,6 +1,6 @@
 [package]
 name = "kermius-sync"
-version = "1.37.4"
+version = "1.37.5"
 edition = "2021"
 license = "MIT"
 

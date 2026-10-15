@@ -56,11 +56,13 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signs the updater bundles; tauri-action then publishes latest.json for in-app updates.
+          # Signs the updater bundles (.sig); the publish job builds latest.json from them.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.id }}
+          # Parallel jobs each rewriting latest.json overwrite one another's platforms.
+          uploadUpdaterJson: false
           args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${{ matrix.args }}
       - name: Windows portable zip
         if: runner.os == 'Windows'
@@ -84,6 +86,48 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
+      - name: Updater manifest (latest.json) from every platform's signature
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const release_id = ${{ needs.create-release.outputs.id }};
+            const tag = context.ref.replace("refs/tags/", "");
+            // Asset name → updater platform keys (the first key is the platform's default).
+            const rules = [
+              [/_amd64\.AppImage$/, ["linux-x86_64", "linux-x86_64-appimage"]],
+              [/_amd64\.deb$/, ["linux-x86_64-deb"]],
+              [/\.x86_64\.rpm$/, ["linux-x86_64-rpm"]],
+              [/_aarch64\.AppImage$/, ["linux-aarch64", "linux-aarch64-appimage"]],
+              [/_arm64\.deb$/, ["linux-aarch64-deb"]],
+              [/\.aarch64\.rpm$/, ["linux-aarch64-rpm"]],
+              [/_x64_en-US\.msi$/, ["windows-x86_64", "windows-x86_64-msi"]],
+              [/_x64-setup\.exe$/, ["windows-x86_64-nsis"]],
+              [/_x86_en-US\.msi$/, ["windows-i686", "windows-i686-msi"]],
+              [/_x86-setup\.exe$/, ["windows-i686-nsis"]],
+              [/_arm64-setup\.exe$/, ["windows-aarch64", "windows-aarch64-nsis"]],
+              [/_x64\.app\.tar\.gz$/, ["darwin-x86_64", "darwin-x86_64-app"]],
+              [/_aarch64\.app\.tar\.gz$/, ["darwin-aarch64", "darwin-aarch64-app"]],
+            ];
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id, per_page: 100 });
+            const platforms = {};
+            for (const a of assets) {
+              const rule = rules.find(([re]) => re.test(a.name));
+              const sig = assets.find((s) => s.name === `${a.name}.sig`);
+              if (!rule || !sig) continue;
+              const { data } = await github.rest.repos.getReleaseAsset({ owner, repo, asset_id: sig.id, headers: { accept: "application/octet-stream" } });
+              const signature = Buffer.from(data).toString("utf8");
+              for (const key of rule[1]) platforms[key] = { signature, url: `https://github.com/${owner}/${repo}/releases/download/${tag}/${a.name}` };
+            }
+            core.info(`latest.json platforms: ${Object.keys(platforms).join(", ")}`);
+            for (const old of assets.filter((a) => a.name === "latest.json")) {
+              await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
+            }
+            const manifest = { version: tag.replace(/^v/, ""), notes: "", pub_date: new Date().toISOString(), platforms };
+            await github.rest.repos.uploadReleaseAsset({
+              owner, repo, release_id, name: "latest.json", data: JSON.stringify(manifest, null, 2),
+              headers: { "content-type": "application/json" },
+            });
       - uses: actions/github-script@v7
         with:
           script: |
