@@ -6,6 +6,27 @@ import { notify } from "./notify";
 import { esc, icon, morphHtml, toast } from "./ui";
 
 const KEY = "kermius.nearby";
+/** This device's folder for received files ("" = Downloads); not synced. */
+const DIR_KEY = "kermius.nearbyDir";
+const savedDir = () => {
+  try {
+    return localStorage.getItem(DIR_KEY) ?? "";
+  } catch {
+    return "";
+  }
+};
+
+async function setSaveDir(dir: string, rerender: () => void) {
+  try {
+    status = await api.nearbySetDir(dir);
+    try {
+      dir ? localStorage.setItem(DIR_KEY, dir) : localStorage.removeItem(DIR_KEY);
+    } catch {}
+  } catch (e) {
+    toast(String(e), "err");
+  }
+  rerender();
+}
 let status: NearbyStatus = { running: false, alias: "", port: 0, dir: "", devices: [], error: "" };
 const transfers = new Map<string, NearbyTransfer>();
 let busy = false;
@@ -120,6 +141,7 @@ export async function initNearby(rerender: () => void, savedHosts: () => Host[],
     })
     .catch(() => {});
   status = await api.nearbyStatus().catch(() => status);
+  if (savedDir()) await setSaveDir(savedDir(), rerender);
   if (enabled() && !status.running) await setRunning(true, rerender);
 }
 
@@ -182,6 +204,9 @@ export function renderNearby(root: HTMLElement) {
       <button class="btn sm" data-nb="open" title="${esc(status.dir)}">${icon("folder", 14)} Received files</button>
     </div>
     <div class="content">
+      <div class="nb-save">${icon("folder", 14)}<span>Received files go to</span><code title="${esc(status.dir)}">${esc(status.dir)}</code>
+        <button class="btn ghost sm" data-nb="pick-dir">Change…</button>
+        ${savedDir() ? `<button class="btn ghost sm" data-nb="reset-dir" title="Back to the Downloads folder">Use Downloads</button>` : ""}</div>
       ${!on
         ? `<div class="empty">${icon("share", 40)}<h3>Nearby Share</h3>
             <p>Send files to phones and computers on the same network, and receive from them.<br/>Works with the LocalSend app (Android, iOS, Windows, macOS, Linux) and other Kermius devices.</p>
@@ -221,6 +246,13 @@ export function bindNearby(root: HTMLElement, rerender: () => void, active: () =
         return api.nearbyOpenFolder().catch((e) => toast(String(e), "err"));
       case "cancel":
         return api.nearbyCancel(b.dataset.id!);
+      case "pick-dir": {
+        const dir = await openDialog({ directory: true, defaultPath: status.dir });
+        if (typeof dir === "string") await setSaveDir(dir, rerender);
+        return;
+      }
+      case "reset-dir":
+        return setSaveDir("", rerender);
       case "files":
       case "folder": {
         const picked = await openDialog({ multiple: b.dataset.nb === "files", directory: b.dataset.nb === "folder" });

@@ -111,6 +111,7 @@ enum Event {
 
 struct Session {
     id: String,
+    dir: PathBuf,
     ip: IpAddr,
     files: HashMap<String, (String, FileMeta)>,
     received: usize,
@@ -126,6 +127,8 @@ pub struct Nearby {
     alias: String,
     port: Mutex<u16>,
     running: Mutex<Option<CancellationToken>>,
+    /// Where received files go; None = the Downloads folder.
+    save_dir: Mutex<Option<PathBuf>>,
     udp: Mutex<Option<Arc<tokio::net::UdpSocket>>>,
     error: Mutex<String>,
     devices: Mutex<HashMap<String, Device>>,
@@ -150,7 +153,7 @@ fn hostname() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Kermius".into())
 }
 
-pub fn download_dir() -> PathBuf {
+fn download_dir() -> PathBuf {
     dirs::download_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir)
 }
 
@@ -260,6 +263,7 @@ impl Nearby {
             alias: hostname(),
             port: Mutex::new(PORT),
             running: Mutex::new(None),
+            save_dir: Mutex::new(None),
             udp: Mutex::new(None),
             error: Mutex::new(String::new()),
             devices: Default::default(),
@@ -296,6 +300,20 @@ impl Nearby {
         let _ = self.app.emit("nearby", e);
     }
 
+    pub fn save_dir(&self) -> PathBuf {
+        self.save_dir.lock().clone().unwrap_or_else(download_dir)
+    }
+
+    /// "" = back to the Downloads folder.
+    pub fn set_save_dir(&self, dir: &str) -> Result<(), String> {
+        let dir = Some(PathBuf::from(dir)).filter(|d| !d.as_os_str().is_empty());
+        if let Some(d) = &dir {
+            std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        }
+        *self.save_dir.lock() = dir;
+        Ok(())
+    }
+
     pub fn status(&self) -> Status {
         let mut devices: Vec<Device> = self.devices.lock().values().cloned().collect();
         devices.sort_by(|a, b| a.alias.cmp(&b.alias));
@@ -303,7 +321,7 @@ impl Nearby {
             running: self.running.lock().is_some(),
             alias: self.alias.clone(),
             port: *self.port.lock(),
-            dir: download_dir().to_string_lossy().into_owned(),
+            dir: self.save_dir().to_string_lossy().into_owned(),
             devices,
             error: self.error.lock().clone(),
         }
@@ -747,11 +765,12 @@ async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketA
         done: 0,
         state: "active".into(),
         error: String::new(),
-        dir: download_dir().to_string_lossy().into_owned(),
+        dir: me.save_dir().to_string_lossy().into_owned(),
     };
     me.emit(Event::Transfer(transfer.clone()));
     let session = Session {
         id: uuid::Uuid::new_v4().to_string(),
+        dir: me.save_dir(),
         ip: addr.ip(),
         files: tokens,
         received: 0,
@@ -773,15 +792,15 @@ struct UploadQuery {
 }
 
 async fn upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Query(q): Query<UploadQuery>, body: Body) -> StatusCode {
-    let (meta, done) = {
+    let (meta, done, dir) = {
         let s = me.session.lock();
         let Some(s) = s.as_ref().filter(|s| s.id == q.session_id && s.ip == addr.ip()) else { return StatusCode::FORBIDDEN };
         match s.files.get(&q.file_id) {
-            Some((t, m)) if *t == q.token => (m.clone(), s.done.clone()),
+            Some((t, m)) if *t == q.token => (m.clone(), s.done.clone(), s.dir.clone()),
             _ => return StatusCode::FORBIDDEN,
         }
     };
-    let path = target_path(&download_dir(), &meta.file_name);
+    let path = target_path(&dir, &meta.file_name);
     let result: Result<(), String> = async {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
