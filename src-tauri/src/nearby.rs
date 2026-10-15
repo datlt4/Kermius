@@ -59,6 +59,22 @@ pub struct Device {
     pub https: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Prepared {
+    session_id: String,
+    files: HashMap<String, String>,
+}
+
+type Progress = Arc<Mutex<(Instant, Transfer)>>;
+
+/// What a sent file is read from.
+enum Source {
+    Path(PathBuf),
+    /// A text message (LocalSend shows it instead of saving a file).
+    Text(String),
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 struct FileMeta {
@@ -104,7 +120,8 @@ pub struct Transfer {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum Event {
     Devices { devices: Vec<Device> },
-    Request { id: String, alias: String, files: Vec<(String, u64)> },
+    Request { id: String, alias: String, files: Vec<(String, u64)>, count: usize, total: u64 },
+    Message { alias: String, text: String },
     RequestGone { id: String },
     Transfer(Transfer),
 }
@@ -138,6 +155,21 @@ pub struct Nearby {
 }
 
 fn hostname() -> String {
+    // Android's hostname is always "localhost": use the phone's make and model.
+    #[cfg(target_os = "android")]
+    {
+        let prop = |k: &str| {
+            std::process::Command::new("getprop").arg(k).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|v| !v.is_empty())
+        };
+        if let Some(model) = prop("ro.product.model") {
+            let make = prop("ro.product.manufacturer").unwrap_or_default();
+            if make.is_empty() || model.to_lowercase().starts_with(&make.to_lowercase()) {
+                return model;
+            }
+            let mut c = make.chars();
+            return format!("{}{} {model}", c.next().map(|f| f.to_uppercase().to_string()).unwrap_or_default(), c.as_str());
+        }
+    }
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
@@ -154,6 +186,10 @@ fn hostname() -> String {
 }
 
 fn download_dir() -> PathBuf {
+    // Android: apps may create files in the shared Download folder without a permission (Android 11+).
+    if cfg!(target_os = "android") {
+        return PathBuf::from("/storage/emulated/0/Download");
+    }
     dirs::download_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir)
 }
 
@@ -376,7 +412,8 @@ impl Nearby {
         let app = Router::new()
             .route(&format!("{API}/register"), post(register))
             .route(&format!("{API}/info"), get(info))
-            .route(&format!("{API}/prepare-upload"), post(prepare_upload))
+            // The file list of a big folder is far over the 2 MB default.
+            .route(&format!("{API}/prepare-upload"), post(prepare_upload).layer(axum::extract::DefaultBodyLimit::max(512 << 20)))
             .route(&format!("{API}/upload"), post(upload))
             .route(&format!("{API}/cancel"), post(cancel))
             .with_state(self.clone());
@@ -529,9 +566,14 @@ impl Nearby {
         }
     }
 
-    pub fn send(self: &Arc<Self>, fingerprint: &str, paths: Vec<String>) -> Result<String, String> {
+    pub fn send(self: &Arc<Self>, fingerprint: &str, paths: Vec<String>, texts: Vec<String>) -> Result<String, String> {
         let dev = self.devices.lock().get(fingerprint).cloned().ok_or("Device is gone; refresh the list")?;
-        let files = collect_files(&paths)?;
+        let mut files = self.collect(&paths)?;
+        for text in texts.into_iter().filter(|t| !t.is_empty()) {
+            let id = uuid::Uuid::new_v4().to_string();
+            let meta = FileMeta { file_name: format!("{id}.txt"), id, size: text.len() as u64, file_type: "text/plain".into(), sha256: None, preview: Some(text.clone()) };
+            files.push((Source::Text(text), meta));
+        }
         if files.is_empty() {
             return Err("Nothing to send".into());
         }
@@ -579,7 +621,7 @@ impl Nearby {
         Ok(id)
     }
 
-    async fn send_files(&self, dev: &Device, files: &[(PathBuf, FileMeta)], t: &mut Transfer, session: Arc<Mutex<Option<String>>>) -> Result<String, String> {
+    async fn send_files(&self, dev: &Device, files: &[(Source, FileMeta)], t: &mut Transfer, session: Arc<Mutex<Option<String>>>) -> Result<String, String> {
         let base = base_url(dev);
         let body = serde_json::json!({
             "info": self.info(None),
@@ -602,53 +644,57 @@ impl Nearby {
             401 => return Err("The device requires a PIN (not supported yet)".into()),
             s => return Err(format!("The device answered HTTP {s}")),
         }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Prepared {
-            session_id: String,
-            files: HashMap<String, String>,
-        }
         let p: Prepared = serde_json::from_str(&r.text().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         *session.lock() = Some(p.session_id.clone());
         t.state = "active".into();
         self.emit(Event::Transfer(t.clone()));
         let done = Arc::new(AtomicU64::new(0));
-        for (path, meta) in files {
-            let Some(token) = p.files.get(&meta.id) else {
-                // Receiver already has this file.
-                done.fetch_add(meta.size, Ordering::Relaxed);
-                continue;
-            };
-            let file = tokio::fs::File::open(path).await.map_err(|e| format!("{}: {e}", path.display()))?;
-            let counter = done.clone();
-            let progress = Arc::new(Mutex::new((Instant::now(), t.clone())));
-            let app = self.app.clone();
-            let stream = tokio_util::io::ReaderStream::with_capacity(file, 256 * 1024).inspect(move |chunk| {
-                if let Ok(c) = chunk {
-                    let now = counter.fetch_add(c.len() as u64, Ordering::Relaxed) + c.len() as u64;
-                    let mut p = progress.lock();
-                    if p.0.elapsed() > Duration::from_millis(200) {
-                        p.0 = Instant::now();
-                        p.1.done = now;
-                        let _ = app.emit("nearby", Event::Transfer(p.1.clone()));
-                    }
-                }
-            });
-            let url = format!("{base}/upload?sessionId={}&fileId={}&token={}", p.session_id, meta.id, token);
-            let r = self.client
-            .clone()
-                .post(url)
-                .header("content-length", meta.size)
-                .body(reqwest::Body::wrap_stream(stream))
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            if !r.status().is_success() {
-                return Err(format!("{}: HTTP {}", meta.file_name, r.status().as_u16()));
-            }
+        // Shared by the parallel uploads: progress is emitted at most every 200 ms.
+        let progress = Arc::new(Mutex::new((Instant::now(), t.clone())));
+        // A few files at once: many small files are otherwise bound by request latency.
+        let mut uploads = futures_util::stream::iter(0..files.len())
+            .map(|i| self.upload_one(&base, &p, &files[i].0, &files[i].1, &done, &progress))
+            .buffer_unordered(4);
+        while let Some(r) = uploads.next().await {
+            r?;
         }
         t.done = t.total;
         Ok("done".into())
+    }
+
+    async fn upload_one(&self, base: &str, p: &Prepared, src: &Source, meta: &FileMeta, done: &Arc<AtomicU64>, progress: &Progress) -> Result<(), String> {
+        let Some(token) = p.files.get(&meta.id) else {
+            // Receiver already has this file.
+            done.fetch_add(meta.size, Ordering::Relaxed);
+            return Ok(());
+        };
+        let url = format!("{base}/upload?sessionId={}&fileId={}&token={}", p.session_id, meta.id, token);
+        let body = match src {
+            Source::Text(text) => reqwest::Body::from(text.clone()),
+            Source::Path(path) => {
+                let file = tokio::fs::File::from_std(self.open_source(path).map_err(|e| format!("{}: {e}", meta.file_name))?);
+                let (app, counter, progress) = (self.app.clone(), done.clone(), progress.clone());
+                reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(file, 256 * 1024).inspect(move |chunk| {
+                    if let Ok(c) = chunk {
+                        let now = counter.fetch_add(c.len() as u64, Ordering::Relaxed) + c.len() as u64;
+                        let mut p = progress.lock();
+                        if p.0.elapsed() > Duration::from_millis(200) {
+                            p.0 = Instant::now();
+                            p.1.done = now;
+                            let _ = app.emit("nearby", Event::Transfer(p.1.clone()));
+                        }
+                    }
+                }))
+            }
+        };
+        let r = self.client.post(url).header("content-length", meta.size).body(body).send().await.map_err(|e| err_chain(&e))?;
+        if !r.status().is_success() {
+            return Err(format!("{}: HTTP {}", meta.file_name, r.status().as_u16()));
+        }
+        if matches!(src, Source::Text(_)) {
+            done.fetch_add(meta.size, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     pub fn cancel(&self, id: &str) {
@@ -664,18 +710,74 @@ impl Nearby {
     }
 }
 
+impl Nearby {
+    /// Android file pickers return content:// URIs instead of paths.
+    fn collect(&self, paths: &[String]) -> Result<Vec<(Source, FileMeta)>, String> {
+        #[cfg(target_os = "android")]
+        if paths.iter().any(|p| p.starts_with("content://")) {
+            return paths
+                .iter()
+                .map(|uri| {
+                    use std::os::fd::AsRawFd;
+                    let f = self.open_source(Path::new(uri)).map_err(|e| format!("{uri}: {e}"))?;
+                    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+                    // The descriptor of a picked file usually links to its real path, which has the name.
+                    let name = std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd()))
+                        .ok()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .unwrap_or_else(|| uri_name(uri));
+                    let meta = FileMeta { id: uuid::Uuid::new_v4().to_string(), file_type: mime(Path::new(&name)).into(), file_name: name, size, sha256: None, preview: None };
+                    Ok((Source::Path(PathBuf::from(uri)), meta))
+                })
+                .collect();
+        }
+        collect_files(paths)
+    }
+
+    fn open_source(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        #[cfg(target_os = "android")]
+        if let Some(uri) = path.to_str().filter(|p| p.starts_with("content://")) {
+            use tauri_plugin_fs::FsExt;
+            let url = tauri::Url::parse(uri).map_err(std::io::Error::other)?;
+            return self.app.fs().open(tauri_plugin_fs::FilePath::Url(url), tauri_plugin_fs::OpenOptions::new().read(true).clone());
+        }
+        std::fs::File::open(path)
+    }
+}
+
+/// Last segment of a content:// URI, decoded ("primary:Download/a.txt" → "a.txt").
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn uri_name(uri: &str) -> String {
+    let last = uri.rsplit('/').next().unwrap_or(uri);
+    let mut bytes = vec![];
+    let mut it = last.bytes();
+    while let Some(b) = it.next() {
+        if b == b'%' {
+            let hex: String = it.by_ref().take(2).map(char::from).collect();
+            bytes.push(u8::from_str_radix(&hex, 16).unwrap_or(b'?'));
+        } else {
+            bytes.push(b);
+        }
+    }
+    let s = String::from_utf8_lossy(&bytes).into_owned();
+    s.rsplit(['/', ':']).next().filter(|n| !n.is_empty()).unwrap_or("file").to_string()
+}
+
 /// Files to send; a folder is sent with its relative paths ("dir/sub/file").
-fn collect_files(paths: &[String]) -> Result<Vec<(PathBuf, FileMeta)>, String> {
-    fn walk(path: &Path, rel: String, out: &mut Vec<(PathBuf, FileMeta)>) -> std::io::Result<()> {
+fn collect_files(paths: &[String]) -> Result<Vec<(Source, FileMeta)>, String> {
+    fn walk(path: &Path, rel: String, out: &mut Vec<(Source, FileMeta)>) -> std::io::Result<()> {
         let md = std::fs::metadata(path)?;
         if md.is_dir() {
-            for e in std::fs::read_dir(path)? {
-                let e = e?;
-                walk(&e.path(), format!("{rel}/{}", e.file_name().to_string_lossy()), out)?;
+            for e in std::fs::read_dir(path)?.flatten() {
+                // Symlinked folders can loop (e.g. ~/Templates → .); unreadable entries are skipped.
+                if e.file_type().is_ok_and(|t| t.is_symlink()) && e.path().is_dir() {
+                    continue;
+                }
+                let _ = walk(&e.path(), format!("{rel}/{}", e.file_name().to_string_lossy()), out);
             }
         } else if md.is_file() {
             out.push((
-                path.to_path_buf(),
+                Source::Path(path.to_path_buf()),
                 FileMeta { id: uuid::Uuid::new_v4().to_string(), file_name: rel, size: md.len(), file_type: mime(path).into(), sha256: None, preview: None },
             ));
         }
@@ -735,6 +837,13 @@ async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketA
     if req.files.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    // Text messages carry their content in the preview: show it, nothing to download.
+    if req.files.values().all(|f| f.file_type.starts_with("text/") && f.preview.is_some()) {
+        me.add_device(addr.ip(), &req.info);
+        let text = req.files.values().filter_map(|f| f.preview.clone()).collect::<Vec<_>>().join("\n\n");
+        me.emit(Event::Message { alias: req.info.alias.clone(), text });
+        return Err(StatusCode::NO_CONTENT);
+    }
     if me.session.lock().is_some() {
         return Err(StatusCode::CONFLICT);
     }
@@ -742,9 +851,11 @@ async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketA
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
     me.pending.lock().insert(id.clone(), tx);
-    let mut files: Vec<(String, u64)> = req.files.values().map(|f| (f.file_name.clone(), f.size)).collect();
+    // Only the first names: a folder can hold millions of files.
+    let mut files: Vec<(String, u64)> = req.files.values().take(50).map(|f| (f.file_name.clone(), f.size)).collect();
     files.sort();
-    me.emit(Event::Request { id: id.clone(), alias: req.info.alias.clone(), files });
+    let (count, total) = (req.files.len(), req.files.values().map(|f| f.size).sum());
+    me.emit(Event::Request { id: id.clone(), alias: req.info.alias.clone(), files, count, total });
     let accepted = tokio::time::timeout(Duration::from_secs(120), rx).await;
     me.pending.lock().remove(&id);
     if !matches!(accepted, Ok(Ok(true))) {
@@ -877,6 +988,12 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "").unwrap();
         assert_eq!(target_path(&dir, "a.txt"), dir.join("a (1).txt"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn content_uri_names() {
+        assert_eq!(uri_name("content://com.android.providers.downloads.documents/document/raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fa%20b.pdf"), "a b.pdf");
+        assert_eq!(uri_name("content://com.android.externalstorage.documents/document/primary%3ADownload%2Fx.txt"), "x.txt");
     }
 
     #[test]

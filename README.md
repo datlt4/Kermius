@@ -96,9 +96,13 @@ Watching only runs while Kermius is open. On Linux, very large trees may hit the
 
 ![Nearby Share](docs/nearby-share.png)
 
-Send and receive files on the local network (desktop). It speaks the [LocalSend](https://localsend.org) v2 protocol, so it works with the LocalSend apps on phones and computers as well as other Kermius devices. Incoming files need your approval and go to the Downloads folder, or a folder you pick on the Nearby Share page (per device).
+Send and receive files, folders, text and the clipboard on the local network (desktop and Android). It speaks the [LocalSend](https://localsend.org) v2 protocol, so it works with the LocalSend apps on phones and computers as well as other Kermius devices.
 
-Devices find each other by UDP multicast, which does not cross VPNs or routers. For those, tick **Use this address for Nearby Share** on a host: it appears under *Your hosts* and is reached directly at its address (greyed out while Kermius / LocalSend is not running there). The setting syncs with your hosts.
+- Build a selection (File, Folder, Text, Paste, or drop files on the page), then tap a device to send it. With *Clear after sending* off, the same selection can go to several devices.
+- Incoming files need your approval and go to the Downloads folder, or a folder you pick (per device). Text arrives as a message you can copy.
+- Transfers show progress and speed; up to 4 files are uploaded at once.
+
+Devices find each other by UDP multicast, which does not cross VPNs or routers. For those, turn on **Use this address for Nearby Share** on a host: it appears under *Your hosts* and is reached directly at its address (greyed out while Kermius / LocalSend is not running there). The setting syncs with your hosts.
 
 ## Keyboard shortcuts
 

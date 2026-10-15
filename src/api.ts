@@ -32,8 +32,10 @@ export interface Host {
   baud: number;
   viewOnly?: boolean;
   noClipboard?: boolean;
-  /** SSH: id of the host to hop through. */
+  /** SSH: id of the host to hop through (older single-hop setting). */
   jumpHostId?: string;
+  /** SSH: jump hosts in connection order, first hop first. */
+  jumpChain?: string[];
   /** SSH: socks5://[user:pass@]host:port or http://… */
   proxy?: string;
   agentForward?: boolean;
@@ -82,7 +84,9 @@ export interface NearbyTransfer {
 
 export type NearbyEvent =
   | { kind: "devices"; devices: NearbyDevice[] }
-  | { kind: "request"; id: string; alias: string; files: [string, number][] }
+  /** `files`: the first 50 names; `count`/`total`: all of them. */
+  | { kind: "request"; id: string; alias: string; files: [string, number][]; count: number; total: number }
+  | { kind: "message"; alias: string; text: string }
   | { kind: "requestGone"; id: string }
   | ({ kind: "transfer" } & NearbyTransfer);
 
@@ -271,7 +275,7 @@ const tauriApi = {
   nearbyStop: () => invoke<void>("nearby_stop"),
   nearbyRefresh: () => invoke<void>("nearby_refresh"),
   nearbyProbe: (addresses: string[]) => invoke<NearbyDevice[]>("nearby_probe", { addresses }),
-  nearbySend: (fingerprint: string, paths: string[]) => invoke<string>("nearby_send", { fingerprint, paths }),
+  nearbySend: (fingerprint: string, paths: string[], texts: string[]) => invoke<string>("nearby_send", { fingerprint, paths, texts }),
   nearbyRespond: (id: string, accept: boolean) => invoke<void>("nearby_respond", { id, accept }),
   nearbyCancel: (id: string) => invoke<void>("nearby_cancel", { id }),
   nearbyOpenFolder: () => invoke<void>("nearby_open_folder"),

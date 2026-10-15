@@ -34,6 +34,8 @@ pub struct Host {
     /// Serial only; 0 = 115200.
     pub baud: u32,
     /// SSH: reach the host through this other vault host (a bastion / jump host).
+    /// Jump hosts in connection order (first hop first); replaces `jump_host_id` when set.
+    pub jump_chain: Vec<String>,
     pub jump_host_id: String,
     /// SSH: `socks5://[user:pass@]host:port` or `http://[user:pass@]host:port`.
     pub proxy: String,

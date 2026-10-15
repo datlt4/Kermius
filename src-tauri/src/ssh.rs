@@ -113,13 +113,24 @@ async fn connect_inner(store: Arc<Store>, host: &Host, log: Logger, depth: u32) 
     log(format!("Starting a new connection to \"{}\" port {}", host.address, host.port));
     let mut handler = Client { store: store.clone(), known_id: known_id(host), mismatch: None, log: log.clone(), _jump: None };
     let connecting = async {
-        if !host.jump_host_id.is_empty() {
-            if depth >= 3 {
+        // The last hop of the chain is reached through the hops before it.
+        let chain = if host.jump_chain.is_empty() {
+            Some(host.jump_host_id.clone()).filter(|j| !j.is_empty()).into_iter().collect()
+        } else {
+            host.jump_chain.clone()
+        };
+        if let Some((last, rest)) = chain.split_last() {
+            if depth >= 8 {
                 return Err("Too many nested jump hosts".to_string());
             }
             let jump = {
                 let st = store.state.lock();
-                let h = st.vault.hosts.iter().find(|h| h.id == host.jump_host_id && !h.deleted).cloned().ok_or("The jump host no longer exists")?;
+                let mut h = st.vault.hosts.iter().find(|h| h.id == *last && !h.deleted).cloned().ok_or("A jump host no longer exists")?;
+                // An explicit chain decides the whole route, not the hops' own jump settings.
+                if !host.jump_chain.is_empty() {
+                    h.jump_chain = rest.to_vec();
+                    h.jump_host_id.clear();
+                }
                 st.vault.resolve(h)
             };
             log(format!("Connecting through jump host \"{}\"", jump.name));

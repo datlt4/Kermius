@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "1.33.0"
+version = "1.34.0"
 edition = "2021"
 license = "MIT"
 
@@ -52,6 +52,10 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 portable-pty = "0.9"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Opens the content:// URIs returned by the file picker (Nearby Share).
+tauri-plugin-fs = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
