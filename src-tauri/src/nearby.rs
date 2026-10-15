@@ -98,6 +98,8 @@ pub struct Status {
     pub dir: String,
     pub devices: Vec<Device>,
     pub error: String,
+    /// Command opening the port when a firewall here may block other devices ("" = none found).
+    pub firewall: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -144,6 +146,7 @@ pub struct Nearby {
     alias: String,
     port: Mutex<u16>,
     running: Mutex<Option<CancellationToken>>,
+    firewall: Mutex<String>,
     /// Where received files go; None = the Downloads folder.
     save_dir: Mutex<Option<PathBuf>>,
     udp: Mutex<Option<Arc<tokio::net::UdpSocket>>>,
@@ -182,7 +185,29 @@ fn hostname() -> String {
             }
         }
     }
+    // iOS also reports "localhost".
+    if cfg!(target_os = "ios") {
+        return "iPhone".into();
+    }
     std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Kermius".into())
+}
+
+/// Linux firewalls (ufw, firewalld) drop incoming connections unless the port is opened;
+/// discovery still works outward, so the other side sees us but cannot connect.
+fn firewall_hint(port: u16) -> String {
+    let active = |unit: &str| {
+        std::process::Command::new("systemctl").args(["is-active", "--quiet", unit]).status().is_ok_and(|s| s.success())
+    };
+    if !cfg!(target_os = "linux") {
+        String::new()
+    } else if std::fs::read_to_string("/etc/ufw/ufw.conf").is_ok_and(|c| c.lines().any(|l| l.trim() == "ENABLED=yes")) {
+        // Not `systemctl is-active ufw`: that unit stays "active" while ufw is disabled.
+        format!("sudo ufw allow {port} comment 'Kermius Nearby Share'")
+    } else if active("firewalld") {
+        format!("sudo firewall-cmd --permanent --add-port={port}/tcp --add-port={port}/udp && sudo firewall-cmd --reload")
+    } else {
+        String::new()
+    }
 }
 
 fn download_dir() -> PathBuf {
@@ -320,6 +345,7 @@ impl Nearby {
             alias: hostname(),
             port: Mutex::new(PORT),
             running: Mutex::new(None),
+            firewall: Mutex::new(String::new()),
             save_dir: Mutex::new(None),
             udp: Mutex::new(None),
             error: Mutex::new(String::new()),
@@ -381,6 +407,7 @@ impl Nearby {
             dir: self.save_dir().to_string_lossy().into_owned(),
             devices,
             error: self.error.lock().clone(),
+            firewall: self.firewall.lock().clone(),
         }
     }
 
@@ -424,6 +451,7 @@ impl Nearby {
             Err(_) => tokio::net::TcpListener::bind(("0.0.0.0", 0)).await.map_err(|e| e.to_string())?,
         };
         *self.port.lock() = listener.local_addr().map_err(|e| e.to_string())?.port();
+        *self.firewall.lock() = firewall_hint(*self.port.lock());
         // iOS blocks multicast without an Apple entitlement: then only saved addresses are reached.
         let udp = udp_socket().map(Arc::new);
         let token = CancellationToken::new();
