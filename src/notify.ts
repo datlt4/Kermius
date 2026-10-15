@@ -1,5 +1,30 @@
 // Notification center: background events land here instead of toasts. Repeats are merged.
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { isWeb } from "./api";
 import { esc, icon } from "./ui";
+
+let osAllowed: Promise<boolean> | null = null;
+
+/** Ask once (Android 13+ / macOS prompt); call early so the prompt is not missed in the background. */
+export function initOsNotifications() {
+  if (isWeb) return;
+  osAllowed ??= isPermissionGranted()
+    .then((ok) => ok || requestPermission().then((p) => p === "granted"))
+    .catch(() => false);
+}
+
+const lastOs = new Map<string, number>();
+
+/** System notification, only while Kermius is not in front (the bell has it otherwise);
+ *  a repeating note (e.g. "offline") at most once a minute. */
+function osNotify(title: string, body: string) {
+  if (isWeb || (document.visibilityState === "visible" && document.hasFocus())) return;
+  const key = `${title}\n${body}`;
+  if (Date.now() - (lastOs.get(key) ?? 0) < 60_000) return;
+  lastOs.set(key, Date.now());
+  initOsNotifications();
+  osAllowed!.then((ok) => ok && sendNotification({ title, body })).catch(() => {});
+}
 
 export type Kind = "error" | "warn" | "info" | "ok";
 
@@ -45,8 +70,10 @@ export function notify(kind: Kind, source: string, message: string, view?: strin
     same.read = false;
     same.detail = rest.join("\n");
     notes = [same, ...notes.filter((n) => n !== same)];
+    osNotify(source, text);
   } else {
     notes.unshift({ id: crypto.randomUUID(), kind, source, text, detail: rest.join("\n"), time: Date.now(), count: 1, read: false, view });
+    osNotify(source, text);
   }
   save();
 }
