@@ -273,27 +273,30 @@ fn keychain_key(vault: &mut Vault, path: &str) -> String {
     id
 }
 
-/// Add or update vault hosts from ssh config entries. Existing hosts (same name, address, port and user)
-/// keep their password, tags and notes. A readable IdentityFile goes into the keychain (synced, shared by
-/// the hosts using it) and the host links to it.
+/// Add the hosts of ssh config entries. A host already in the vault (same address, port and user,
+/// whatever its name, e.g. "web 01" exported as "web-01") is skipped, except that one without any
+/// credentials gets the entry's key. Several aliases of one machine give one host.
+/// IdentityFile keys go into the keychain (synced, shared by the hosts using them).
 pub fn import(vault: &mut Vault, entries: Vec<Entry>) -> crate::termix::ImportReport {
-    let mut report = crate::termix::ImportReport { added: 0, updated: 0 };
+    let mut report = crate::termix::ImportReport { added: 0, updated: 0, skipped: 0 };
     for en in entries {
-        let key_id = if en.identity.is_empty() { String::new() } else { keychain_key(vault, &en.identity) };
-        let existing = vault.hosts.iter_mut().find(|h| !h.deleted && h.name == en.alias && h.address == en.hostname && h.port == en.port && h.username == en.user);
-        match existing {
-            Some(h) => {
-                if !key_id.is_empty() {
+        let found = vault.hosts.iter().position(|h| !h.deleted && h.address == en.hostname && h.port == en.port && h.username == en.user);
+        match found {
+            Some(i) => {
+                let h = &vault.hosts[i];
+                let bare = h.password.is_empty() && h.private_key.trim().is_empty() && h.key_id.is_empty() && h.identity_id.is_empty();
+                let key_id = if bare && !en.identity.is_empty() { keychain_key(vault, &en.identity) } else { String::new() };
+                if key_id.is_empty() {
+                    report.skipped += 1;
+                } else {
+                    let h = &mut vault.hosts[i];
                     h.key_id = key_id;
-                    h.private_key.clear();
+                    h.updated_at = now_ms();
+                    report.updated += 1;
                 }
-                if !en.folder.is_empty() {
-                    h.folder = en.folder;
-                }
-                h.updated_at = now_ms();
-                report.updated += 1;
             }
             None => {
+                let key_id = if en.identity.is_empty() { String::new() } else { keychain_key(vault, &en.identity) };
                 vault.hosts.push(Host {
                     id: uuid::Uuid::new_v4().to_string(),
                     name: en.alias,
@@ -363,26 +366,35 @@ mod tests {
         std::fs::write(ssh.join("conf.d/extra.conf"), "Host pi\n  HostName 10.0.0.5\n").unwrap();
         std::fs::write(
             ssh.join("config"),
-            "Include conf.d/*.conf\nHost *\n  User koi\n  IdentityFile ~/.ssh/id_test\n\n# ===== Lab =====\nHost orin2 orin2-alias\n  HostName=100.96.1.66\n  Port 2222\n  User aiserver\nHost *.lan\n  User nobody\nHost bare\n",
+            "Include conf.d/*.conf\nHost *\n  User koi\n  IdentityFile ~/.ssh/id_test\n\n# ===== Lab =====\nHost orin2 orin2-alias\n  HostName=100.96.1.66\n  Port 2222\n  User aiserver\nHost *.lan\n  User nobody\nHost bare\nHost orin2-wg\n  HostName 100.96.1.66\n  Port 2222\n  User aiserver\n",
         )
         .unwrap();
         let e = parse(&ssh.join("config"), &home);
         let key = ssh.join("id_test").to_string_lossy().into_owned();
-        assert_eq!(e.len(), 3, "{e:?}");
+        assert_eq!(e.len(), 4, "{e:?}");
         assert_eq!(e[0], Entry { alias: "pi".into(), hostname: "10.0.0.5".into(), port: 22, user: "koi".into(), identity: key.clone(), folder: "".into() });
         assert_eq!(e[1], Entry { alias: "orin2".into(), hostname: "100.96.1.66".into(), port: 2222, user: "aiserver".into(), identity: key.clone(), folder: "Lab".into() });
         assert_eq!((e[2].alias.as_str(), e[2].hostname.as_str(), e[2].user.as_str()), ("bare", "bare", "koi"));
 
+        // "pi" is already there under another name and without credentials: it only gets the key.
         let mut vault = Vault::default();
-        assert_eq!(import(&mut vault, parse(&ssh.join("config"), &home)).added, 3);
-        vault.hosts[1].password = "keep".into();
+        vault.hosts.push(Host { id: "old".into(), name: "Raspberry Pi".into(), address: "10.0.0.5".into(), port: 22, username: "koi".into(), ..Default::default() });
         let r = import(&mut vault, parse(&ssh.join("config"), &home));
-        assert_eq!((r.added, r.updated, vault.hosts[1].password.as_str()), (0, 3, "keep"));
+        // orin2-wg is another alias of orin2: one host.
+        assert_eq!((r.added, r.updated, r.skipped), (2, 1, 1));
+        assert_eq!(vault.hosts.len(), 3);
+        assert_eq!(vault.hosts[0].name, "Raspberry Pi");
+        // Everything there already: nothing changes.
+        let before = vault.hosts.clone();
+        let r = import(&mut vault, parse(&ssh.join("config"), &home));
+        assert_eq!((r.added, r.updated, r.skipped), (0, 0, 4));
+        assert_eq!(vault.hosts, before);
         // One keychain entry shared by every host using the file, also after re-importing.
         assert_eq!(vault.keys.len(), 1);
         assert_eq!((vault.keys[0].label.as_str(), vault.keys[0].public_key.as_str()), ("id_test", "ssh-ed25519 AAAA test"));
         assert!(vault.hosts.iter().all(|h| h.key_id == vault.keys[0].id && h.private_key.is_empty()));
-        assert_eq!(vault.hosts[0].folder, "SSH config");
+        // Hosts after a "# ===== Lab =====" line belong to that group.
+        assert_eq!((vault.hosts[1].folder.as_str(), vault.hosts[2].folder.as_str()), ("Lab", "Lab"));
         std::fs::remove_dir_all(home).unwrap();
     }
 }
