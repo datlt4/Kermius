@@ -7,6 +7,8 @@ use serde_json::Value;
 pub struct ImportReport {
     pub added: usize,
     pub updated: usize,
+    /// Hosts already in the vault, left as they are.
+    pub skipped: usize,
 }
 
 /// Import a Termix host export (`{"hosts": [...]}`). Re-importing updates
@@ -16,7 +18,7 @@ pub fn import(vault: &mut Vault, json: &str) -> Result<ImportReport> {
     let Some(list) = root.get("hosts").and_then(Value::as_array).or(root.as_array()) else {
         bail!("not a Termix host export (missing \"hosts\" array)");
     };
-    let mut report = ImportReport { added: 0, updated: 0 };
+    let mut report = ImportReport { added: 0, updated: 0, skipped: 0 };
     for h in list {
         let s = |k: &str| h.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let tunnels = h

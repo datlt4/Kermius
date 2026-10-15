@@ -953,7 +953,7 @@ els.page.addEventListener("click", async (e) => {
   } else if (a === "ssh-import") {
     try {
       const r = await api.sshConfigImport();
-      toast(`Imported from ~/.ssh/config: ${r.added} added, ${r.updated} updated`, "ok");
+      toast(`~/.ssh/config: ${r.added} added, ${r.skipped} already in Kermius (skipped)${r.updated ? `, ${r.updated} got a key` : ""}`, "ok");
       await reload();
       scheduleSync();
     } catch (err) {
