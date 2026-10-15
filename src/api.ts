@@ -40,6 +40,8 @@ export interface Host {
   /** SSH: NAME=value per line. */
   env?: string;
   startupSnippetId?: string;
+  /** Position within its group (drag & drop); ties sort by name. */
+  order?: number;
   updatedAt: number;
   deleted: boolean;
 }

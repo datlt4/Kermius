@@ -734,3 +734,11 @@ details .field + .field { margin-top: 10px; }
 .nb-req-files { max-height: 240px; overflow: auto; margin: 10px 0 16px; font-size: 13px; }
 .nb-req-files div { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
 .nb-req-files span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drag-ghost { position: fixed; z-index: 1000; pointer-events: none; opacity: 0.9; transform: rotate(1.5deg); box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.8); }
+.card.dragging { opacity: 0.35; }
+.card.drop-before { box-shadow: -3px 0 0 var(--accent); }
+.card.drop-after { box-shadow: 3px 0 0 var(--accent); }
+.grid.list .card.drop-before { box-shadow: 0 -3px 0 var(--accent); }
+.grid.list .card.drop-after { box-shadow: 0 3px 0 var(--accent); }
+.drop-into { outline: 2px dashed var(--accent); outline-offset: 3px; border-radius: var(--radius); }
+.no-select, .no-select * { user-select: none !important; -webkit-user-select: none !important; cursor: grabbing !important; }
