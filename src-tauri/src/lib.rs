@@ -235,6 +235,20 @@ fn ssh_config_preview(state: State<AppState>, host_ids: Vec<String>, with_keys: 
     sshconfig::render(&state.store.state.lock().vault, &host_ids, with_keys, with_passwords).config
 }
 
+/// Import hosts from `~/.ssh/config` (with its Includes).
+#[tauri::command]
+fn ssh_config_import(state: State<AppState>) -> Res<termix::ImportReport> {
+    let home = dirs::home_dir().ok_or("No home folder")?;
+    let file = home.join(".ssh").join("config");
+    if !file.exists() {
+        return Err(format!("{} not found", file.display()));
+    }
+    let entries = sshconfig::parse(&file, &home);
+    let report = sshconfig::import(&mut state.store.state.lock().vault, entries);
+    state.store.save().map_err(e)?;
+    Ok(report)
+}
+
 /// Write the hosts into `~/.ssh/config` (Kermius block) and their keys into `~/.ssh/kermius/`.
 #[tauri::command]
 fn ssh_config_export(state: State<AppState>, host_ids: Vec<String>, with_keys: bool, with_passwords: bool) -> Res<String> {
@@ -1038,6 +1052,7 @@ pub fn run() {
             import_termix,
             ssh_config_preview,
             ssh_config_export,
+            ssh_config_import,
             list_snippets,
             save_snippet,
             delete_snippet,

@@ -1,5 +1,6 @@
-//! Export hosts to OpenSSH's `~/.ssh/config`, inside a marked block that re-exports replace.
-use crate::model::Vault;
+//! Export hosts to OpenSSH's `~/.ssh/config`, inside a marked block that re-exports replace;
+//! import hosts from it.
+use crate::model::{now_ms, Host, Key, Vault};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -114,6 +115,203 @@ pub fn write(ssh_dir: &Path, ex: &Export) -> std::io::Result<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+// ---------- import ----------
+
+/// One `Host` entry read from an ssh config.
+#[derive(Debug, Default, PartialEq)]
+pub struct Entry {
+    pub alias: String,
+    pub hostname: String,
+    pub port: u16,
+    pub user: String,
+    pub identity: String,
+    pub folder: String,
+}
+
+/// `*` and `?` wildcards, for `Include` globs.
+fn wild(p: &[u8], s: &[u8]) -> bool {
+    match (p.first(), s.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => wild(&p[1..], s) || (!s.is_empty() && wild(p, &s[1..])),
+        (Some(b'?'), Some(_)) => wild(&p[1..], &s[1..]),
+        (Some(a), Some(b)) if a == b => wild(&p[1..], &s[1..]),
+        _ => false,
+    }
+}
+
+fn expand(path: &str, home: &Path, base: &Path) -> std::path::PathBuf {
+    let p = path.trim_matches('"').replace("%d", &home.to_string_lossy());
+    if let Some(rest) = p.strip_prefix("~/") {
+        home.join(rest)
+    } else if Path::new(&p).is_absolute() {
+        p.into()
+    } else {
+        base.join(p)
+    }
+}
+
+/// Lines of a config with `Include`s inlined (relative includes are under `~/.ssh`).
+fn lines(file: &Path, home: &Path, depth: u32, out: &mut Vec<String>) {
+    let Ok(text) = std::fs::read_to_string(file) else { return };
+    let ssh_dir = home.join(".ssh");
+    for line in text.lines() {
+        let t = line.trim();
+        let (key, val) = t.split_once(|c: char| c.is_whitespace() || c == '=').unwrap_or((t, ""));
+        if key.eq_ignore_ascii_case("include") && depth < 8 {
+            for pat in val.split_whitespace() {
+                let pat = expand(pat, home, &ssh_dir);
+                let (dir, name) = (pat.parent().unwrap_or(&ssh_dir).to_path_buf(), pat.file_name().unwrap_or_default().to_string_lossy().into_owned());
+                let mut files: Vec<_> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| wild(name.as_bytes(), p.file_name().unwrap_or_default().to_string_lossy().as_bytes()))
+                    .collect();
+                files.sort();
+                for f in files {
+                    lines(&f, home, depth + 1, out);
+                }
+            }
+        } else {
+            out.push(line.to_string());
+        }
+    }
+}
+
+/// Parse `file` (following `Include`). `Host *` values fill in missing User/Port/IdentityFile;
+/// "# ===== Group =====" comments (as written by the export) set the group.
+pub fn parse(file: &Path, home: &Path) -> Vec<Entry> {
+    let mut all = Vec::new();
+    lines(file, home, 0, &mut all);
+    let (mut entries, mut defaults, mut folder) = (Vec::<Entry>::new(), Entry::default(), String::new());
+    // Where the current block's settings go: an entry, the `Host *` defaults, or nowhere (patterns, Match).
+    enum Target { Entry, Defaults, Skip }
+    let mut target = Target::Skip;
+    for line in all {
+        let t = line.trim();
+        if let Some(g) = t.strip_prefix("# =====").and_then(|g| g.strip_suffix("=====")) {
+            folder = g.trim().to_string();
+            if folder == "(no group)" {
+                folder.clear();
+            }
+            continue;
+        }
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let (key, val) = t.split_once(|c: char| c.is_whitespace() || c == '=').unwrap_or((t, ""));
+        let val = val.trim().trim_start_matches('=').trim().trim_matches('"').to_string();
+        match key.to_ascii_lowercase().as_str() {
+            "host" => {
+                let names: Vec<&str> = val.split_whitespace().collect();
+                target = if names == ["*"] {
+                    Target::Defaults
+                } else if let Some(alias) = names.iter().find(|n| !n.contains(['*', '?', '!'])) {
+                    entries.push(Entry { alias: alias.to_string(), folder: folder.clone(), ..Default::default() });
+                    Target::Entry
+                } else {
+                    Target::Skip
+                };
+            }
+            "match" => target = Target::Skip,
+            k => {
+                let e = match target {
+                    Target::Entry => entries.last_mut().unwrap(),
+                    Target::Defaults => &mut defaults,
+                    Target::Skip => continue,
+                };
+                // First value wins, as in ssh.
+                match k {
+                    "hostname" if e.hostname.is_empty() => e.hostname = val,
+                    "port" if e.port == 0 => e.port = val.parse().unwrap_or(0),
+                    "user" if e.user.is_empty() => e.user = val,
+                    "identityfile" if e.identity.is_empty() => e.identity = expand(&val, home, home).to_string_lossy().into_owned(),
+                    _ => {}
+                }
+            }
+        }
+    }
+    for e in &mut entries {
+        if e.hostname.is_empty() {
+            e.hostname = e.alias.clone();
+        }
+        if e.port == 0 {
+            e.port = if defaults.port == 0 { 22 } else { defaults.port };
+        }
+        if e.user.is_empty() {
+            e.user = defaults.user.clone();
+        }
+        if e.identity.is_empty() {
+            e.identity = defaults.identity.clone();
+        }
+    }
+    entries
+}
+
+/// Keychain id for an IdentityFile: an existing key with the same content, or a new one named after the file.
+fn keychain_key(vault: &mut Vault, path: &str) -> String {
+    let Some(text) = std::fs::read_to_string(path).ok().filter(|k| k.contains("PRIVATE KEY")) else { return String::new() };
+    if let Some(k) = vault.keys.iter().find(|k| !k.deleted && k.private_key.trim() == text.trim()) {
+        return k.id.clone();
+    }
+    // Encrypted keys cannot be decoded without the passphrase: take the public key from the .pub file.
+    let public_key = russh::keys::decode_secret_key(&text, None)
+        .ok()
+        .and_then(|k| k.public_key().to_openssh().ok())
+        .or_else(|| std::fs::read_to_string(format!("{path}.pub")).ok().map(|p| p.trim().to_string()))
+        .unwrap_or_default();
+    let id = uuid::Uuid::new_v4().to_string();
+    vault.keys.push(Key {
+        id: id.clone(),
+        label: Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "imported key".into()),
+        private_key: text,
+        public_key,
+        updated_at: now_ms(),
+        ..Default::default()
+    });
+    id
+}
+
+/// Add or update vault hosts from ssh config entries. Existing hosts (same name, address, port and user)
+/// keep their password, tags and notes. A readable IdentityFile goes into the keychain (synced, shared by
+/// the hosts using it) and the host links to it.
+pub fn import(vault: &mut Vault, entries: Vec<Entry>) -> crate::termix::ImportReport {
+    let mut report = crate::termix::ImportReport { added: 0, updated: 0 };
+    for en in entries {
+        let key_id = if en.identity.is_empty() { String::new() } else { keychain_key(vault, &en.identity) };
+        let existing = vault.hosts.iter_mut().find(|h| !h.deleted && h.name == en.alias && h.address == en.hostname && h.port == en.port && h.username == en.user);
+        match existing {
+            Some(h) => {
+                if !key_id.is_empty() {
+                    h.key_id = key_id;
+                    h.private_key.clear();
+                }
+                if !en.folder.is_empty() {
+                    h.folder = en.folder;
+                }
+                h.updated_at = now_ms();
+                report.updated += 1;
+            }
+            None => {
+                vault.hosts.push(Host {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    name: en.alias,
+                    address: en.hostname,
+                    port: en.port,
+                    username: en.user,
+                    key_id,
+                    folder: if en.folder.is_empty() { "SSH config".into() } else { en.folder },
+                    updated_at: now_ms(),
+                    ..Default::default()
+                });
+                report.added += 1;
+            }
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +351,38 @@ mod tests {
         assert!(!dir.join("kermius/web-01").exists(), "keys of hosts no longer exported are removed");
         assert_eq!(std::fs::read_to_string(dir.join("config.before-kermius")).unwrap(), "Host mine\n    HostName mine.lan\n");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parses_config_with_includes_defaults_and_groups() {
+        let home = std::env::temp_dir().join(format!("kermius-sshimp-{}", uuid::Uuid::new_v4()));
+        let ssh = home.join(".ssh");
+        std::fs::create_dir_all(ssh.join("conf.d")).unwrap();
+        std::fs::write(ssh.join("id_test"), "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n").unwrap();
+        std::fs::write(ssh.join("id_test.pub"), "ssh-ed25519 AAAA test\n").unwrap();
+        std::fs::write(ssh.join("conf.d/extra.conf"), "Host pi\n  HostName 10.0.0.5\n").unwrap();
+        std::fs::write(
+            ssh.join("config"),
+            "Include conf.d/*.conf\nHost *\n  User koi\n  IdentityFile ~/.ssh/id_test\n\n# ===== Lab =====\nHost orin2 orin2-alias\n  HostName=100.96.1.66\n  Port 2222\n  User aiserver\nHost *.lan\n  User nobody\nHost bare\n",
+        )
+        .unwrap();
+        let e = parse(&ssh.join("config"), &home);
+        let key = ssh.join("id_test").to_string_lossy().into_owned();
+        assert_eq!(e.len(), 3, "{e:?}");
+        assert_eq!(e[0], Entry { alias: "pi".into(), hostname: "10.0.0.5".into(), port: 22, user: "koi".into(), identity: key.clone(), folder: "".into() });
+        assert_eq!(e[1], Entry { alias: "orin2".into(), hostname: "100.96.1.66".into(), port: 2222, user: "aiserver".into(), identity: key.clone(), folder: "Lab".into() });
+        assert_eq!((e[2].alias.as_str(), e[2].hostname.as_str(), e[2].user.as_str()), ("bare", "bare", "koi"));
+
+        let mut vault = Vault::default();
+        assert_eq!(import(&mut vault, parse(&ssh.join("config"), &home)).added, 3);
+        vault.hosts[1].password = "keep".into();
+        let r = import(&mut vault, parse(&ssh.join("config"), &home));
+        assert_eq!((r.added, r.updated, vault.hosts[1].password.as_str()), (0, 3, "keep"));
+        // One keychain entry shared by every host using the file, also after re-importing.
+        assert_eq!(vault.keys.len(), 1);
+        assert_eq!((vault.keys[0].label.as_str(), vault.keys[0].public_key.as_str()), ("id_test", "ssh-ed25519 AAAA test"));
+        assert!(vault.hosts.iter().all(|h| h.key_id == vault.keys[0].id && h.private_key.is_empty()));
+        assert_eq!(vault.hosts[0].folder, "SSH config");
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

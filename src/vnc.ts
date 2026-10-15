@@ -3,6 +3,8 @@ import { Channel } from "@tauri-apps/api/core";
 import { api, type Host, type Status } from "./api";
 import { esc, toast } from "./ui";
 
+const coarse = matchMedia("(pointer: coarse)").matches;
+
 /** WebSocket-shaped channel noVNC can attach to (it checks these properties exist). */
 class IpcChannel {
   binaryType = "arraybuffer";
@@ -91,6 +93,208 @@ type RfbInternals = {
 /** RFB encoding numbers → names (data rectangles only). */
 const ENCODINGS: Record<number, string> = { 0: "Raw", 1: "CopyRect", 2: "RRE", 5: "Hextile", 6: "Zlib", 7: "Tight", 16: "ZRLE", 21: "JPEG", 50: "H.264", [-260]: "TightPNG" };
 
+/** noVNC internals used for touch input and zoom (pinned noVNC 1.7). */
+type RfbTouch = {
+  _canvas: HTMLCanvasElement;
+  _screen: HTMLElement;
+  _gestures?: { detach(): void };
+  _sendMouse(x: number, y: number, mask: number): void;
+  _updateScale(): void;
+  clipViewport: boolean;
+  _display: {
+    scale: number;
+    width: number;
+    height: number;
+    _viewportLoc: { x: number; y: number; w: number; h: number };
+    absX(x: number): number;
+    absY(y: number): number;
+    viewportChangeSize(w: number, h: number): void;
+    viewportChangePos(dx: number, dy: number): void;
+  };
+};
+
+const LEFT = 1;
+const RIGHT = 4;
+const WHEEL_UP = 8;
+const WHEEL_DOWN = 16;
+
+/**
+ * Touch input for VNC (replaces noVNC's tap-to-click gestures):
+ * one finger moves the pointer, double tap = left click, double tap + hold + drag = left drag,
+ * long press (0.7 s) = right click, pinch = zoom, two fingers = pan when zoomed (scroll otherwise),
+ * and a finger near an edge pans the zoomed view that way. Returns { fit, dispose }.
+ */
+function touchInput(rfb: RfbTouch) {
+  rfb._gestures?.detach();
+  rfb.clipViewport = true;
+  const d = rfb._display;
+  const screen = rfb._screen;
+  let zoom = 1;
+
+  const screenRect = () => screen.getBoundingClientRect();
+  const applyZoom = () => {
+    const r = screenRect();
+    if (!d.width || !r.width) return;
+    const s = Math.min(r.width / d.width, r.height / d.height) * zoom;
+    d.scale = s;
+    d.viewportChangeSize(r.width / s, r.height / s);
+    d.viewportChangePos(0, 0);
+  };
+  // noVNC resets the scale on every resize; put the zoom back afterwards.
+  const updateScale = rfb._updateScale.bind(rfb);
+  rfb._updateScale = () => {
+    updateScale();
+    applyZoom();
+  };
+  applyZoom();
+
+  const local = (cx: number, cy: number) => {
+    const r = rfb._canvas.getBoundingClientRect();
+    return { x: cx - r.left, y: cy - r.top };
+  };
+  let mask = 0;
+  let pointer = { x: 0, y: 0 }; // last finger position (client coordinates)
+  const move = (cx: number, cy: number, m = mask) => {
+    pointer = { x: cx, y: cy };
+    const p = local(cx, cy);
+    rfb._sendMouse(p.x, p.y, m);
+  };
+  const click = (cx: number, cy: number, button: number) => {
+    move(cx, cy, 0);
+    move(cx, cy, button);
+    move(cx, cy, 0);
+  };
+
+  // Edge pan: while a finger rests near an edge of the zoomed view, scroll that way.
+  let edgeRaf = 0;
+  const edgeStep = () => {
+    edgeRaf = 0;
+    if (zoom <= 1) return;
+    const r = screenRect();
+    const zone = 44;
+    const speed = (dist: number) => (dist < zone ? ((zone - dist) / zone) * 18 : 0);
+    const dx = speed(pointer.x - r.left) ? -speed(pointer.x - r.left) : speed(r.right - pointer.x);
+    const dy = speed(pointer.y - r.top) ? -speed(pointer.y - r.top) : speed(r.bottom - pointer.y);
+    if (!dx && !dy) return;
+    d.viewportChangePos(dx / d.scale, dy / d.scale);
+    move(pointer.x, pointer.y); // the pointer (and a drag) follows the moving view
+    edgeRaf = requestAnimationFrame(edgeStep);
+  };
+  const edgeWatch = () => {
+    if (!edgeRaf) edgeRaf = requestAnimationFrame(edgeStep);
+  };
+  const edgeStop = () => {
+    cancelAnimationFrame(edgeRaf);
+    edgeRaf = 0;
+  };
+
+  let start = { x: 0, y: 0, t: 0 };
+  let lastTap = { x: -999, y: -999, t: 0 };
+  let moved = false;
+  let longPress = 0;
+  let longDone = false;
+  let pinch: { dist: number; zoom: number; fbx: number; fby: number; mx: number; my: number } | null = null;
+  let scrollAcc = 0;
+
+  const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+
+  const onStart = (e: TouchEvent) => {
+    e.preventDefault(); // no emulated mouse events (they would click)
+    clearTimeout(longPress);
+    if (e.touches.length === 2) {
+      if (mask) move(pointer.x, pointer.y, (mask = 0));
+      const m = mid(e.touches);
+      const p = local(m.x, m.y);
+      pinch = { dist: dist(e.touches), zoom, fbx: p.x / d.scale + d._viewportLoc.x, fby: p.y / d.scale + d._viewportLoc.y, mx: m.x, my: m.y };
+      scrollAcc = 0;
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    start = { x: t.clientX, y: t.clientY, t: Date.now() };
+    moved = false;
+    longDone = false;
+    if (Date.now() - lastTap.t < 320 && Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 40) {
+      // Second tap: press now; releasing makes a click, moving first makes a drag.
+      lastTap.t = 0;
+      move(t.clientX, t.clientY, 0);
+      move(t.clientX, t.clientY, (mask = LEFT));
+      return;
+    }
+    longPress = window.setTimeout(() => {
+      longDone = true;
+      click(start.x, start.y, RIGHT);
+    }, 700);
+  };
+
+  const onMove = (e: TouchEvent) => {
+    e.preventDefault();
+    if (pinch && e.touches.length === 2) {
+      const m = mid(e.touches);
+      const z = Math.min(6, Math.max(1, (pinch.zoom * dist(e.touches)) / pinch.dist));
+      if (z === 1 && pinch.zoom === 1) {
+        // Not zoomed: two fingers scroll the remote screen.
+        scrollAcc += m.y - pinch.my;
+        pinch.my = m.y;
+        while (Math.abs(scrollAcc) >= 30) {
+          const b = scrollAcc > 0 ? WHEEL_UP : WHEEL_DOWN;
+          click(m.x, m.y, b);
+          scrollAcc -= Math.sign(scrollAcc) * 30;
+        }
+        return;
+      }
+      zoom = z;
+      applyZoom();
+      // Keep the remote point that was under the fingers' midpoint under it.
+      const r = rfb._canvas.getBoundingClientRect();
+      d.viewportChangePos(pinch.fbx - (m.x - r.left) / d.scale - d._viewportLoc.x, pinch.fby - (m.y - r.top) / d.scale - d._viewportLoc.y);
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (!moved && Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) {
+      moved = true;
+      clearTimeout(longPress);
+    }
+    if (!moved || longDone) return;
+    move(t.clientX, t.clientY);
+    edgeWatch();
+  };
+
+  const onEnd = (e: TouchEvent) => {
+    e.preventDefault();
+    clearTimeout(longPress);
+    if (e.touches.length) return;
+    edgeStop();
+    if (pinch) {
+      pinch = null;
+      return;
+    }
+    if (mask) {
+      move(pointer.x, pointer.y, (mask = 0)); // ends the click or the drag
+      return;
+    }
+    if (!moved && !longDone && Date.now() - start.t < 300) lastTap = { x: start.x, y: start.y, t: Date.now() };
+  };
+
+  const opts = { passive: false } as const;
+  screen.addEventListener("touchstart", onStart, opts);
+  screen.addEventListener("touchmove", onMove, opts);
+  screen.addEventListener("touchend", onEnd, opts);
+  screen.addEventListener("touchcancel", onEnd, opts);
+  return {
+    fit() {
+      zoom = 1;
+      applyZoom();
+    },
+    dispose() {
+      edgeStop();
+      clearTimeout(longPress);
+    },
+  };
+}
+
 const fmtRate = (b: number) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB/s` : `${(b / 1024).toFixed(0)} KB/s`);
 
 type Rfb = {
@@ -136,7 +340,8 @@ export class VncTab {
         box.hidden = !box.hidden;
         t.closest("button")!.classList.toggle("on", !box.hidden);
         localStorage.setItem("kermius.vncStats", box.hidden ? "0" : "1");
-      } else if (v === "scale" && this.rfb) {
+      } else if (v === "scale" && this.touch) this.touch.fit();
+      else if (v === "scale" && this.rfb) {
         this.rfb.scaleViewport = !this.rfb.scaleViewport;
         t.closest("button")!.classList.toggle("on", this.rfb.scaleViewport);
       }
@@ -182,7 +387,10 @@ export class VncTab {
       const rfb = new RFB(screen, channel) as unknown as Rfb;
       this.rfb = rfb;
       this.watchSteps(rfb as unknown as RfbInternals, channel);
-      rfb.scaleViewport = this.el.querySelector('[data-v="scale"]')!.classList.contains("on");
+      this.touch?.dispose();
+      this.touch = null;
+      if (coarse) this.touch = touchInput(rfb as unknown as RfbTouch);
+      else rfb.scaleViewport = this.el.querySelector('[data-v="scale"]')!.classList.contains("on");
       rfb.background = "#0b0d12";
       rfb.viewOnly = !this.el.querySelector('[data-v="control"]')!.classList.contains("on");
       if (!this.host.noClipboard) {
@@ -225,6 +433,7 @@ export class VncTab {
   }
 
   private statsTimer = 0;
+  private touch: ReturnType<typeof touchInput> | null = null;
   private stepTimer = 0;
   private logs: string[] = [];
 
@@ -371,6 +580,7 @@ export class VncTab {
   applyPrefs() {}
 
   dispose() {
+    this.touch?.dispose();
     clearInterval(this.statsTimer);
     clearInterval(this.stepTimer);
     removeEventListener("focus", this.onFocus);
