@@ -28,7 +28,8 @@ const state = {
   folder: null as string | null,
   tag: null as string | null,
   query: "",
-  layout: (localStorage.getItem("kermius.layout") as "grid" | "list") || "grid",
+  // Phones default to the list; tablets and desktops to the grid.
+  layout: (localStorage.getItem("kermius.layout") as "grid" | "list") || (matchMedia("(max-width: 760px)").matches ? "list" : "grid"),
   /** Root view: folder cards, or every host in collapsible per-group sections. */
   mode: (localStorage.getItem("kermius.mode") as "groups" | "sections") || "groups",
   collapsed: new Set<string>(JSON.parse(localStorage.getItem("kermius.collapsed") || "[]")),
@@ -224,6 +225,18 @@ function renderTabs() {
 }
 
 // Custom title bar: window controls live in the tab bar (desktop only).
+// Mobile keyboards cover the page without resizing it: size the app to the visual viewport instead.
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const fitViewport = () => {
+    document.documentElement.style.setProperty("--vv-h", `${vv.height}px`);
+    document.documentElement.style.setProperty("--vv-top", `${vv.offsetTop}px`);
+  };
+  vv.addEventListener("resize", fitViewport);
+  vv.addEventListener("scroll", fitViewport);
+  fitViewport();
+}
+
 const desktop = !isWeb && !/Android|iPhone|iPad/i.test(navigator.userAgent);
 els.tabs.setAttribute("data-tauri-drag-region", "");
 
