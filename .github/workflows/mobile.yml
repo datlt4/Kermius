@@ -57,8 +57,7 @@ jobs:
             npx tauri android init --ci
             # init uses Tauri's default icons: put the Kermius ones in place.
             cp -r src-tauri/icons/android/. src-tauri/gen/android/app/src/main/res/
-            # Keeps the WebView above the on-screen keyboard (edge-to-edge ignores adjustResize).
-            cp src-tauri/android/MainActivity.kt src-tauri/gen/android/app/src/main/java/com/koi/kermius/
+            sh src-tauri/android/apply.sh
             npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
           } 2>&1 | tee android-build.log
       - name: Sign APK
