@@ -4,6 +4,10 @@ set -e
 GEN=src-tauri/gen/android/app/src/main
 # Keyboard insets, double back to exit, multicast lock for Nearby Share.
 cp src-tauri/android/MainActivity.kt "$GEN/java/com/koi/kermius/"
-# Nearby Share discovery needs the multicast lock permission.
+# Nearby Share: multicast lock for discovery; on Android 10 and older, writing to Download/.
 grep -q CHANGE_WIFI_MULTICAST_STATE "$GEN/AndroidManifest.xml" ||
-  sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|&\n    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />|' "$GEN/AndroidManifest.xml"
+  sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|&\n    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />|' "$GEN/AndroidManifest.xml"
+grep -q WRITE_EXTERNAL_STORAGE "$GEN/AndroidManifest.xml" ||
+  sed -i 's|<uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />|&\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />|' "$GEN/AndroidManifest.xml"
+grep -q requestLegacyExternalStorage "$GEN/AndroidManifest.xml" ||
+  sed -i 's|<application|<application android:requestLegacyExternalStorage="true"|' "$GEN/AndroidManifest.xml"

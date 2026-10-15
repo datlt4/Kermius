@@ -1,6 +1,9 @@
 package com.koi.kermius
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
@@ -34,6 +37,11 @@ class MainActivity : TauriActivity() {
         }
       }
     })
+    // Android 10 and older: saving received Nearby Share files to Download/ needs this permission.
+    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q &&
+      checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+      requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
+    }
     multicastLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
       .createMulticastLock("kermius-nearby").apply { setReferenceCounted(false) }
   }
