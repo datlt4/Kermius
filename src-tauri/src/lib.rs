@@ -374,9 +374,15 @@ fn nearby_respond(nearby: State<Arc<nearby::Nearby>>, id: String, accept: bool) 
 
 /// Open the folder received files are saved to.
 #[tauri::command]
-fn nearby_open_folder(app: tauri::AppHandle) -> Res<()> {
+fn nearby_open_folder(app: tauri::AppHandle, nearby: State<Arc<nearby::Nearby>>) -> Res<()> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener().open_path(nearby::download_dir().to_string_lossy(), None::<&str>).map_err(e)
+    app.opener().open_path(nearby.save_dir().to_string_lossy(), None::<&str>).map_err(e)
+}
+
+#[tauri::command]
+fn nearby_set_dir(nearby: State<Arc<nearby::Nearby>>, dir: String) -> Res<nearby::Status> {
+    nearby.set_save_dir(&dir)?;
+    Ok(nearby.status())
 }
 
 #[tauri::command]
@@ -1161,6 +1167,7 @@ pub fn run() {
             nearby_respond,
             nearby_cancel,
             nearby_open_folder,
+            nearby_set_dir,
             ssh_config_export,
             ssh_config_import,
             list_snippets,

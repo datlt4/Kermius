@@ -275,6 +275,8 @@ const tauriApi = {
   nearbyRespond: (id: string, accept: boolean) => invoke<void>("nearby_respond", { id, accept }),
   nearbyCancel: (id: string) => invoke<void>("nearby_cancel", { id }),
   nearbyOpenFolder: () => invoke<void>("nearby_open_folder"),
+  /** "" = the Downloads folder. */
+  nearbySetDir: (dir: string) => invoke<NearbyStatus>("nearby_set_dir", { dir }),
   sshConfigImport: () => invoke<{ added: number; updated: number; skipped: number }>("ssh_config_import"),
   sshConfigPreview: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
     invoke<string>("ssh_config_preview", { hostIds, withKeys, withPasswords }),
