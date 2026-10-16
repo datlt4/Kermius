@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, type Host, type NearbyEvent, type NearbyStatus, type NearbyTransfer } from "./api";
-import { notify } from "./notify";
+import { notify, systemAlert } from "./notify";
 import { esc, icon, morphHtml, promptDialog, toast } from "./ui";
 
 const KEY = "kermius.nearby";
@@ -149,6 +149,31 @@ const setEnabled = (on: boolean) => {
   } catch {}
 };
 
+// ---------- "other devices cannot see this one" hints (desktop, once per start) ----------
+
+const desktopOs = /Windows/i.test(navigator.userAgent) ? "Windows" : /Mac/i.test(navigator.userAgent) ? "macOS" : "Linux";
+const runHere = desktopOs === "Windows" ? "PowerShell as administrator" : desktopOs === "macOS" ? "Terminal" : "a terminal";
+let hintedBlocked = false;
+let hintedEmpty = false;
+
+function firewallStep(): string {
+  return status.firewall ? `Run in ${runHere}: ${status.firewall}` : `Allow incoming TCP and UDP port ${status.port} in this computer's firewall.`;
+}
+
+/** Nothing was seen after a minute: usually the VPN is down or a firewall blocks the port. */
+function checkNobodySeen() {
+  if (phone || !status.running || hintedEmpty) return;
+  const someoneOnline = status.devices.length > 0 || [...probed.values()].some(Boolean);
+  if (someoneOnline || status.blocked) return;
+  hintedEmpty = true;
+  systemAlert("Nearby Share: no devices found", `Check that the VPN is connected on this computer and on the other devices. If it still does not show up, check the firewall. ${firewallStep()}`);
+}
+
+function scheduleNobodySeen() {
+  hintedEmpty = false;
+  setTimeout(checkNobodySeen, 60_000);
+}
+
 async function setRunning(on: boolean, rerender: () => void) {
   busy = true;
   rerender();
@@ -156,6 +181,7 @@ async function setRunning(on: boolean, rerender: () => void) {
     if (on) {
       status = await api.nearbyStart();
       probeHosts(rerender);
+      scheduleNobodySeen();
     }
     else {
       await api.nearbyStop();
@@ -210,7 +236,16 @@ export async function initNearby(rerender: () => void, savedHosts: () => Host[],
     if (ev.kind === "devices") {
       status.devices = ev.devices;
       // The firewall check (blocked) changes with what devices report.
-      api.nearbyStatus().then((s) => ((status = s), rerender())).catch(() => {});
+      api.nearbyStatus()
+        .then((s) => {
+          status = s;
+          if (status.blocked && !hintedBlocked && !phone) {
+            hintedBlocked = true;
+            systemAlert("Nearby Share: other devices cannot connect", `A firewall blocks port ${status.port} on this computer. ${firewallStep()}`);
+          }
+          rerender();
+        })
+        .catch(() => {});
     }
     else if (ev.kind === "request") {
       // The save folder can change (e.g. storage permission granted on Android 10).
@@ -259,6 +294,7 @@ export async function initNearby(rerender: () => void, savedHosts: () => Host[],
   if (savedDir()) await setSaveDir(savedDir(), rerender);
   if (savedAlias()) await setAlias(savedAlias(), rerender);
   if (enabled() && !status.running) await setRunning(true, rerender);
+  else if (status.running) scheduleNobodySeen();
 }
 
 function send(fingerprint: string, items: Item[]) {
@@ -363,7 +399,7 @@ export function renderNearby(root: HTMLElement) {
         ${phone ? "" : `<button class="btn ghost sm" data-nb="pick-dir">Change…</button>`}
         ${savedDir() && !phone ? `<button class="btn ghost sm" data-nb="reset-dir" title="Back to the Downloads folder">Use Downloads</button>` : ""}</div>
       ${on && status.blocked
-        ? `<div class="nb-fw">${icon("lock", 14)}<span>Other devices see this ${phone ? "device" : "computer"} but cannot connect to it: a firewall blocks port ${status.port}.
+        ? `<div class="nb-fw">${icon("lock", 14)}<span>Other devices cannot connect to this ${phone ? "device" : "computer"}: a firewall is blocking port ${status.port}.
             ${status.firewall ? "Allow it with:" : `Allow incoming TCP port ${status.port} in the firewall.`}</span>
             ${status.firewall ? `<code>${esc(status.firewall)}</code><button class="btn ghost sm" data-nb="copy-fw">${icon("copy", 13)} Copy</button>` : ""}</div>`
         : ""}
