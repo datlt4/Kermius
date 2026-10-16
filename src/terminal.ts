@@ -409,10 +409,7 @@ export class Session {
     this.overlay.addEventListener("click", (e) => {
       const a = (e.target as HTMLElement).closest("button")?.dataset.a;
       if (a === "retry") this.connect();
-      else if (a === "logs") {
-        localStorage.setItem("kermius.showLogs", localStorage.getItem("kermius.showLogs") === "1" ? "" : "1");
-        this.setState(this.state);
-      }
+      else if (a === "edit") this.el.dispatchEvent(new CustomEvent("kermius-edit-host", { bubbles: true, detail: { host: this.host } }));
       else if (a === "trust") api.trustNewHostKey(this.host.id).then(() => this.connect());
       else if (a === "copy-fix") api.clipboardWrite(fixCommand(this.error)).then(() => toast("Command copied; paste it into a terminal on this computer", "ok"));
       else if (a === "mosh-server") api.clipboardWrite(MOSH_SERVER_SETUP).then(() => toast(`Command copied; run it on ${this.host.name}`, "ok"));
@@ -558,10 +555,9 @@ export class Session {
     }
   }
 
+  /** The connection log is always shown: it is the first thing to read when a connection fails. */
   private logsHtml() {
-    const open = localStorage.getItem("kermius.showLogs") === "1";
-    return `<button class="btn ghost sm" data-a="logs">${open ? "Hide logs" : "Show logs"}</button>
-      ${open ? `<div class="logs">${this.logs.map((l) => `<div>${esc(l)}</div>`).join("")}</div>` : ""}`;
+    return `<div class="logs">${this.logs.map((l) => `<div>${esc(l)}</div>`).join("")}</div>`;
   }
 
   private setState(s: SessionState) {
@@ -586,7 +582,7 @@ export class Session {
         <p class="countdown muted"></p>
         <div class="row">${mismatch ? `<button class="btn danger" data-a="trust">Trust new key</button>` : ""}
         ${fixCommand(this.error) ? `<button class="btn" data-a="copy-fix">Copy command</button>` : ""}
-        <button class="btn primary" data-a="retry">Retry</button><button class="btn ghost" data-a="close">Close</button></div>
+        <button class="btn primary" data-a="retry">Retry</button>${this.local ? "" : `<button class="btn ghost" data-a="edit">Edit host</button>`}<button class="btn ghost" data-a="close">Close</button></div>
         ${this.local ? "" : this.logsHtml()}</div>`;
       this.renderCountdown();
     } else if (s === "closed") {

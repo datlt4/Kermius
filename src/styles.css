@@ -105,10 +105,16 @@ input, textarea { font: inherit; color: inherit; }
 /* ---------- tabs ---------- */
 .tabbar {
   display: flex; align-items: center; gap: 4px; height: 46px; padding: 0 8px;
-  background: var(--bg-side); border-bottom: 1px solid var(--border);
-  overflow-x: auto; scrollbar-width: none; flex: none;
+  background: var(--bg-side); border-bottom: 1px solid var(--border); overflow: hidden; flex: none;
 }
-.tabbar::-webkit-scrollbar { display: none; }
+/* Only the tab strip scrolls; the buttons around it always stay visible. */
+.tabbar > * { flex: none; }
+.tabs-scroll {
+  position: relative; flex: 1 1 0 !important; min-width: 0; height: 100%;
+  display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none;
+}
+.tabs-scroll::-webkit-scrollbar { display: none; }
+.tabs-scroll .grow { flex: 1 0 16px; }
 .tab {
   display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 12px; border-radius: 8px;
   color: var(--muted); white-space: nowrap; cursor: pointer; flex: none; max-width: 220px;
