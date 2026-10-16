@@ -157,6 +157,10 @@ pub struct Nearby {
     inbound: std::sync::atomic::AtomicBool,
     /// UDP answers to our announcement: sent by devices that could not connect to us.
     udp_replies: std::sync::atomic::AtomicUsize,
+    /// Devices that tried to connect back to us and failed: "ip:port" → when.
+    reach_blocked: Mutex<HashMap<String, Instant>>,
+    /// Last time we asked a device to try connecting back to us: "ip:port" → when.
+    reach_checked: Mutex<HashMap<String, Instant>>,
     /// Where received files go; None = the Downloads folder.
     save_dir: Mutex<Option<PathBuf>>,
     udp: Mutex<Option<Arc<tokio::net::UdpSocket>>>,
@@ -208,6 +212,22 @@ fn firewall_hint(port: u16) -> String {
     let active = |unit: &str| {
         std::process::Command::new("systemctl").args(["is-active", "--quiet", unit]).status().is_ok_and(|s| s.success())
     };
+    if cfg!(target_os = "windows") {
+        // Run in PowerShell as administrator.
+        return format!("New-NetFirewallRule -DisplayName 'Kermius Nearby Share' -Direction Inbound -Protocol TCP -LocalPort {port} -Action Allow");
+    }
+    if cfg!(target_os = "macos") {
+        // The macOS firewall allows apps, not ports: allow the Kermius app itself.
+        let app = std::env::current_exe().ok().and_then(|exe| exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(|p| p.to_path_buf()));
+        return match app {
+            Some(app) => {
+                let fw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
+                let app = app.display();
+                format!("sudo {fw} --add '{app}' && sudo {fw} --unblockapp '{app}'")
+            }
+            None => String::new(),
+        };
+    }
     if !cfg!(target_os = "linux") {
         String::new()
     } else if std::fs::read_to_string("/etc/ufw/ufw.conf").is_ok_and(|c| c.lines().any(|l| l.trim() == "ENABLED=yes")) {
@@ -358,6 +378,8 @@ impl Nearby {
             firewall: Mutex::new(String::new()),
             inbound: Default::default(),
             udp_replies: Default::default(),
+            reach_blocked: Default::default(),
+            reach_checked: Default::default(),
             save_dir: Mutex::new(None),
             udp: Mutex::new(None),
             error: Mutex::new(String::new()),
@@ -428,7 +450,8 @@ impl Nearby {
             dir: self.save_dir().to_string_lossy().into_owned(),
             devices,
             error: self.error.lock().clone(),
-            blocked: self.udp_replies.load(Ordering::Relaxed) > 0 && !self.inbound.load(Ordering::Relaxed),
+            blocked: !self.inbound.load(Ordering::Relaxed)
+                && (self.udp_replies.load(Ordering::Relaxed) > 0 || self.reach_blocked.lock().values().any(|t| t.elapsed() < Duration::from_secs(900))),
             firewall: self.firewall.lock().clone(),
             own: local_ipv4()
                 .iter()
@@ -491,6 +514,7 @@ impl Nearby {
         let app = Router::new()
             .route(&format!("{API}/register"), post(register))
             .route(&format!("{API}/info"), get(info))
+            .route("/api/kermius/v1/reach", post(reach))
             // The file list of a big folder is far over the 2 MB default.
             .route(&format!("{API}/prepare-upload"), post(prepare_upload).layer(axum::extract::DefaultBodyLimit::max(512 << 20)))
             .route(&format!("{API}/upload"), post(upload))
@@ -564,7 +588,9 @@ impl Nearby {
             .send()
             .await
             .is_ok_and(|r| r.status().is_success());
-        if !ok {
+        if ok {
+            self.check_reach(&d).await;
+        } else {
             self.multicast(sock, &self.info(Some(false))).await;
         }
     }
@@ -608,8 +634,47 @@ impl Nearby {
     /// Reach saved addresses directly (multicast does not cross VPNs or routers): register
     /// with each, so both sides learn each other. Returns the devices that answered.
     pub async fn probe(&self, addresses: Vec<String>) -> Vec<Device> {
-        let found = futures_util::future::join_all(addresses.into_iter().map(|a| self.probe_one(a))).await;
-        found.into_iter().flatten().collect()
+        let found: Vec<Device> = futures_util::future::join_all(addresses.into_iter().map(|a| self.probe_one(a))).await.into_iter().flatten().collect();
+        futures_util::future::join_all(found.iter().map(|d| self.check_reach(d))).await;
+        found
+    }
+
+    /// "Can you see me?": the device tries to connect back to us. If it cannot, a firewall here
+    /// blocks the port, and the status says so. Asked at most every five minutes per device.
+    async fn check_reach(&self, d: &Device) {
+        let key = format!("{}:{}", d.ip, d.port);
+        if self.reach_checked.lock().get(&key).is_some_and(|t| t.elapsed() < Duration::from_secs(300)) {
+            return;
+        }
+        self.reach_checked.lock().insert(key.clone(), Instant::now());
+        #[derive(Deserialize)]
+        struct Reach {
+            reachable: bool,
+        }
+        let root = base_url(d).trim_end_matches(API).to_string();
+        let port = *self.port.lock();
+        let Ok(r) = self
+            .client
+            .post(format!("{root}/api/kermius/v1/reach"))
+            .timeout(Duration::from_secs(8))
+            .header("content-type", "application/json")
+            .body(format!("{{\"port\":{port}}}"))
+            .send()
+            .await
+        else {
+            return;
+        };
+        let Ok(res) = serde_json::from_str::<Reach>(&r.text().await.unwrap_or_default()) else { return };
+        let before = self.reach_blocked.lock().contains_key(&key);
+        if res.reachable {
+            self.reach_blocked.lock().remove(&key);
+        } else {
+            self.reach_blocked.lock().insert(key.clone(), Instant::now());
+        }
+        if before == res.reachable {
+            // Nothing new for the user, but the status (blocked) may have changed.
+            self.emit(Event::Devices { devices: self.status().devices });
+        }
     }
 
     async fn probe_one(&self, address: String) -> Option<Device> {
@@ -935,8 +1000,26 @@ async fn register(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, 
     Json(me.info(None))
 }
 
-async fn info(AxState(me): Svc) -> Json<Info> {
+async fn info(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Json<Info> {
+    me.note_inbound(addr.ip());
     Json(me.info(None))
+}
+
+#[derive(Deserialize)]
+struct ReachReq {
+    port: u16,
+}
+
+#[derive(Serialize)]
+struct ReachRes {
+    reachable: bool,
+}
+
+/// Another device asks whether we can be reached: connect back to it at the address it came from.
+async fn reach(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Json(req): Json<ReachReq>) -> Json<ReachRes> {
+    let back = format!("http://{}{API}/info", SocketAddr::new(addr.ip(), req.port));
+    let reachable = req.port != 0 && me.client.get(back).timeout(Duration::from_secs(3)).send().await.is_ok_and(|r| r.status().is_success());
+    Json(ReachRes { reachable })
 }
 
 #[derive(Deserialize)]

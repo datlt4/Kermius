@@ -13,6 +13,13 @@ export function initOsNotifications() {
     .catch(() => false);
 }
 
+/** System notification shown even while Kermius is in front: one-off setup hints. */
+export function systemAlert(title: string, body: string) {
+  if (isWeb) return;
+  initOsNotifications();
+  osAllowed!.then((ok) => ok && sendNotification({ title, body })).catch(() => {});
+}
+
 const lastOs = new Map<string, number>();
 
 /** System notification, only while Kermius is not in front (the bell has it otherwise);
