@@ -203,8 +203,14 @@ els.foot.addEventListener("click", (e) => {
 
 $(".scrim").addEventListener("click", () => els.shell.classList.remove("side-open"));
 
-els.shell.classList.toggle("side-collapsed", localStorage.getItem("kermius.sideCollapsed") === "1");
+// Desktop: the collapse button switches to icons-only. Phones: the sidebar is a drawer that is
+// either open or closed, so the same button closes it.
+const phoneLayout = matchMedia("(max-width: 760px)");
+const applySideMode = () => els.shell.classList.toggle("side-collapsed", !phoneLayout.matches && localStorage.getItem("kermius.sideCollapsed") === "1");
+applySideMode();
+phoneLayout.addEventListener("change", applySideMode);
 $(".collapse-btn").addEventListener("click", () => {
+  if (phoneLayout.matches) return els.shell.classList.remove("side-open");
   const on = els.shell.classList.toggle("side-collapsed");
   localStorage.setItem("kermius.sideCollapsed", on ? "1" : "");
 });
@@ -212,25 +218,48 @@ $(".collapse-btn").addEventListener("click", () => {
 // ---------- tabs ----------
 
 function renderTabs() {
+  const prev = els.tabs.querySelector<HTMLElement>(".tabs-scroll")?.scrollLeft ?? 0;
   els.tabs.innerHTML = `
     <button class="icon-btn menu-btn" data-act="menu">${icon("menu")}</button>
     <button class="tab home ${state.active === "home" ? "on" : ""}" data-tab="home">${icon("lock", 15)}<span>Vault</span></button>
-    ${state.sessions
-      .map(
-        (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
-          ${s.kind === "files" ? icon("folder", 13) : s.kind === "vnc" ? icon("monitor", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : s.kind === "vnc" ? " · VNC" : ""}</span>
-          <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
-      )
-      .join("")}
+    <div class="tabs-scroll">
+      ${state.sessions
+        .map(
+          (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
+            ${s.kind === "files" ? icon("folder", 13) : s.kind === "vnc" ? icon("monitor", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : s.kind === "vnc" ? " · VNC" : ""}</span>
+            <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
+        )
+        .join("")}
+      <div class="grow" data-tauri-drag-region></div>
+    </div>
     ${isWeb || /iPhone|iPad/i.test(navigator.userAgent) ? "" : `<button class="icon-btn" data-act="local" title="New local terminal">${icon("plus", 16)}</button>`}
-    <div class="grow" data-tauri-drag-region></div>
     ${state.sessions.some((s) => s.id === state.active && !s.local) ? `<button class="icon-btn" data-act="copy-pass" title="Copy password">${icon("key", 16)}</button>` : ""}
     ${bellButton()}
     ${desktop ? `<div class="win-ctl">
       <button data-win="min" title="Minimize">${icon("min", 15)}</button>
       <button data-win="max" title="Maximize">${icon("max", 13)}</button>
       <button data-win="close" class="close" title="Close">${icon("x", 15)}</button></div>` : ""}`;
+  // Keep the open tab in view; the rest of the strip scrolls on its own.
+  const sc = els.tabs.querySelector<HTMLElement>(".tabs-scroll")!;
+  sc.scrollLeft = prev;
+  const on = sc.querySelector<HTMLElement>(".tab.on:not(.home)");
+  if (on) {
+    if (on.offsetLeft < sc.scrollLeft) sc.scrollLeft = on.offsetLeft - 8;
+    else if (on.offsetLeft + on.offsetWidth > sc.scrollLeft + sc.clientWidth) sc.scrollLeft = on.offsetLeft + on.offsetWidth - sc.clientWidth + 8;
+  }
 }
+
+// A mouse wheel scrolls the tab strip sideways.
+els.tabs.addEventListener(
+  "wheel",
+  (e) => {
+    const sc = (e.target as HTMLElement).closest<HTMLElement>(".tabs-scroll");
+    if (!sc || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    sc.scrollLeft += e.deltaY;
+    e.preventDefault();
+  },
+  { passive: false },
+);
 
 // Custom title bar: window controls live in the tab bar (desktop only).
 // Mobile keyboards cover the page without resizing it: size the app to the visual viewport instead.
@@ -341,6 +370,8 @@ function openFiles(h: Host) {
 
 els.terms.addEventListener("kermius-files", (e) => openFiles((e as CustomEvent).detail.host as Host));
 els.terms.addEventListener("kermius-host-saved", () => reload().then(scheduleSync));
+// Edit host from a failed connection: the editor opens over the tab; saving updates the tab's host.
+els.terms.addEventListener("kermius-edit-host", (e) => openEditor((e as CustomEvent).detail.host as Host));
 
 function closeSession(id: string) {
   const i = state.sessions.findIndex((s) => s.id === id);
@@ -1226,7 +1257,7 @@ function renderEditor() {
   const scroll = els.drawer.querySelector(".drawer-body")?.scrollTop ?? 0;
   els.drawer.innerHTML = `
     <div class="drawer-head">
-      <button class="icon-btn" data-ed="close">${icon("back")}</button>
+      <button class="icon-btn" data-ed="close" title="Close">${icon("chevron")}</button>
       <h3>${h.id ? "Edit host" : "New host"}</h3>
       <div class="grow"></div>
       ${h.id ? `<button class="icon-btn danger" data-ed="delete" title="Delete">${icon("trash", 16)}</button>` : ""}
@@ -1479,6 +1510,7 @@ async function saveEditor() {
   try {
     const saved = await api.saveHost(h);
     state.editing = saved;
+    for (const s of state.sessions) if (s.host.id === saved.id) s.host = saved;
     await reload();
     scheduleSync();
     toast("Saved", "ok");
