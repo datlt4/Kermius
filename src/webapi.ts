@@ -108,6 +108,10 @@ export const webApi: Api = {
     await sync();
   },
   listSnippets: async () => vault.snippets.filter((x) => !x.deleted),
+  wolList: unsupported,
+  wolSave: unsupported,
+  wolDelete: unsupported,
+  wolSend: unsupported,
   saveSnippet: async (snippet: Snippet) => {
     const sn = { ...snippet, id: snippet.id || uuid(), updatedAt: Date.now(), deleted: false };
     const i = vault.snippets.findIndex((x) => x.id === sn.id);

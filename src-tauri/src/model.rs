@@ -77,6 +77,23 @@ pub struct Snippet {
     pub deleted: bool,
 }
 
+/// A machine to wake up with a magic packet (Wake on LAN).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WolDevice {
+    pub id: String,
+    pub name: String,
+    pub mac: String,
+    /// Broadcast address of the target's network; empty = 255.255.255.255.
+    pub broadcast: String,
+    /// UDP port; 0 = 9.
+    pub port: u16,
+    /// SSH host that sends the packet on the same LAN (for VPN access); empty = this computer.
+    pub relay: String,
+    pub updated_at: i64,
+    pub deleted: bool,
+}
+
 /// Keychain: an SSH private key.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -112,6 +129,7 @@ pub struct Vault {
     pub snippets: Vec<Snippet>,
     pub keys: Vec<Key>,
     pub identities: Vec<Identity>,
+    pub wol: Vec<WolDevice>,
     /// Collections from newer app versions, kept and merged so syncing never drops them.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -222,6 +240,7 @@ pub fn merge(a: &Vault, b: &Vault) -> Vault {
         snippets: merge_items(&a.snippets, &b.snippets, |s| &s.id, |s| s.updated_at),
         keys: merge_items(&a.keys, &b.keys, |k| &k.id, |k| k.updated_at),
         identities: merge_items(&a.identities, &b.identities, |i| &i.id, |i| i.updated_at),
+        wol: merge_items(&a.wol, &b.wol, |w| &w.id, |w| w.updated_at),
         extra: merge_extra(&a.extra, &b.extra),
     }
 }
