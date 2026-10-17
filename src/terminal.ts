@@ -428,6 +428,12 @@ export class Session {
   private refit() {
     if (!this.el.offsetParent) return;
     this.fit.fit();
+    // At fractional scaling the fit can leave the last row half outside the box: drop a row until it fits.
+    const box = this.el.querySelector<HTMLElement>(".term")!;
+    const screen = this.el.querySelector<HTMLElement>(".xterm-screen");
+    while (screen && this.term.rows > 1 && screen.getBoundingClientRect().bottom > box.getBoundingClientRect().bottom + 0.5) {
+      this.term.resize(this.term.cols, this.term.rows - 1);
+    }
     this.term.refresh(0, this.term.rows - 1);
   }
 
