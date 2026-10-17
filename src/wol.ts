@@ -15,6 +15,7 @@ let loadedAt = 0;
 let sending = new Set<string>();
 type OsKey = "linux" | "windows" | "mac" | "relay";
 let os: OsKey = "linux";
+let helpOpen = false;
 
 async function load(ctx: WolCtx) {
   devices = await api.wolList().catch(() => []);
@@ -92,7 +93,7 @@ function help() {
       return `<li>${esc(s[0])}<div class="wol-cmd"><code>${esc(s[1])}</code><button class="icon-btn" data-wol="copy" data-cmd="${esc(s[1])}" title="Copy command">${icon("copy", 14)}</button></div></li>`;
     })
     .join("");
-  return `<details class="wol-help">
+  return `<details class="wol-help" ${helpOpen ? "open" : ""}>
     <summary>How to turn on Wake on LAN</summary>
     <div class="wol-tabs">${(["linux", "windows", "mac", "relay"] as OsKey[]).map(tab).join("")}</div>
     <h5>${esc(cur.title)}</h5>
@@ -194,6 +195,11 @@ function deviceForm(ctx: WolCtx, d: WolDevice | null) {
 
 /** Clicks on the Wake on LAN page (the page root persists across renders). */
 export function bindWol(root: HTMLElement, ctx: WolCtx, active: () => boolean) {
+  // Re-rendering the page must not close the help section the user opened.
+  root.addEventListener("toggle", (e) => {
+    const d = e.target as HTMLDetailsElement;
+    if (d.classList.contains("wol-help")) helpOpen = d.open;
+  }, true);
   root.addEventListener("click", async (e) => {
     if (!active()) return;
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-wol]");
