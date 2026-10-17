@@ -114,7 +114,7 @@ export function renderWol(root: HTMLElement, ctx: WolCtx) {
       ${live.length
         ? `<div class="grid wol-grid">${live.map((d) => card(ctx, d)).join("")}</div>`
         : `<div class="empty small">${icon("power", 36)}<h3>No devices yet</h3><p>Add a computer's MAC address to wake it from anywhere on your network or VPN.</p>
-            <button class="btn primary" data-wol="new">${icon("plus", 16)} New device</button></div>`}
+            </div>`}
       ${help()}
     </div>`;
   if (root.querySelector(".wol-title")) morphHtml(root, html);
@@ -153,7 +153,7 @@ function deviceForm(ctx: WolCtx, d: WolDevice | null) {
       <option value="">This computer (same LAN)</option>
       ${hosts.map((h) => `<option value="${h.id}" ${h.id === d?.relay ? "selected" : ""}>${esc(h.name)} (${esc(h.address)})</option>`).join("")}
     </select></label>
-    <p class="muted wol-hint">Use “Send from” when this computer is on a VPN and the target is on a home or office LAN.</p>
+    <p class="muted wol-hint">Only needed when this device is on a VPN. Pick a saved host that sits on the target's LAN; it sends the packet for you.</p>
     <p class="err" hidden></p>
     <div class="modal-actions"><button type="button" class="btn ghost" data-r="0">Cancel</button><button type="submit" class="btn primary">Save</button></div></form>`;
   document.body.append(el);
