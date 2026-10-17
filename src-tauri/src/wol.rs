@@ -52,8 +52,8 @@ pub async fn send_via(store: Arc<Store>, relay: &Host, dev: &WolDevice) -> Resul
     let (ip, port) = destination(dev)?;
     let hex: String = mac.iter().map(|b| format!("{b:02X}")).collect();
     let script = format!(
-        "use IO::Socket::INET; my $s = IO::Socket::INET->new(Proto => 'udp', Broadcast => 1) or die 'socket'; \
-         $s->send(\"\\xff\" x 6 . (pack('H12', '{hex}') x 16), 0, '{ip}:{port}') or die 'send'; print \"sent\\n\";"
+        "use IO::Socket::INET; my $s = IO::Socket::INET->new(Proto => 'udp', PeerAddr => '{ip}:{port}', Broadcast => 1) or die 'socket'; \
+         $s->send(\"\\xff\" x 6 . (pack('H12', '{hex}') x 16)) or die 'send'; print \"sent\\n\";"
     );
     let cmd = format!("perl -MIO::Socket::INET -e {}", foldersync::sh(&script));
     let handle = ssh::connect(store, relay, ssh::no_log()).await?;
