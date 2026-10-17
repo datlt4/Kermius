@@ -1125,7 +1125,7 @@ els.page.addEventListener("click", async (e) => {
     $<HTMLInputElement>(".font-search", els.page).focus();
   } else if (a === "size-dec" || a === "size-inc") {
     const p = loadPrefs();
-    setPrefs({ ...p, fontSize: Math.max(8, Math.min(32, p.fontSize + (a === "size-inc" ? 1 : -1))) });
+    setPrefs({ ...p, fontSize: Math.max(4, Math.min(32, p.fontSize + (a === "size-inc" ? 1 : -1))) });
   }
 });
 
