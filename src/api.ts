@@ -96,6 +96,20 @@ export type NearbyEvent =
   | { kind: "requestGone"; id: string }
   | ({ kind: "transfer" } & NearbyTransfer);
 
+export interface WolDevice {
+  id: string;
+  name: string;
+  mac: string;
+  /** Broadcast address of the target's network; "" = 255.255.255.255. */
+  broadcast: string;
+  /** UDP port; 0 = 9. */
+  port: number;
+  /** SSH host on the target's LAN that sends the packet; "" = this computer. */
+  relay: string;
+  updatedAt: number;
+  deleted: boolean;
+}
+
 export interface Key {
   id: string;
   label: string;
@@ -231,6 +245,10 @@ const tauriApi = {
   saveHost: (host: Host) => invoke<Host>("save_host", { host }),
   deleteHost: (id: string) => invoke<void>("delete_host", { id }),
   listSnippets: () => invoke<Snippet[]>("list_snippets"),
+  wolList: () => invoke<WolDevice[]>("wol_list"),
+  wolSave: (device: WolDevice) => invoke<WolDevice>("wol_save", { device }),
+  wolDelete: (id: string) => invoke<void>("wol_delete", { id }),
+  wolSend: (id: string) => invoke<void>("wol_send", { id }),
   saveSnippet: (snippet: Snippet) => invoke<Snippet>("save_snippet", { snippet }),
   deleteSnippet: (id: string) => invoke<void>("delete_snippet", { id }),
   listKeys: () => invoke<Key[]>("list_keys"),

@@ -789,3 +789,43 @@ details .field + .field { margin-top: 10px; }
 .nb-fw code { padding: 2px 8px; border-radius: 6px; background: rgba(127, 127, 127, 0.12); color: var(--text); overflow-wrap: anywhere; }
 .nb-me b { display: inline-flex; align-items: center; gap: 4px; }
 .nb-rename { width: 26px; height: 26px; color: var(--muted); }
+
+/* ---------- Wake on LAN ---------- */
+.wol-title { margin: 0; font-size: 20px; font-weight: 600; }
+.wol-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.wol-card { cursor: default; }
+.wol-power {
+  position: relative; flex: none; width: 56px; height: 56px; border-radius: 50%;
+  display: grid; place-items: center; color: #fff;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  box-shadow: 0 6px 18px -8px rgba(91, 140, 255, 0.8); transition: transform 0.15s var(--ease);
+}
+.wol-power:hover { transform: scale(1.05); }
+.wol-power:active { transform: scale(0.96); }
+.wol-card.sending .wol-power { animation: wol-pulse 0.9s ease-in-out infinite; }
+.wol-card.sending::after {
+  content: ""; position: absolute; inset: -1px; border-radius: var(--radius); pointer-events: none;
+  border: 2px solid var(--accent); animation: wol-ring 1.2s ease-out infinite;
+}
+.wol-card.sending .card-sub:last-child { color: var(--accent); }
+@keyframes wol-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.09); } }
+@keyframes wol-ring { from { opacity: 0.9; transform: scale(1); } to { opacity: 0; transform: scale(1.05); } }
+@media (prefers-reduced-motion: reduce) {
+  .wol-card.sending .wol-power, .wol-card.sending::after { animation: none; }
+}
+.wol-help { margin-top: 28px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.wol-help summary { cursor: pointer; font-weight: 600; }
+.wol-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 10px; }
+.wol-os { padding: 6px 12px; border-radius: 8px; background: #262b37; color: var(--muted); font-size: 13px; }
+.wol-os.on { background: var(--accent); color: #fff; }
+.wol-help h5 { margin: 4px 0 8px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.wol-steps { margin: 0; padding-left: 20px; line-height: 1.6; font-size: 13.5px; }
+.wol-steps li { margin-bottom: 8px; }
+.wol-cmd { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.wol-cmd code { flex: 1; min-width: 0; padding: 6px 10px; border-radius: 7px; background: rgba(127, 127, 127, 0.12); overflow-x: auto; white-space: nowrap; font-size: 12.5px; }
+.wol-form { width: min(440px, 92vw); }
+.wol-hint { margin: -4px 0 10px; font-size: 12.5px; }
+@media (max-width: 760px) {
+  .wol-grid { grid-template-columns: 1fr; }
+  .wol-power { width: 48px; height: 48px; }
+}

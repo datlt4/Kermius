@@ -11,6 +11,7 @@ mod proxy;
 mod ssh;
 mod sshconfig;
 mod update;
+mod wol;
 mod store;
 mod sync;
 mod termix;
@@ -312,6 +313,53 @@ fn ssh_connect(
     let sid = uuid::Uuid::new_v4().to_string();
     state.sessions.lock().insert(sid.clone(), (tx, flow));
     Ok(sid)
+}
+
+#[tauri::command]
+fn wol_list(state: State<AppState>) -> Vec<model::WolDevice> {
+    state.store.state.lock().vault.wol.iter().filter(|w| !w.deleted).cloned().collect()
+}
+
+#[tauri::command]
+fn wol_save(state: State<AppState>, mut device: model::WolDevice) -> Res<model::WolDevice> {
+    wol::parse_mac(&device.mac)?;
+    if device.id.is_empty() {
+        device.id = uuid::Uuid::new_v4().to_string();
+    }
+    device.updated_at = now_ms();
+    device.deleted = false;
+    {
+        let mut st = state.store.state.lock();
+        match st.vault.wol.iter_mut().find(|w| w.id == device.id) {
+            Some(w) => *w = device.clone(),
+            None => st.vault.wol.push(device.clone()),
+        }
+    }
+    state.store.save().map_err(e)?;
+    Ok(device)
+}
+
+#[tauri::command]
+fn wol_delete(state: State<AppState>, id: String) -> Res<()> {
+    {
+        let mut st = state.store.state.lock();
+        if let Some(w) = st.vault.wol.iter_mut().find(|w| w.id == id) {
+            *w = model::WolDevice { id: w.id.clone(), updated_at: now_ms(), deleted: true, ..Default::default() };
+        }
+    }
+    state.store.save().map_err(e)
+}
+
+/// Sends the magic packet, from this computer or from the relay host on the target's LAN.
+#[tauri::command]
+async fn wol_send(state: State<'_, AppState>, id: String) -> Res<()> {
+    let dev = state.store.state.lock().vault.wol.iter().find(|w| w.id == id && !w.deleted).cloned().ok_or("Device not found")?;
+    if dev.relay.is_empty() {
+        wol::send_direct(&dev)
+    } else {
+        let relay = state.host(&dev.relay)?;
+        wol::send_via(state.store.clone(), &relay, &dev).await
+    }
 }
 
 /// Connect and authenticate an (unsaved) host, then disconnect; returns the connection log.
@@ -1187,6 +1235,10 @@ pub fn run() {
             import_termix,
             ssh_config_preview,
             ssh_test,
+            wol_list,
+            wol_save,
+            wol_delete,
+            wol_send,
             nearby_status,
             nearby_start,
             nearby_stop,
