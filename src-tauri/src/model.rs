@@ -274,6 +274,19 @@ mod tests {
     }
 
     #[test]
+    fn wol_devices_sync_like_hosts() {
+        let dev = |id: &str, ts: i64, deleted: bool| WolDevice { id: id.into(), name: id.into(), mac: "aa:bb:cc:dd:ee:ff".into(), updated_at: ts, deleted, ..Default::default() };
+        let a = Vault { wol: vec![dev("w1", 1, false)], ..Default::default() };
+        let b = Vault { wol: vec![dev("w1", 2, true), dev("w2", 1, false)], ..Default::default() };
+        let m = merge(&a, &b);
+        assert_eq!(m.wol.iter().find(|w| w.id == "w1").map(|w| w.deleted), Some(true));
+        assert!(m.wol.iter().any(|w| w.id == "w2" && !w.deleted));
+        // The encrypted sync payload is this JSON: the field must survive a round trip.
+        let json = serde_json::to_string(&m).unwrap();
+        assert_eq!(serde_json::from_str::<Vault>(&json).unwrap().wol, m.wol);
+    }
+
+    #[test]
     fn resolve_uses_identity_and_key() {
         let v = Vault {
             keys: vec![Key { id: "k".into(), private_key: "PRIV".into(), ..Default::default() }],
