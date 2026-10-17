@@ -383,9 +383,25 @@ pub fn bridge_shell(host_id: &str) -> Result<String, String> {
 
 /// Run rsync (with `--info=progress2` in `args`), reporting (bytes done, estimated total; 0 = not known yet).
 /// Returns rsync's other stdout lines (itemized changes, --stats).
+/// Kills rsync's whole process group (rsync plus its ssh children) when the transfer is dropped
+/// (paused, deleted, app exit), so nothing keeps writing into the destination.
+struct KillGroup(Option<u32>);
+
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0 {
+            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+}
+
 pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("rsync");
     cmd.args(&args);
+    // A group of its own, so the group can be killed together with rsync's children.
+    #[cfg(unix)]
+    cmd.process_group(0);
     // If Kermius exits mid-transfer, rsync must stop too (else a restarted app could run a second copy).
     #[cfg(target_os = "linux")]
     unsafe {
@@ -397,6 +413,7 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
     // C locale: progress numbers use "," separators regardless of the user's locale.
     cmd.env("LC_ALL", "C").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|err| format!("rsync: {err}"))?;
+    let group = KillGroup(child.id());
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
     let err_task = tokio::spawn(async move {
@@ -441,6 +458,8 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
         }
     }
     let status = child.wait().await.map_err(e)?;
+    // rsync is done; its children must be gone too, so a finished run leaves nothing behind.
+    drop(group);
     let errors = err_task.await.unwrap_or_default();
     if status.success() {
         Ok(out)
@@ -610,5 +629,27 @@ mod e2e {
         files.remove(&id, &remote.join("src").to_string_lossy()).await.unwrap();
         assert!(!remote.join("src").exists());
         std::fs::remove_dir_all(tmp).unwrap();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod rsync_kill_tests {
+    use super::*;
+
+    /// Dropping a running transfer must stop rsync (and its group): nothing keeps writing afterwards.
+    #[tokio::test]
+    async fn dropped_rsync_leaves_no_process() {
+        let dir = std::env::temp_dir().join(format!("kermius-rsync-{}", std::process::id()));
+        let (src, dst) = (dir.join("src"), dir.join("dst"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("big.bin"), vec![7u8; 200 << 20]).unwrap();
+        let args = vec!["-a".to_string(), format!("{}/", src.display()), format!("{}/", dst.display())];
+        let run = run_rsync(args, |_, _| {});
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(300), run).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let left = std::process::Command::new("pgrep").arg("-f").arg(dst.to_string_lossy().as_ref()).output().unwrap().stdout;
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(left.is_empty(), "rsync still running: {}", String::from_utf8_lossy(&left));
     }
 }
