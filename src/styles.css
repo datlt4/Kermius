@@ -826,7 +826,8 @@ details .field + .field { margin-top: 10px; }
 .wol-cmd { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .wol-cmd code { flex: 1; min-width: 0; padding: 6px 10px; border-radius: 7px; background: rgba(127, 127, 127, 0.12); overflow-x: auto; white-space: nowrap; font-size: 12.5px; }
 .wol-form { width: min(440px, 92vw); }
-.wol-hint { margin: -4px 0 10px; font-size: 12.5px; }
+.wol-form > .field, .wol-form > .field-row { margin-top: 14px; }
+.wol-hint { margin: 14px 0 0; font-size: 12.5px; }
 @media (max-width: 760px) {
   .wol-grid { grid-template-columns: 1fr; }
   .wol-power { width: 48px; height: 48px; }
