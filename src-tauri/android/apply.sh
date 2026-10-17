@@ -11,3 +11,6 @@ grep -q WRITE_EXTERNAL_STORAGE "$GEN/AndroidManifest.xml" ||
   sed -i 's|<uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />|&\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />|' "$GEN/AndroidManifest.xml"
 grep -q requestLegacyExternalStorage "$GEN/AndroidManifest.xml" ||
   sed -i 's|<application|<application android:requestLegacyExternalStorage="true"|' "$GEN/AndroidManifest.xml"
+# Build-logic plugins (Kotlin 2.3.x for buildSrc) also live on Maven Central; the plugin portal alone misses them on a fresh cache.
+grep -q pluginManagement src-tauri/gen/android/settings.gradle ||
+  { printf 'pluginManagement {\n    repositories {\n        gradlePluginPortal()\n        google()\n        mavenCentral()\n    }\n}\n\n'; cat src-tauri/gen/android/settings.gradle; } > "$GEN/../../../../settings.tmp" && mv "$GEN/../../../../settings.tmp" src-tauri/gen/android/settings.gradle
