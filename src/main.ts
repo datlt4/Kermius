@@ -268,7 +268,8 @@ els.tabs.addEventListener(
 if (window.visualViewport) {
   const vv = window.visualViewport;
   const fitViewport = () => {
-    document.documentElement.style.setProperty("--vv-h", `${vv.height}px`);
+    // The usable height is the smaller of the two: Android shrinks the page (padding), iOS the visual viewport.
+    document.documentElement.style.setProperty("--vv-h", `${Math.min(vv.height, innerHeight)}px`);
     document.documentElement.style.setProperty("--vv-top", `${vv.offsetTop}px`);
   };
   vv.addEventListener("resize", fitViewport);

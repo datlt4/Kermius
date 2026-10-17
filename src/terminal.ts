@@ -64,6 +64,20 @@ export type SessionState = "connecting" | "connected" | "closed" | "error";
 
 const coarse = matchMedia("(pointer: coarse)").matches;
 
+// On phones the on-screen keyboard is open when the usable height falls well below the screen's.
+// The ⌨ key shows that state, and the bottom padding goes while the keyboard covers it.
+if (coarse && window.visualViewport) {
+  const vv = window.visualViewport;
+  const sync = () => {
+    const open = Math.min(vv.height, innerHeight) < screen.height * 0.8;
+    document.documentElement.classList.toggle("kb-open", open);
+    document.querySelectorAll<HTMLElement>('.keybar [data-k="kbd"]').forEach((b) => b.classList.toggle("on", open));
+    if (!open) document.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea").forEach((t) => (t.inputMode = "none"));
+  };
+  vv.addEventListener("resize", sync);
+  sync();
+}
+
 /** On-screen key row for touch devices (Termius-style), with an optional tmux row. */
 const KEYS: Record<string, string> = {
   Esc: "\x1b", Tab: "\t", "↑": "\x1b[A", "↓": "\x1b[B", "→": "\x1b[C", "←": "\x1b[D",
@@ -344,7 +358,7 @@ export class Session {
       } else if (k === "kbd") {
         const show = ta.inputMode === "none";
         ta.inputMode = show ? "text" : "none";
-        b.classList.toggle("on", show);
+        // The key shows whether the keyboard is actually up (see the viewport sync above).
         // The keyboard follows the input mode only when focus changes.
         ta.blur();
         if (show) t.focus();
@@ -364,7 +378,6 @@ export class Session {
         if (this.el.isConnected && innerHeight - lastH > 80 && ta.inputMode === "text") {
           ta.inputMode = "none";
           ta.blur();
-          this.el.querySelector('.keybar [data-k="kbd"]')?.classList.remove("on");
         }
         lastH = innerHeight;
       });

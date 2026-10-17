@@ -312,6 +312,8 @@ details .field + .field { margin-top: 10px; }
 .keybar button, .kp-keys button { flex: none; display: grid; place-items: center; min-width: 42px; height: 34px; padding: 0 10px; border-radius: 8px; background: #262b37; font-family: "JetBrains Mono", monospace; font-size: 13px; white-space: nowrap; }
 .keybar button.on { background: var(--accent); color: #fff; }
 .keys { flex: none; padding-bottom: var(--safe-bottom); background: var(--bg-side); }
+/* Keyboard up: it covers the home-indicator area, so no padding for it. */
+.kb-open .keys { padding-bottom: 0; }
 .keys-panel { max-height: 42vh; overflow-y: auto; padding: 8px 8px 2px; border-top: 1px solid var(--border); background: var(--bg-side); }
 .kp-sec { margin-bottom: 8px; }
 .kp-sec > span { display: block; margin: 0 0 4px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
