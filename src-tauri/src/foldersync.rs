@@ -668,7 +668,7 @@ async fn delete(side: &Side, rels: &[String], tree: &Tree) -> Result<(), String>
 fn protect_args() -> Option<String> {
     static OLD_CLIENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let old = *OLD_CLIENT.get_or_init(|| {
-        let out = std::process::Command::new("rsync").arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let out = std::process::Command::new(crate::files::rsync_bin()).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
         let ver: Vec<u32> = out.split_whitespace().skip_while(|w| *w != "version").nth(1).unwrap_or("0").split('.').filter_map(|n| n.parse().ok()).collect();
         (ver.first().copied().unwrap_or(0), ver.get(1).copied().unwrap_or(0), ver.get(2).copied().unwrap_or(0)) < (3, 2, 4)
     });
