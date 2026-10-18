@@ -78,6 +78,17 @@ if (coarse && window.visualViewport) {
   sync();
 }
 
+/** Text of an OSC 52 payload ("c;<base64>"); null for clipboard reads or bad data. */
+export function osc52Text(data: string): string | null {
+  const b64 = data.slice(data.indexOf(";") + 1);
+  if (!b64 || b64 === "?") return null;
+  try {
+    return new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+  } catch {
+    return null;
+  }
+}
+
 /** On-screen key row for touch devices (Termius-style), with an optional tmux row. */
 const KEYS: Record<string, string> = {
   Esc: "\x1b", Tab: "\t", "↑": "\x1b[A", "↓": "\x1b[B", "→": "\x1b[C", "←": "\x1b[D",
@@ -213,6 +224,12 @@ export class Session {
     const t = this.term;
     t.loadAddon(this.fit);
     t.loadAddon(new WebLinksAddon());
+    // OSC 52: a remote app (opencode, tmux, vim) copies text to the local clipboard.
+    t.parser.registerOscHandler(52, (data) => {
+      const text = osc52Text(data);
+      if (text !== null) api.clipboardWrite(text).catch(() => {});
+      return true;
+    });
     t.open(this.el.querySelector(".term")!);
     try {
       const r = renderer();
