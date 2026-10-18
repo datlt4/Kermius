@@ -198,12 +198,23 @@ pub enum Event {
     Error { message: String },
 }
 
+/// The rsync to run. GUI apps on macOS don't get Homebrew's PATH, so check its usual spots first.
+pub fn rsync_bin() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    for p in ["/opt/homebrew/bin/rsync", "/usr/local/bin/rsync"] {
+        if std::path::Path::new(p).is_file() {
+            return p.into();
+        }
+    }
+    "rsync".into()
+}
+
 /// rsync 3.1+ is needed (`--info=progress2`); macOS ships 2.6.9 or openrsync.
 pub fn rsync_available() -> bool {
     if cfg!(windows) {
         return false;
     }
-    let Ok(out) = std::process::Command::new("rsync").arg("--version").output() else { return false };
+    let Ok(out) = std::process::Command::new(rsync_bin()).arg("--version").output() else { return false };
     rsync_version_ok(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -397,7 +408,7 @@ impl Drop for KillGroup {
 }
 
 pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new("rsync");
+    let mut cmd = tokio::process::Command::new(rsync_bin());
     cmd.args(&args);
     // A group of its own, so the group can be killed together with rsync's children.
     #[cfg(unix)]
