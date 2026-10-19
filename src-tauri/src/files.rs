@@ -407,7 +407,8 @@ impl Drop for KillGroup {
     }
 }
 
-pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) -> Result<String, String> {
+/// Runs rsync. `progress` gets (done, total) bytes; `on_line` gets every other stdout line.
+pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send, on_line: impl Fn(&str) + Send) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new(rsync_bin());
     cmd.args(&args);
     // A group of its own, so the group can be killed together with rsync's children.
@@ -463,6 +464,7 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send) ->
                     continue;
                 }
             }
+            on_line(line.trim_end());
             if line.ends_with('\n') {
                 out.push_str(&line);
             }
@@ -539,9 +541,13 @@ async fn rsync_copy(host: &Host, dir: Direction, sources: &[String], dest: &str,
             args.push(format!("{}/", dest.trim_end_matches('/')));
         }
     }
-    run_rsync(args, |done, total| {
-        let _ = events.send(Event::Progress { done, total, file: String::new() });
-    })
+    run_rsync(
+        args,
+        |done, total| {
+            let _ = events.send(Event::Progress { done, total, file: String::new() });
+        },
+        |_| {},
+    )
     .await
     .map(|_| ())
 }
@@ -668,7 +674,7 @@ mod rsync_kill_tests {
         std::fs::create_dir_all(&dst).unwrap();
         std::fs::write(src.join("big.bin"), vec![7u8; 200 << 20]).unwrap();
         let args = vec!["-a".to_string(), format!("{}/", src.display()), format!("{}/", dst.display())];
-        let run = run_rsync(args, |_, _| {});
+        let run = run_rsync(args, |_, _| {}, |_| {});
         let _ = tokio::time::timeout(std::time::Duration::from_millis(300), run).await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let left = std::process::Command::new("pgrep").arg("-f").arg(dst.to_string_lossy().as_ref()).output().unwrap().stdout;
