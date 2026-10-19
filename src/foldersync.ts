@@ -65,7 +65,24 @@ const INTERVALS: [number, string][] = [
   [60, "Every hour"],
   [360, "Every 6 hours"],
   [1440, "Every day"],
+  [4320, "Every 3 days"],
+  [7200, "Every 5 days"],
+  [10080, "Every week"],
+  [20160, "Every 2 weeks"],
+  [30240, "Every 3 weeks"],
+  [43200, "Every month"],
 ];
+
+/** Excludes for files rsync could not read or write, relative to each side's folder. */
+function deniedExcludes(job: FsJob): string[] {
+  const roots = [job.a, job.b].map((ep) => ep.path.replace(/\/+$/, ""));
+  const out = new Set<string>();
+  for (const m of job.lastResult.matchAll(/"([^"]+)": Permission denied \(13\)/g)) {
+    const root = roots.find((r) => m[1].startsWith(r + "/"));
+    if (root !== undefined) out.add(m[1].slice(root.length + 1));
+  }
+  return [...out];
+}
 
 /** Install commands per distro (remote needs rsync + GNU find; inotify-tools for instant sync). */
 const INSTALL: [string, string][] = [
@@ -304,6 +321,7 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                     <div class="fs-status ${st.cls}"><span class="dot-st"></span>${esc(st.text)}
                       ${l?.phase === "syncing" && l.rate ? `<span class="fs-rate">${l.dir === "down" ? "↓" : l.dir === "up" ? "↑" : "⇢"} ${fmtBytes(l.rate)}/s</span>` : ""}
                       ${st.cls === "err" ? `<button class="fs-conflicts" data-fs="details">Details</button>` : ""}
+                      ${deniedExcludes(j).length ? `<button class="fs-conflicts" data-fs="skip-denied" title="Add the unreadable files to Exclude and sync again">Skip &amp; retry</button>` : ""}
                       ${j.conflicts ? `<button class="fs-conflicts" data-fs="conflicts">⚠ ${j.conflicts} conflict${j.conflicts > 1 ? "s" : ""}</button>` : ""}</div>
                     ${
                       w
@@ -402,6 +420,18 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
         }
       }, 1500);
       return;
+    }
+    if (act === "skip-denied") {
+      const add = deniedExcludes(job);
+      if (!add.length) return toast("No unreadable files to skip", "info");
+      try {
+        await api.fsyncSave({ ...job, excludes: [...new Set([...job.excludes, ...add])] });
+      } catch (x) {
+        return toast(String(x), "err");
+      }
+      toast(`Skipped ${add.length} unreadable file${add.length > 1 ? "s" : ""}; syncing again`, "info");
+      await loadJobs();
+      return runJob(job.id, ctx);
     }
     if (act === "raise-cmd") {
       const host = t.closest<HTMLElement>("[data-host]")!.dataset.host!;
