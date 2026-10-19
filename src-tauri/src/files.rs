@@ -486,6 +486,14 @@ fn rsync_error(stderr: &str) -> String {
     let Some(first) = items.first() else {
         return lines.last().copied().unwrap_or("rsync failed").to_string();
     };
+    if items.iter().any(|l| l.contains("No space left on device")) {
+        let mut msg = "Destination disk is full: free some space, the next run resumes from the partial files".to_string();
+        for l in items.iter().take(200) {
+            msg.push('\n');
+            msg.push_str(l);
+        }
+        return msg;
+    }
     let hint = if items.iter().any(|l| l.contains("Invalid argument (22)")) {
         " (names with : ? * \" < > | are not allowed on NTFS/exFAT/FAT disks)"
     } else if items.iter().any(|l| l.contains("Permission denied (13)")) {
@@ -510,6 +518,10 @@ mod rsync_error_tests {
         assert!(m.starts_with("2 items failed (names with"), "{m}");
         assert_eq!(m.lines().count(), 2);
         assert_eq!(super::rsync_error("rsync error: boom (code 5)"), "rsync error: boom (code 5)");
+        let full = "rsync: [receiver] write failed on \"/mnt/x/a\": No space left on device (28)\nrsync error: error in file IO (code 11)\n";
+        let m = super::rsync_error(full);
+        assert!(m.starts_with("Destination disk is full"), "{m}");
+        assert_eq!(m.lines().count(), 2);
     }
 }
 
