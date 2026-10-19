@@ -2,7 +2,7 @@
   "name": "kermius",
   "private": true,
   "license": "MIT",
-  "version": "1.38.11",
+  "version": "1.38.12",
   "type": "module",
   "scripts": {
     "dev": "vite",

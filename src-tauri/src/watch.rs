@@ -13,7 +13,10 @@ use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-const DEBOUNCE: Duration = Duration::from_secs(3);
+/// A run waits until the folder has been quiet this long (AI tools and builds write constantly)...
+const SETTLE: Duration = Duration::from_secs(45);
+/// ...but never longer than this, so a constantly changing folder still syncs.
+const MAX_WAIT: Duration = Duration::from_secs(600);
 
 #[derive(Default)]
 pub struct Watchers {
@@ -87,9 +90,17 @@ fn start(app: AppHandle, job: Job, states: States) -> Vec<JoinHandle<()>> {
     let _ = tx.send(Change::Full);
     tasks.push(tauri::async_runtime::spawn(async move {
         while let Some(first) = rx.recv().await {
-            tokio::time::sleep(DEBOUNCE).await;
+            let started = std::time::Instant::now();
+            let mut batch = vec![first];
+            while started.elapsed() < MAX_WAIT {
+                match tokio::time::timeout(SETTLE, rx.recv()).await {
+                    Ok(Some(c)) => batch.push(c),
+                    Ok(None) => return,
+                    Err(_) => break,
+                }
+            }
             let mut paths: Option<Vec<String>> = Some(Vec::new());
-            for c in std::iter::once(first).chain(std::iter::from_fn(|| rx.try_recv().ok())) {
+            for c in batch {
                 match (c, paths.as_mut()) {
                     (Change::Path(p), Some(v)) => v.push(p),
                     (Change::Full, _) => paths = None,
