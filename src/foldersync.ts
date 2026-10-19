@@ -273,11 +273,13 @@ function remoteDevices(ctx: FolderSyncCtx) {
       const key = ep.hosts.join(",");
       const name = ep.hosts.map((id) => ctx.hosts().find((h) => h.id === id)?.name ?? "?").join(" / ");
       const w = watching.get(`${j.id}:${side}`);
-      const state = j.paused ? "paused" : (w?.state ?? (j.lastResult.startsWith(OFFLINE) ? "offline" : "unknown"));
+      // A mirror's destination is written only by Kermius, so it is never watched (by design).
+      const mirrorTarget = j.mode === "mirror" && side === "b";
+      const state = j.paused ? "paused" : live.has(j.id) ? "syncing" : (w?.state ?? (j.lastResult.startsWith(OFFLINE) ? "offline" : mirrorTarget ? "mirror" : "unknown"));
       const text =
-        state === "offline" ? "Disconnected" : state === "paused" ? "Paused" : state === "unknown" ? "Not watched" : `Connected ${(w?.message ?? "").split("|")[0].split(";")[0]}`;
+        state === "offline" ? "Disconnected" : state === "paused" ? "Paused" : state === "syncing" ? "Syncing now" : state === "mirror" ? "Mirror target · synced on schedule" : state === "unknown" ? "Not watched" : `Connected ${(w?.message ?? "").split("|")[0].split(";")[0]}`;
       const prev = devices.get(key);
-      if (!prev || prev.state === "unknown" || prev.state === "paused") devices.set(key, { name, state, text });
+      if (!prev || ["unknown", "paused", "mirror"].includes(prev.state)) devices.set(key, { name, state, text });
     }
   }
   return [...devices.values()];
