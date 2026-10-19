@@ -1,4 +1,4 @@
-# Kermius — handoff (2026-10-19)
+# Kermius — handoff (2026-10-19, cập nhật lần 2)
 
 Repo: `/mnt/ssd_1tb/Downloads-Ubuntu/Miscellaneous/kermius` (Tauri 2, Rust backend in `src-tauri/`, TypeScript UI in `src/`).
 Owner's language: Vietnamese. Replies to the owner in Vietnamese.
@@ -10,11 +10,14 @@ Owner's language: Vietnamese. Replies to the owner in Vietnamese.
 - Owner rule (2026-10-18): release automatically after every finished fix, without asking. Do not install to phones unless asked.
 - Version bump on every release, in three files: `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`. `src-tauri/Cargo.lock` is stale (still `kermius 1.38.0`); cargo updates it on the next build.
 - Tag push triggers `.github/workflows/release.yml` (desktop matrix, `mobile.yml` for APK + unsigned IPA, then a `publish` job builds `latest.json` and un-drafts the release). Check CI with the public API: `https://api.github.com/repos/datlt4/Kermius/actions/runs` (no token needed for reads).
-- Recent state: v1.38.13 published and CI green. v1.38.12's release run was **cancelled** (superseded). v1.38.11 is a leftover draft and is not in the published list. v1.38.3, v1.38.9, v1.38.10 are missing from the published list; check on GitHub before assuming they exist.
+- **GitHub Actions đang tắt theo yêu cầu của owner (2026-10-19), owner sẽ tự bật lại.** Khi đang tắt, không có release, APK, IPA hay `latest.json` mới. Trước khi tag bản mới, kiểm tra Actions đã bật.
+- Recent state: v1.38.13 published and CI green (trước khi tắt Actions). v1.38.12's release run was **cancelled** (superseded). v1.38.11 is a leftover draft and is not in the published list. v1.38.3, v1.38.9, v1.38.10 are missing from the published list; check on GitHub before assuming they exist.
 
 ## 2. Environment facts
 
-- Dev PC: this machine. No `gh` CLI, no cargo, no adb-connected phone right now. Rust builds and tests run on the Mac.
+- Dev PC: this machine. No `gh` CLI, no adb-connected phone right now. Rust builds and tests run on the Mac.
+- **Không build local nữa** (owner yêu cầu dừng build local). Cache build `~/.cache/kermius-target`, `kermius-server-target`, `kermius-android-target`, `kermius-test-target` đã bị xóa (2026-10-19, khoảng 85 GB); lần build sau sẽ biên dịch lại từ đầu. Nếu cần build local, đặt `CARGO_TARGET_DIR` trỏ sang `/mnt/ssd_1tb` (còn trống ~435 GB) thay vì `~/.cache`.
+- Disk `/` sau dọn: 322 GB dùng / 557 GB (61%), còn trống 210 GB. Phần chưa rõ: khoảng 140 GB không đọc được không có sudo (thư mục root, 78 chỗ `Permission denied`) hoặc file đã xóa nhưng còn process giữ. Muốn xem phải chạy `sudo du` (owner tự nhập mật khẩu).
 - **Mac** (`koi-mabu`, user `mabu`, Intel, macOS 13.7.8, Xcode 15.2): reachable as `mabu-wg` (WireGuard 24.8.0.4), sometimes asleep or unreachable. Key auth from this PC was refused; the owner gave a password for it in chat. **Do not store it in files or commands beyond the single session.** Mac toolchain: `~/.cargo/bin`, checkout `~/kermius-dev` (copy of `src-tauri/src` pushed with tar + scp; run `cargo test` there in the background with `nohup sh -c "...; echo EXIT=\$? >> ~/ct.log"`, pexpect times out at 60 s).
 - Helper scripts (outside repo, in scratchpad): `/tmp/claude-1000/mac_ssh.py '<cmd>'` and `/tmp/claude-1000/mac_scp.py <src> <dst>` (pexpect, answer password prompt). Recreate them if `/tmp` was cleared.
 - Phones:
@@ -59,6 +62,7 @@ Grouped by area. Each line is a commit subject; see `git log` for detail.
 3. Android keystore secret (`ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASS`) so APK updates stay signable — owner action on GitHub.
 4. Remove the stuck NTFS `.fuse_hidden*` file in `long_dev2` (owner decided reboot or unmount; not done).
 5. Keyboard regression check on Android and iOS (owner to test).
+5a. Khi owner bật lại GitHub Actions: kiểm tra run `build`/`release` của `v1.38.13` và nhánh `develop` hiện tại có chạy xanh không (commit `ab7644d` là handoff). Nếu cần release mới, làm theo mục 1.
 6. Possible follow-ups the owner asked about but did not confirm: hard-exclude folders detected as churning (currently only waits for them to settle); show "rsync listing N entries" (rsync gives no count during the listing phase).
 7. `Cargo.lock` version line out of date (`1.38.0`).
 8. Nearby Share: iOS ↔ Android/desktop checks done in earlier sessions; the reach-check banner visual still unchecked.
