@@ -121,6 +121,8 @@ pub struct Transfer {
     pub error: String,
     /// Incoming: the folder the files were saved to.
     pub dir: String,
+    /// Unix ms of the last change (set on every emit; for a received transfer, when it finished).
+    pub at: i64,
 }
 
 #[derive(Serialize, Clone)]
@@ -413,7 +415,10 @@ impl Nearby {
         }
     }
 
-    fn emit(&self, e: Event) {
+    fn emit(&self, mut e: Event) {
+        if let Event::Transfer(t) = &mut e {
+            t.at = crate::model::now_ms();
+        }
         let _ = self.app.emit("nearby", e);
     }
 
@@ -750,6 +755,7 @@ impl Nearby {
                 state: "waiting".into(),
                 error: String::new(),
                 dir: String::new(),
+                at: 0,
             };
             me.emit(Event::Transfer(t.clone()));
             let session = Arc::new(Mutex::new(None::<String>));
@@ -1080,6 +1086,7 @@ async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketA
         state: "active".into(),
         error: String::new(),
         dir: me.save_dir().to_string_lossy().into_owned(),
+        at: 0,
     };
     me.emit(Event::Transfer(transfer.clone()));
     let session = Session {

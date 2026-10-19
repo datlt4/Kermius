@@ -86,6 +86,8 @@ export interface NearbyTransfer {
   state: "waiting" | "active" | "done" | "declined" | "failed" | "cancelled";
   error: string;
   dir: string;
+  /** Unix ms of the last change. */
+  at: number;
 }
 
 export type NearbyEvent =
