@@ -332,10 +332,21 @@ function transferRow(t: NearbyTransfer) {
   return `<div class="nb-tr ${t.state}">
     <span class="nb-dir" title="${t.incoming ? "Received" : "Sent"}">${t.incoming ? "↓" : "↑"}</span>
     <div class="nb-tr-body"><div><b>${esc(t.peer)}</b> <span class="muted">· ${({ done: t.incoming ? "received" : "sent", failed: "failed:", declined: "declined:", cancelled: "cancelled:" } as Record<string, string>)[t.state] ?? (t.incoming ? "receiving" : "sending")} ${t.files.toLocaleString()} file${t.files === 1 ? "" : "s"}</span></div>
-      <div class="bar"><i style="width:${pct}%"></i></div><small class="muted">${esc(label[t.state])}</small></div>
+      <div class="bar"><i style="width:${pct}%"></i></div><small class="muted" title="${esc(new Date(t.at).toLocaleString())}">${esc(label[t.state])} · ${agoAt(t.at)}</small></div>
     ${live ? `<button class="btn ghost sm" data-nb="cancel" data-id="${t.id}">Cancel</button>`
       : t.incoming && t.state === "done" && !phone ? `<button class="btn ghost sm" data-nb="open">${icon("folder", 14)} Open</button>` : ""}
   </div>`;
+}
+
+/** "just now", "5m ago", "3h ago", "yesterday", "4d ago", then the date. */
+function agoAt(ts: number) {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 2 * 86400) return "yesterday";
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(ts).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 /** Saved hosts that are this very device (its own LAN / VPN addresses) are left out. */
