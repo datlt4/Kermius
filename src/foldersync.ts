@@ -167,7 +167,9 @@ function status(job: FsJob) {
   const l = live.get(job.id);
   if (l) {
     const t = elapsed(l.started);
-    if (l.phase === "syncing") return { cls: "busy", text: l.pct < 0 ? `Syncing (listing files) · ${t}` : `Syncing ${l.pct}% · ${t}` };
+    // The connect/sync phase carries "via <host>" when the run goes through an SSH host.
+    const via = l.message.startsWith("via ") ? ` · ${l.message}` : "";
+    if (l.phase === "syncing") return { cls: "busy", text: l.pct < 0 ? `Syncing (listing files)${via} · ${t}` : `Syncing ${l.pct}%${via} · ${t}` };
     if (l.phase === "scanning") {
       const sides = (["a", "b"] as const)
         .filter((k) => l.scan[k])
