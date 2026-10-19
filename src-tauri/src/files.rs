@@ -474,11 +474,28 @@ pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send, on
     // rsync is done; its children must be gone too, so a finished run leaves nothing behind.
     drop(group);
     let errors = err_task.await.unwrap_or_default();
-    if status.success() {
+    // Files that vanish mid-run (build output, temp files) are retried by the next run, not failures.
+    if status.success() || (matches!(status.code(), Some(23 | 24)) && only_vanished(&errors)) {
         Ok(out)
     } else {
         Err(rsync_error(&errors))
     }
+}
+
+/// True when every rsync error is a file that disappeared before it could be read.
+fn only_vanished(stderr: &str) -> bool {
+    let mut any = false;
+    for l in stderr.lines().map(str::trim).filter(|l| l.starts_with("rsync")) {
+        if l.starts_with("rsync error:") {
+            continue;
+        }
+        if l.contains("vanished") || (l.contains("link_stat") && l.contains("No such file or directory")) {
+            any = true;
+        } else {
+            return false;
+        }
+    }
+    any
 }
 
 /// Readable rsync failure: "N items failed: <first error>" plus every error line (one per line).
@@ -509,6 +526,17 @@ fn rsync_error(stderr: &str) -> String {
         msg.push_str(l);
     }
     msg
+}
+
+#[cfg(test)]
+mod vanished_tests {
+    #[test]
+    fn only_vanished_is_not_a_failure() {
+        let churn = "rsync: [sender] link_stat \"/x/target/a.rlib\" failed: No such file or directory (2)\nrsync warning: some files vanished before they could be transferred (code 24) at main.c(1356) [sender=3.2.7]\nrsync error: some files/attrs were not transferred (see previous errors) (code 23)\n";
+        assert!(super::only_vanished(churn));
+        assert!(!super::only_vanished("rsync: [receiver] write failed on \"/x/a\": Permission denied (13)\n"));
+        assert!(!super::only_vanished("rsync: [sender] link_stat \"/x\" failed: No such file or directory (2)\nrsync: [receiver] mkstemp failed: Permission denied (13)\n"));
+    }
 }
 
 #[cfg(test)]
