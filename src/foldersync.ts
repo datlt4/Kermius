@@ -433,8 +433,9 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
       } catch (x) {
         return toast(String(x), "err");
       }
-      toast(`Skipped ${add.length} unreadable file${add.length > 1 ? "s" : ""}; syncing again`, "info");
       await loadJobs();
+      if (live.has(job.id)) return toast(`Skipped ${add.length} unreadable file${add.length > 1 ? "s" : ""}; the running sync keeps its old list, the next run uses it`, "info");
+      toast(`Skipped ${add.length} unreadable file${add.length > 1 ? "s" : ""}; syncing again`, "info");
       return runJob(job.id, ctx);
     }
     if (act === "raise-cmd") {
