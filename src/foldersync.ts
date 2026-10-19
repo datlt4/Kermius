@@ -96,6 +96,21 @@ const INSTALL: [string, string][] = [
 ];
 
 const COMMON_EXCLUDES = ["$RECYCLE.BIN", "System Volume Information", ".Trash-*", ".stfolder", ".stversions", ".DS_Store", "Thumbs.db", "desktop.ini"];
+/** Build output, dependencies and caches of common languages (a name matches at any depth; "vendor/bundle" only at the root). */
+const DEV_EXCLUDES = [
+  // Build output
+  "build", "dist", "target", "obj", "DerivedData", "CMakeFiles", "*.o", "*.obj",
+  // JavaScript / TypeScript
+  "node_modules", ".next", ".nuxt", ".svelte-kit", ".turbo", ".parcel-cache", ".vite", "coverage",
+  // Python
+  "__pycache__", "*.pyc", ".venv", "venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", "*.egg-info",
+  // Java / Kotlin / Gradle
+  ".gradle",
+  // Go, Ruby, Elixir
+  "vendor/bundle", "_build",
+  // Editors and temporary files
+  ".cache", "*.tmp", "*.swp", "*~",
+];
 
 const installList = (rows: [string, string][]) =>
   rows
@@ -604,6 +619,7 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
         <small class="muted">Modification times are always kept. Leave permissions/owner off for NTFS, exFAT or FAT disks — they cannot store them and rsync would report errors.</small></div>
       <label class="field"><span>Exclude (one pattern per line, e.g. node_modules, *.tmp, .cache)</span><textarea name="excludes" rows="4">${esc(draft.excludes.join("\n"))}</textarea></label>
       <div class="row fs-exc-btns"><button type="button" class="btn sm" data-exc="common">${icon("plus", 13)} Add common excludes</button>
+        <button type="button" class="btn sm" data-exc="dev" title="Build output, node_modules, __pycache__, target, .venv, .gradle and more">${icon("plus", 13)} Add dev excludes</button>
         <button type="button" class="btn sm" data-exc="stignore">${icon("import", 13)} Import .stignore</button></div>
       <div class="modal-actions"><button type="button" class="btn ghost" data-m="cancel">Cancel</button><button type="submit" class="btn primary">Save</button></div></form>`;
   };
@@ -623,7 +639,7 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     const exc = t.closest<HTMLElement>("[data-exc]")?.dataset.exc;
     if (exc) {
       read();
-      let add: string[] = COMMON_EXCLUDES;
+      let add: string[] = exc === "dev" ? DEV_EXCLUDES : COMMON_EXCLUDES;
       if (exc === "stignore") {
         const local = [draft.a, draft.b].find((x) => x.kind === "local" && x.path);
         if (!local) return toast("Pick a local folder first", "err");
