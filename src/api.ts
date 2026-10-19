@@ -201,6 +201,7 @@ export type FsEvent = { id: string } & (
   | { type: "progress"; done: number; total: number; rate: number; dir: "up" | "down" | "local" }
   | { type: "finished"; ok: boolean; summary: string }
   | { type: "scan"; side: "a" | "b"; files: number; dirs: number; bytes: number }
+  | { type: "log"; line: string }
   | { type: "watch"; side: "a" | "b"; state: "watching" | "polling" | "offline" | "limit"; message: string }
 );
 

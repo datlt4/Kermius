@@ -89,6 +89,8 @@ pub enum Event {
     Progress { done: u64, total: u64, rate: u64, dir: String },
     /// Run finished (`ok` false: error or offline, see `summary`).
     Finished { ok: bool, summary: String },
+    /// A file rsync is copying or deleting (itemized line), for the live log.
+    Log { line: String },
     /// Scan progress for one side ("a"/"b"): entries counted so far.
     Scan { side: String, files: u64, dirs: u64, bytes: u64 },
     /// Change watcher state: "watching", "polling" (remote without inotifywait) or "offline".
@@ -96,6 +98,12 @@ pub enum Event {
 }
 
 pub type Emit = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// An itemized change line from `-i` ("<f+++++++++ name") or a "*deleting name" line.
+fn is_item_line(l: &str) -> bool {
+    let b = l.as_bytes();
+    (b.len() > 12 && b"<>ch.*".contains(&b[0]) && b[11] == b' ') || l.starts_with("*deleting")
+}
 
 fn phase(emit: &Emit, p: &str, m: impl Into<String>) {
     emit(Event::Phase { phase: p.into(), message: m.into() });
@@ -721,10 +729,14 @@ async fn copy(from: &Side, to: &Side, rels: &[String], job: &Job, emit: &Emit) -
     };
     let em = emit.clone();
     let started = std::time::Instant::now();
-    let result = run_rsync(args, move |done, total| {
-        let secs = started.elapsed().as_secs_f64().max(0.001);
-        em(Event::Progress { done, total, rate: (done as f64 / secs) as u64, dir: dir.into() })
-    })
+    let result = run_rsync(
+        args,
+        move |done, total| {
+            let secs = started.elapsed().as_secs_f64().max(0.001);
+            em(Event::Progress { done, total, rate: (done as f64 / secs) as u64, dir: dir.into() })
+        },
+        |_| {},
+    )
     .await;
     let _ = std::fs::remove_file(list);
     result.map(|_| ())
@@ -867,11 +879,27 @@ async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&Strin
     args.push(b.rsync_root());
     let dir = if matches!(b, Side::Remote { .. }) { "up" } else if matches!(a, Side::Remote { .. }) { "down" } else { "local" };
     let em = emit.clone();
-    let started = std::time::Instant::now();
-    let out = run_rsync(args, move |done, total| {
-        let secs = started.elapsed().as_secs_f64().max(0.001);
-        em(Event::Progress { done, total, rate: (done as f64 / secs) as u64, dir: dir.into() })
-    })
+    let (log, started) = (emit.clone(), std::time::Instant::now());
+    // Itemized lines ("<f+++ name") come as rsync copies each file; throttled so big trees don't flood the UI.
+    let last_log = std::sync::Mutex::new(started - std::time::Duration::from_secs(1));
+    let out = run_rsync(
+        args,
+        move |done, total| {
+            let secs = started.elapsed().as_secs_f64().max(0.001);
+            em(Event::Progress { done, total, rate: (done as f64 / secs) as u64, dir: dir.into() })
+        },
+        move |line| {
+            if !is_item_line(line) {
+                return;
+            }
+            let Ok(mut last) = last_log.lock() else { return };
+            if last.elapsed() < std::time::Duration::from_millis(200) {
+                return;
+            }
+            *last = std::time::Instant::now();
+            log(Event::Log { line: line.to_string() });
+        },
+    )
     .await?;
     let mut plan = parse_itemized(&out);
     let sa = parse_stats(&out);
@@ -1076,6 +1104,16 @@ fn summary(p: &Plan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_lines_are_recognised() {
+        assert!(is_item_line(">f+++++++++ photos/new.jpg"));
+        assert!(is_item_line("<fc.T...... docs/a.txt"));
+        assert!(is_item_line("*deleting   old/file.bin"));
+        assert!(!is_item_line("        1,234,567  42%   10.5MB/s    0:00:03"));
+        assert!(!is_item_line("Number of files: 36,749"));
+        assert!(!is_item_line(""));
+    }
 
     /// The Perl fallback (macOS remotes) must list the same records as GNU find.
     #[cfg(target_os = "linux")]
