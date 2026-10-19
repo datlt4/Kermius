@@ -30,10 +30,12 @@ interface Live {
   counted: number;
   /** Scan progress per side and when the run started. */
   scan: Partial<Record<"a" | "b", { files: number; dirs: number; bytes: number }>>;
+  /** Last lines rsync reported (files being copied or deleted). */
+  log: string[];
   started: number;
 }
 
-const newLive = (): Live => ({ phase: "connecting", message: "", pct: 0, rate: 0, dir: "", counted: 0, scan: {}, started: Date.now() });
+const newLive = (): Live => ({ phase: "connecting", message: "", pct: 0, rate: 0, dir: "", counted: 0, scan: {}, log: [], started: Date.now() });
 
 const elapsed = (since: number) => {
   const s = Math.floor((Date.now() - since) / 1000);
@@ -230,6 +232,7 @@ export async function listenFolderSync(ctx: FolderSyncCtx) {
       if (!live.has(ev.id) && ev.type !== "phase") return;
       const l = live.get(ev.id) ?? newLive();
       if (ev.type === "scan") l.scan[ev.side] = { files: ev.files, dirs: ev.dirs, bytes: ev.bytes };
+      else if (ev.type === "log") l.log = [...l.log.slice(-19), ev.line];
       else if (ev.type === "phase") Object.assign(l, { phase: ev.phase, message: ev.message, rate: 0, counted: 0 });
       else {
         if (ev.done < l.counted) l.counted = 0; // next rsync step started
@@ -330,7 +333,8 @@ export function renderFolderSync(root: HTMLElement, ctx: FolderSyncCtx) {
                               <button class="fs-conflicts" data-fs="raise-cmd" data-host="${esc(w.limitHost)}" title="Copy the command to run it yourself in a terminal">Copy command</button>` : ""}</div>`
                         : ""
                     }
-                    ${l?.phase === "syncing" ? `<div class="bar ${l.pct < 0 ? "indeterminate" : ""}"><i style="width:${Math.max(0, l.pct)}%"></i></div>` : ""}
+                    ${l?.phase === "syncing" ? `<div class="bar ${l.pct < 0 ? "indeterminate" : ""}"><i style="width:${Math.max(0, l.pct)}%"></i></div>
+                      <div class="fs-log" title="${esc(l.log.join("\n"))}">${esc(l.log.length ? l.log[l.log.length - 1] : "rsync is building the file list; nothing is copied until it is ready")}</div>` : ""}
                   </div>
                   <div class="fs-actions">
                     <button class="btn sm ${j.paused ? "resume-btn" : "pause-btn"}" data-fs="${j.paused ? "resume" : "pause"}"

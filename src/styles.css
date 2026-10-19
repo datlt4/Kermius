@@ -525,6 +525,7 @@ details .field + .field { margin-top: 10px; }
 .fs-card .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width 0.2s; }
 .fs-card .bar.indeterminate i { width: 30% !important; animation: bar-slide 1.4s ease-in-out infinite; }
 @keyframes bar-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.fs-log { margin-top: 4px; font: 12px/1.4 "JetBrains Mono", monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fs-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .fs-actions .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .fs-modal { width: min(640px, 96vw); }
