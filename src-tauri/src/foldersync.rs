@@ -856,7 +856,8 @@ async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&Strin
     phase(emit, "syncing", via.map(|v| format!("via {v}")).unwrap_or_default());
     let mut args = attr_flags(job);
     args.extend(protect_args());
-    args.extend(["-i", "--stats", "--partial-dir=.rsync-partial", "--info=progress2"].map(String::from));
+    // name2 lists unchanged files too (as "." itemized lines), so the live log follows rsync's position.
+    args.extend(["-i", "--stats", "--partial-dir=.rsync-partial", "--info=progress2,name2"].map(String::from));
     if dry_run {
         args.push("-n".into());
     }
@@ -1111,6 +1112,7 @@ mod tests {
         assert!(is_item_line("<fc.T...... docs/a.txt"));
         assert!(is_item_line("*deleting   old/file.bin"));
         assert!(!is_item_line("        1,234,567  42%   10.5MB/s    0:00:03"));
+        assert!(is_item_line(".f          same.txt"));
         assert!(!is_item_line("Number of files: 36,749"));
         assert!(!is_item_line(""));
     }
