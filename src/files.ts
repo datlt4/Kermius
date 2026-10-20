@@ -3,14 +3,52 @@ import { api, Channel, type FileEntry, type Host, type TransferEvent } from "./a
 import { confirmDialog, contextMenu, esc, icon, promptDialog, toast } from "./ui";
 
 type Side = "local" | "remote";
+type SortKey = "name" | "size" | "mtime";
 
 interface Pane {
   side: Side;
   path: string;
+  /** Sorted by `sort`; `shown()` applies the filter. */
   entries: FileEntry[];
   selected: Set<string>;
   anchor: string;
   el: HTMLElement;
+  sort: { key: SortKey; desc: boolean };
+  filter: string;
+}
+
+/** Folders first, then by the chosen column. */
+function sortEntries(list: FileEntry[], s: Pane["sort"]) {
+  const byName = (a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  const by = s.key === "name" ? byName : s.key === "size" ? (a: FileEntry, b: FileEntry) => a.size - b.size : (a: FileEntry, b: FileEntry) => a.mtime - b.mtime;
+  return list.sort((a, b) => Number(b.isDir) - Number(a.isDir) || (s.desc ? -1 : 1) * by(a, b) || byName(a, b));
+}
+
+/** fzf-style score of `q` as a subsequence of `name`; -1 = no match. Runs and word starts score higher. */
+function fuzzyScore(q: string, name: string) {
+  const s = name.toLowerCase();
+  let score = s.includes(q) ? 20 : 0;
+  let j = 0;
+  let prev = -2;
+  for (let i = 0; i < s.length && j < q.length; i++) {
+    if (s[i] !== q[j]) continue;
+    score += i === prev + 1 ? 5 : 1;
+    if (i === 0 || /[\s._\-]/.test(s[i - 1])) score += 3;
+    prev = i;
+    j++;
+  }
+  return j === q.length ? score - s.length * 0.01 : -1;
+}
+
+/** Rows to show: all entries, or the fuzzy matches best first. */
+function shown(p: Pane) {
+  const q = p.filter.toLowerCase();
+  if (!q) return p.entries;
+  return p.entries
+    .map((e) => [e, fuzzyScore(q, e.name)] as const)
+    .filter(([, s]) => s >= 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([e]) => e);
 }
 
 interface Transfer {
@@ -71,10 +109,11 @@ export class FilesTab {
                 <button class="icon-btn" data-f="up" title="Up">${icon("back", 15)}</button>
                 <button class="icon-btn" data-f="home" title="Home">${icon("server", 15)}</button>
                 <input class="fpath" spellcheck="false" />
+                <input class="ffilter" placeholder="Filter" spellcheck="false" title="Fuzzy filter this folder (or just start typing in the list)" />
                 <button class="icon-btn" data-f="refresh" title="Refresh">${icon("sync", 15)}</button>
                 <button class="icon-btn" data-f="mkdir" title="New folder">${icon("plus", 15)}</button>
               </div>
-              <div class="flist-head"><span>Name</span><span>Size</span><span>Modified</span></div>
+              <div class="flist-head"><button data-sort="name">Name</button><button data-sort="size">Size</button><button data-sort="mtime">Modified</button></div>
               <div class="flist" tabindex="0"></div>
             </div>`,
           )
@@ -87,7 +126,16 @@ export class FilesTab {
         <div class="ft-list"></div>
       </div>
       <div class="overlay"></div>`;
-    const pane = (side: Side): Pane => ({ side, path: "", entries: [], selected: new Set(), anchor: "", el: this.el.querySelector(`.fpane[data-side="${side}"]`)! });
+    const pane = (side: Side): Pane => ({
+      side,
+      path: "",
+      entries: [],
+      selected: new Set(),
+      anchor: "",
+      el: this.el.querySelector(`.fpane[data-side="${side}"]`)!,
+      sort: { key: "name", desc: false },
+      filter: "",
+    });
     this.panes = { local: pane("local"), remote: pane("remote") };
   }
 
@@ -137,7 +185,11 @@ export class FilesTab {
 
   private async cd(p: Pane, path: string) {
     try {
-      p.entries = await this.ls(p, path);
+      p.entries = sortEntries(await this.ls(p, path), p.sort);
+      if (path !== p.path) {
+        p.filter = "";
+        (p.el.querySelector(".ffilter") as HTMLInputElement).value = "";
+      }
       p.path = path;
       p.selected.clear();
       this.renderPane(p);
@@ -153,14 +205,19 @@ export class FilesTab {
 
   private renderPane(p: Pane) {
     (p.el.querySelector(".fpath") as HTMLInputElement).value = p.path;
+    p.el.querySelectorAll<HTMLElement>(".flist-head [data-sort]").forEach((b) => {
+      const on = b.dataset.sort === p.sort.key;
+      b.classList.toggle("on", on);
+      b.dataset.arrow = on ? (p.sort.desc ? "▼" : "▲") : "";
+    });
     p.el.querySelector(".flist")!.innerHTML =
-      p.entries
+      shown(p)
         .map(
           (e) => `<div class="frow ${p.selected.has(e.path) ? "sel" : ""}" draggable="true" data-path="${esc(e.path)}">
             <span class="fname">${icon(e.isDir ? "folder" : "file", 15)}<span>${esc(e.name)}${e.isLink ? " ↪" : ""}</span></span>
             <span class="fsize">${e.isDir ? "" : fmtSize(e.size)}</span><span class="fdate">${fmtDate(e.mtime)}</span></div>`,
         )
-        .join("") || `<div class="fempty">Empty folder</div>`;
+        .join("") || `<div class="fempty">${p.filter ? "No matches" : "Empty folder"}</div>`;
   }
 
   /** Update row highlighting without re-rendering (keeps double click working). */
@@ -183,6 +240,9 @@ export class FilesTab {
     if (!paths.length) return;
     const upload = from === "local";
     const dest = this.panes[upload ? "remote" : "local"];
+    // Files' sizes are known from the listing; rsync's own total is an estimate that drifts.
+    const items = paths.map((x) => this.panes[from].entries.find((e) => e.path === x));
+    const known = items.every((e) => e && !e.isDir) ? items.reduce((n, e) => n + e!.size, 0) : 0;
     const t: Transfer = {
       tid: "",
       label: paths.length === 1 ? paths[0].split(/[\\/]/).pop()! : `${paths.length} items`,
@@ -195,7 +255,11 @@ export class FilesTab {
     this.transfers.unshift(t);
     const ch = new Channel<TransferEvent>();
     ch.onmessage = (ev) => {
-      if (ev.type === "progress") Object.assign(t, { done: ev.done, total: ev.total });
+      if (ev.type === "progress") {
+        t.done = ev.done;
+        // Unknown size (folders): keep the estimate unless it moves by more than 2%.
+        t.total = known || (t.total && Math.abs(ev.total - t.total) <= t.total * 0.02 ? t.total : ev.total);
+      }
       else if (ev.type === "done") {
         t.status = "done";
         this.refresh(dest);
@@ -254,6 +318,35 @@ export class FilesTab {
         else if (f === "refresh") this.refresh(p);
         else if (f === "mkdir") this.mkdir(p);
       });
+      p.el.querySelector(".flist-head")!.addEventListener("click", (e) => {
+        const key = (e.target as HTMLElement).closest<HTMLElement>("[data-sort]")?.dataset.sort as SortKey | undefined;
+        if (!key) return;
+        // Same column flips the order; a new one starts A→Z, or largest / newest first.
+        p.sort = key === p.sort.key ? { key, desc: !p.sort.desc } : { key, desc: key !== "name" };
+        sortEntries(p.entries, p.sort);
+        this.renderPane(p);
+      });
+      const filter = p.el.querySelector<HTMLInputElement>(".ffilter")!;
+      filter.addEventListener("input", () => {
+        p.filter = filter.value.trim();
+        this.renderPane(p);
+      });
+      filter.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          filter.value = p.filter = "";
+          this.renderPane(p);
+          list.focus();
+        } else if (e.key === "ArrowDown" || e.key === "Enter") {
+          e.preventDefault();
+          const first = shown(p)[0];
+          if (first) {
+            p.selected = new Set([first.path]);
+            p.anchor = first.path;
+            this.markSelection(p);
+          }
+          list.focus();
+        }
+      });
       p.el.querySelector(".fpath")!.addEventListener("keydown", (e) => {
         if ((e as KeyboardEvent).key === "Enter") this.cd(p, (e.target as HTMLInputElement).value.trim());
       });
@@ -276,9 +369,10 @@ export class FilesTab {
         if (!entry) {
           p.selected.clear();
         } else if (e.shiftKey && p.anchor) {
-          const a = p.entries.findIndex((x) => x.path === p.anchor);
-          const b = p.entries.indexOf(entry);
-          p.selected = new Set(p.entries.slice(Math.min(a, b), Math.max(a, b) + 1).map((x) => x.path));
+          const rows = shown(p);
+          const a = rows.findIndex((x) => x.path === p.anchor);
+          const b = rows.indexOf(entry);
+          p.selected = new Set(rows.slice(Math.min(a, b), Math.max(a, b) + 1).map((x) => x.path));
         } else if (e.ctrlKey || e.metaKey) {
           p.selected.has(entry.path) ? p.selected.delete(entry.path) : p.selected.add(entry.path);
           p.anchor = entry.path;
@@ -297,8 +391,14 @@ export class FilesTab {
         else if (e.key === "Enter" && sel.length) sel.length === 1 && sel[0].isDir ? this.cd(p, sel[0].path) : this.transfer(p.side, sel.map((x) => x.path));
         else if ((e.ctrlKey || e.metaKey) && e.key === "a") {
           e.preventDefault();
-          p.selected = new Set(p.entries.map((x) => x.path));
+          p.selected = new Set(shown(p).map((x) => x.path));
           this.markSelection(p);
+        } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== " ") {
+          // Typing in the list starts the filter.
+          e.preventDefault();
+          filter.value += e.key;
+          filter.dispatchEvent(new Event("input"));
+          filter.focus();
         }
       });
       list.addEventListener("contextmenu", (ev) => {
