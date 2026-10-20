@@ -470,6 +470,11 @@ details .field + .field { margin-top: 10px; }
 .fbadge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 7px; background: #2a3040; font-size: 12.5px; font-weight: 600; white-space: nowrap; max-width: 30%; overflow: hidden; text-overflow: ellipsis; }
 .fpath { flex: 1; min-width: 0; background: #171a22; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; outline: none; font-family: "JetBrains Mono", monospace; font-size: 12.5px; }
 .fpath:focus { border-color: rgba(91, 140, 255, 0.6); }
+.ffilter { width: 120px; flex: none; background: #171a22; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; outline: none; font-size: 12.5px; }
+.ffilter:focus { border-color: rgba(91, 140, 255, 0.6); }
+.flist-head button { all: unset; cursor: pointer; text-align: left; }
+.flist-head button:hover, .flist-head button.on { color: var(--text); }
+.flist-head button.on::after { content: " " attr(data-arrow); }
 .flist-head, .frow { display: grid; grid-template-columns: 1fr 90px 140px; gap: 10px; padding: 0 12px; align-items: center; }
 .flist-head { height: 28px; font-size: 11.5px; color: var(--faint); border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.5px; }
 .flist { flex: 1; overflow-y: auto; outline: none; padding: 4px 0; }
