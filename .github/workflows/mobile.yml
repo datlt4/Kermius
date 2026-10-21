@@ -107,7 +107,8 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :NSLocalNetworkUsageDescription string 'Kermius connects to your servers and sends files to nearby devices (Nearby Share).'" "$P" || true
             /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$P" || true
             /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$P" || true
-            /usr/libexec/PlistBuddy -c "Print" "$P" | grep -E "NSLocalNetwork|UIFileSharing|LSSupportsOpening"
+            /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string 'Kermius adds photos and videos you receive with Nearby Share to your library.'" "$P" || true
+            /usr/libexec/PlistBuddy -c "Print" "$P" | grep -E "NSLocalNetwork|UIFileSharing|LSSupportsOpening|NSPhotoLibraryAdd"
           done
       # Xcode's "Build Rust Code" phase only works while `tauri ios build` runs (it needs code
       # signing), so build the Rust static lib here and turn that phase into a no-op.
