@@ -838,3 +838,6 @@ details .field + .field { margin-top: 10px; }
   .wol-grid { grid-template-columns: 1fr; }
   .wol-power { width: 48px; height: 48px; }
 }
+.nb-tr-title { display: flex; align-items: center; justify-content: space-between; }
+.notes-ttl { background: transparent; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; padding: 4px 6px; }
+.notes-ttl option { background: #1e222c; color: var(--text); }

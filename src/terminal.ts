@@ -333,7 +333,7 @@ export class Session {
       // preventDefault: WebKitGTK would otherwise also paste natively into xterm's textarea (pasting twice).
       if (e.code === "KeyC") return e.preventDefault(), this.copySelection(), false;
       if (e.code === "KeyV") return e.preventDefault(), this.paste(), false;
-      return !["KeyK", "KeyT", "KeyW", "KeyF"].includes(e.code);
+      return !["KeyK", "KeyT", "KeyW", "KeyF", "KeyL"].includes(e.code);
     });
     this.el.querySelector(".term")!.addEventListener("contextmenu", (e) => {
       const ev = e as MouseEvent;
