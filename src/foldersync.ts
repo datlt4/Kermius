@@ -190,11 +190,18 @@ function status(job: FsJob) {
 const isPartial = (msg: string) => /^\d+ items? failed/.test(msg);
 
 /** Background run outcome → notification center (no toasts for automatic runs). */
+/** Per job: the problem already notified, so retries of the same failure stay quiet until a run succeeds. */
+const notified = new Map<string, string>();
+
 function noteResult(id: string, ok: boolean, summary: string) {
   const job = jobs.find((j) => j.id === id);
   const name = `Folder Sync · ${job?.name || "Untitled"}`;
-  if (ok) return;
+  if (ok) return void notified.delete(id);
   if (summary === "Stopped" || summary === "Already running") return;
+  // Offline messages vary by route tried; one notice covers them all.
+  const key = summary.startsWith(OFFLINE) ? OFFLINE : summary.split("\n")[0];
+  if (notified.get(id) === key) return;
+  notified.set(id, key);
   if (summary.startsWith(OFFLINE)) notify("warn", name, `Offline: ${summary.slice(OFFLINE.length)}`, "foldersync");
   else notify(isPartial(summary) ? "warn" : "error", name, summary, "foldersync");
 }

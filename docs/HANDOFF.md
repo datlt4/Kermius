@@ -1,4 +1,4 @@
-# Kermius — handoff (2026-10-19, cập nhật lần 2)
+# Kermius — handoff (2026-10-20, cập nhật lần 3)
 
 Repo: `/mnt/ssd_1tb/Downloads-Ubuntu/Miscellaneous/kermius` (Tauri 2, Rust backend in `src-tauri/`, TypeScript UI in `src/`).
 Owner's language: Vietnamese. Replies to the owner in Vietnamese.
@@ -10,8 +10,8 @@ Owner's language: Vietnamese. Replies to the owner in Vietnamese.
 - Owner rule (2026-10-18): release automatically after every finished fix, without asking. Do not install to phones unless asked.
 - Version bump on every release, in three files: `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`. `src-tauri/Cargo.lock` is stale (still `kermius 1.38.0`); cargo updates it on the next build.
 - Tag push triggers `.github/workflows/release.yml` (desktop matrix, `mobile.yml` for APK + unsigned IPA, then a `publish` job builds `latest.json` and un-drafts the release). Check CI with the public API: `https://api.github.com/repos/datlt4/Kermius/actions/runs` (no token needed for reads).
-- **GitHub Actions đang tắt theo yêu cầu của owner (2026-10-19), owner sẽ tự bật lại.** Khi đang tắt, không có release, APK, IPA hay `latest.json` mới. Trước khi tag bản mới, kiểm tra Actions đã bật.
-- Recent state: v1.38.13 published and CI green (trước khi tắt Actions). v1.38.12's release run was **cancelled** (superseded). v1.38.11 is a leftover draft and is not in the published list. v1.38.3, v1.38.9, v1.38.10 are missing from the published list; check on GitHub before assuming they exist.
+- GitHub Actions đã được owner bật lại (2026-10-20). Release mới nhất: **v1.38.16**.
+- Từ v1.38.14 version bump được commit trên `main` sau khi merge; `develop` đã được merge lại từ `main` nên hai nhánh cùng version. Giữ như vậy sau mỗi release (`git checkout develop && git merge main`, push cả hai remote). v1.38.12's release run was **cancelled** (superseded). v1.38.11 is a leftover draft and is not in the published list. v1.38.3, v1.38.9, v1.38.10 are missing from the published list; check on GitHub before assuming they exist.
 
 ## 2. Environment facts
 
@@ -49,6 +49,11 @@ Grouped by area. Each line is a commit subject; see `git log` for detail.
 
 **Release/CI:** `apply.sh` + Gradle `pluginManagement` for the Android build (v1.38.0).
 
+**2026-10-20 (v1.38.14 → v1.38.16):**
+- v1.38.14: Folder Sync status shows `· via <host>` while connecting/syncing (from the phase message). Nearby Share transfers carry `at` (unix ms, stamped in `Nearby::emit`) and show "5m ago / yesterday / date", full time on hover. Rust compiled by CI (`build develop` green on `b97a76a`).
+- v1.38.15: Remote devices panel: "Syncing now" while a job runs; mirror destinations show "Mirror target · synced on schedule" instead of "Not watched" (they are never watched by design).
+- v1.38.16: File manager (`src/files.ts`): click Name/Size/Modified to sort (folders first; same column flips order; Size/Modified start descending); fuzzy filter box per pane (typing in the list starts it, Esc clears, ↓/Enter selects the best match); transfer total uses listed file sizes, and for folders keeps rsync's estimate unless it moves >2%.
+
 ## 4. Tests and verification status
 
 - `cargo test` on the Mac: 38/38 pass at v1.38.12 (includes `rsync_error`, `vanished_tests`, `item_lines_are_recognised`, `magic_packet_layout`, `wol_devices_sync_like_hosts`, `rsync_kill_tests`).
@@ -63,6 +68,9 @@ Grouped by area. Each line is a commit subject; see `git log` for detail.
 4. Remove the stuck NTFS `.fuse_hidden*` file in `long_dev2` (owner decided reboot or unmount; not done).
 5. Keyboard regression check on Android and iOS (owner to test).
 5a. Khi owner bật lại GitHub Actions: kiểm tra run `build`/`release` của `v1.38.13` và nhánh `develop` hiện tại có chạy xanh không (commit `ab7644d` là handoff). Nếu cần release mới, làm theo mục 1.
+6a. **Waiting for owner decisions:**
+   - Folder Sync: remember the host actually used per job side ("Connected via mini-wg · last sync 5m ago"), persisted or live-only? The route list in the panel is the candidates, not the chosen host; nothing records the chosen one today.
+   - Speed test like Ookla: plan proposed (Cloudflare `speed.cloudflare.com` endpoints by default, Rust/reqwest, 4–6 parallel streams, ping/jitter/loaded latency, gauge page, history). Open: server choice, history local vs vault, desktop first or mobile too. Ookla's own servers only if their terms allow it.
 6. Possible follow-ups the owner asked about but did not confirm: hard-exclude folders detected as churning (currently only waits for them to settle); show "rsync listing N entries" (rsync gives no count during the listing phase).
 7. `Cargo.lock` version line out of date (`1.38.0`).
 8. Nearby Share: iOS ↔ Android/desktop checks done in earlier sessions; the reach-check banner visual still unchecked.
