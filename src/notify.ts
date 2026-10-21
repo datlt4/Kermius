@@ -62,6 +62,7 @@ const listeners = new Set<() => void>();
 /** Auto-delete notifications older than this many hours (0 = keep). */
 const TTL_KEY = "kermius.notifications.ttl";
 const TTLS: [number, string][] = [[0, "Keep"], [12, "12h"], [24, "1d"], [48, "2d"], [72, "3d"], [120, "5d"]];
+const ttlLabel = (h: number) => (h ? `Delete after ${TTLS.find((x) => x[0] === h)?.[1] ?? `${h}h`}` : "Keep all");
 let ttl = Number(localStorage.getItem(TTL_KEY)) || 0;
 const prune = () => {
   if (ttl) notes = notes.filter((n) => Date.now() - n.time < ttl * 3600_000);
@@ -111,7 +112,8 @@ export function toggleNotesPanel(anchor: HTMLElement, go: (view: string) => void
   el.className = "notes-panel";
   const render = () => {
     el.innerHTML = `<div class="notes-head"><b>Notifications</b><div class="grow"></div>
-        <select class="notes-ttl" title="Delete notifications older than">${TTLS.map(([h, l]) => `<option value="${h}" ${h === ttl ? "selected" : ""}>${h ? `Delete after ${l}` : l}</option>`).join("")}</select>
+        <div class="font-pick notes-ttl"><button class="font-current" data-n="ttl-open" title="Delete notifications older than">${ttlLabel(ttl)}${icon("chevron", 13)}</button>
+          <div class="font-menu" hidden>${TTLS.map(([h]) => `<button class="font-item ${h === ttl ? "on" : ""}" data-ttl="${h}">${ttlLabel(h)}</button>`).join("")}</div></div>
         <button class="btn ghost sm" data-n="read">Mark all read</button><button class="btn ghost sm" data-n="clear">Clear</button></div>
       <div class="notes-list">${
         notes.length
@@ -132,17 +134,18 @@ export function toggleNotesPanel(anchor: HTMLElement, go: (view: string) => void
   el.style.top = `${r.bottom + 6}px`;
   el.style.right = `${Math.max(8, innerWidth - r.right)}px`;
   document.body.append(el);
-  el.addEventListener("change", (e) => {
-    const s = e.target as HTMLSelectElement;
-    if (!s.classList.contains("notes-ttl")) return;
-    ttl = Number(s.value);
-    localStorage.setItem(TTL_KEY, String(ttl));
-    save();
-    render();
-  });
   el.addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
-    if (t.closest(".notes-ttl")) return;
+    const pick = t.closest<HTMLElement>("[data-ttl]")?.dataset.ttl;
+    if (pick !== undefined) {
+      ttl = Number(pick);
+      localStorage.setItem(TTL_KEY, String(ttl));
+      save();
+      return render();
+    }
+    const menu = el.querySelector<HTMLElement>(".notes-ttl .font-menu")!;
+    if (t.closest('[data-n="ttl-open"]')) return void (menu.hidden = !menu.hidden);
+    menu.hidden = true;
     const a = t.closest<HTMLElement>("[data-n]")?.dataset.n;
     if (a === "read") notes.forEach((n) => (n.read = true));
     else if (a === "clear") notes = [];
