@@ -1,4 +1,4 @@
-# Kermius — handoff (2026-10-20, cập nhật lần 3)
+# Kermius — handoff (2026-10-21, cập nhật lần 4)
 
 Repo: `/mnt/ssd_1tb/Downloads-Ubuntu/Miscellaneous/kermius` (Tauri 2, Rust backend in `src-tauri/`, TypeScript UI in `src/`).
 Owner's language: Vietnamese. Replies to the owner in Vietnamese.
@@ -68,6 +68,8 @@ Grouped by area. Each line is a commit subject; see `git log` for detail.
 4. Remove the stuck NTFS `.fuse_hidden*` file in `long_dev2` (owner decided reboot or unmount; not done).
 5. Keyboard regression check on Android and iOS (owner to test).
 5a. Khi owner bật lại GitHub Actions: kiểm tra run `build`/`release` của `v1.38.13` và nhánh `develop` hiện tại có chạy xanh không (commit `ab7644d` là handoff). Nếu cần release mới, làm theo mục 1.
+6b. **v1.38.17 (2026-10-21):** Folder Sync notifies each failure once per job (`notified` map in `src/foldersync.ts`; all offline variants count as one), cleared when a run succeeds. Before this, an offline remote produced a notice on every retry (×438).
+6c. **Open bug: `h` (alias `cat ~/.bash_history -n | cut -c 8- | sort | uniq | fzf`) returns nothing in the Kermius *local* terminal on the owner's PC; works over SSH and in other terminals.** Ruled out: fzf version (0.29 everywhere), PTY setup (controlling tty, size, signals), login-shell config (a Python PTY with real HOME works), Kermius binary (a demo of the same 1.38.14 binary in Xvfb with a temp HOME works, also with ibus + Unikey). `echo test | fzf` prints `test` (exit 0), which would also happen if fzf got a stray Enter at start. Next: owner runs `type h` and `h; echo "exit=$?"` in the local terminal (exit 1 = stray Enter, 130 = Esc/Ctrl-C, 2 = error).
 6a. **Waiting for owner decisions:**
    - Folder Sync: remember the host actually used per job side ("Connected via mini-wg · last sync 5m ago"), persisted or live-only? The route list in the panel is the candidates, not the chosen host; nothing records the chosen one today.
    - Speed test like Ookla: plan proposed (Cloudflare `speed.cloudflare.com` endpoints by default, Rust/reqwest, 4–6 parallel streams, ping/jitter/loaded latency, gauge page, history). Open: server choice, history local vs vault, desktop first or mobile too. Ookla's own servers only if their terms allow it.
