@@ -1611,6 +1611,12 @@ addEventListener("keydown", (e) => {
     saveEditor().then((ok) => ok && closeEditor());
     return;
   }
+  // Ctrl+Shift+L opens a local terminal (Control, not Command, on macOS too).
+  if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && e.code === "KeyL") {
+    if (isWeb || /iPhone|iPad/i.test(navigator.userAgent)) return;
+    e.preventDefault();
+    return void openSession(null);
+  }
   if (!mod) return;
   const k = e.key.toLowerCase();
   // Inside a terminal, plain Ctrl+K/T/F belong to the shell; use Ctrl+Shift instead.

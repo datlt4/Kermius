@@ -429,7 +429,7 @@ export function renderNearby(root: HTMLElement) {
                   Turn on “Use this address for Nearby Share” on a host to send to it; devices you reach this way can send back while Kermius is open.</div>`
               : `<div class="nb-searching muted">${icon("sync", 16)} Looking for devices… Open LocalSend or Kermius on another device in this network.
                 Across a VPN, turn on “Use this address for Nearby Share” on the host instead.</div>`}
-          ${list.length ? `<h4 class="section">Transfers</h4><div class="nb-trs">${list.map(transferRow).join("")}</div>` : ""}`}
+          ${list.length ? `<h4 class="section nb-tr-title">Transfers<button class="btn ghost sm" data-nb="clear-transfers" title="Remove finished transfers from the list">Clear</button></h4><div class="nb-trs">${list.map(transferRow).join("")}</div>` : ""}`}
     </div>`;
   if (root.querySelector(".nb-toolbar")) morphHtml(root, html);
   else root.innerHTML = html;
@@ -461,6 +461,10 @@ export function bindNearby(root: HTMLElement, rerender: () => void, active: () =
         return api.nearbyOpenFolder().catch((e) => toast(String(e), "err"));
       case "cancel":
         return api.nearbyCancel(b.dataset.id!);
+      case "clear-transfers":
+        // Running transfers stay; only finished ones leave the list.
+        for (const [id, t] of transfers) if (t.state !== "waiting" && t.state !== "active") transfers.delete(id);
+        return rerender();
       case "pick-dir": {
         const dir = await openDialog({ directory: true, defaultPath: status.dir });
         if (typeof dir === "string") await setSaveDir(dir, rerender);
