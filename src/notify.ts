@@ -59,15 +59,30 @@ try {
 }
 const listeners = new Set<() => void>();
 
-/** Auto-delete notifications older than this many hours (0 = keep). */
+/** Auto-delete notifications older than this many hours (0 = keep); optionally only read ones. */
 const TTL_KEY = "kermius.notifications.ttl";
-const TTLS: [number, string][] = [[0, "Keep"], [12, "12h"], [24, "1d"], [48, "2d"], [72, "3d"], [120, "5d"]];
-const ttlLabel = (h: number) => (h ? `Delete after ${TTLS.find((x) => x[0] === h)?.[1] ?? `${h}h`}` : "Keep all");
+const TTL_READ_KEY = "kermius.notifications.ttlReadOnly";
+export const TTLS: [number, string][] = [[0, "Keep"], [12, "12h"], [24, "1d"], [48, "2d"], [72, "3d"], [120, "5d"]];
+export const ttlLabel = (h: number) => (h ? `Delete after ${TTLS.find((x) => x[0] === h)?.[1] ?? `${h}h`}` : "Keep all");
 let ttl = Number(localStorage.getItem(TTL_KEY)) || 0;
+let ttlReadOnly = localStorage.getItem(TTL_READ_KEY) === "1";
 const prune = () => {
-  if (ttl) notes = notes.filter((n) => Date.now() - n.time < ttl * 3600_000);
+  if (ttl) notes = notes.filter((n) => Date.now() - n.time < ttl * 3600_000 || (ttlReadOnly && !n.read));
 };
 prune();
+
+export const notesTtl = () => ({ hours: ttl, readOnly: ttlReadOnly });
+
+/** Change the auto-delete rule and apply it now; returns how many notifications were removed. */
+export function setNotesTtl(hours: number, readOnly: boolean) {
+  ttl = hours;
+  ttlReadOnly = readOnly;
+  localStorage.setItem(TTL_KEY, String(hours));
+  localStorage.setItem(TTL_READ_KEY, readOnly ? "1" : "0");
+  const before = notes.length;
+  save();
+  return before - notes.length;
+}
 
 const save = () => {
   prune();
@@ -112,8 +127,6 @@ export function toggleNotesPanel(anchor: HTMLElement, go: (view: string) => void
   el.className = "notes-panel";
   const render = () => {
     el.innerHTML = `<div class="notes-head"><b>Notifications</b><div class="grow"></div>
-        <div class="font-pick notes-ttl"><button class="font-current" data-n="ttl-open" title="Delete notifications older than">${ttlLabel(ttl)}${icon("chevron", 13)}</button>
-          <div class="font-menu" hidden>${TTLS.map(([h]) => `<button class="font-item ${h === ttl ? "on" : ""}" data-ttl="${h}">${ttlLabel(h)}</button>`).join("")}</div></div>
         <button class="btn ghost sm" data-n="read">Mark all read</button><button class="btn ghost sm" data-n="clear">Clear</button></div>
       <div class="notes-list">${
         notes.length
@@ -136,16 +149,6 @@ export function toggleNotesPanel(anchor: HTMLElement, go: (view: string) => void
   document.body.append(el);
   el.addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
-    const pick = t.closest<HTMLElement>("[data-ttl]")?.dataset.ttl;
-    if (pick !== undefined) {
-      ttl = Number(pick);
-      localStorage.setItem(TTL_KEY, String(ttl));
-      save();
-      return render();
-    }
-    const menu = el.querySelector<HTMLElement>(".notes-ttl .font-menu")!;
-    if (t.closest('[data-n="ttl-open"]')) return void (menu.hidden = !menu.hidden);
-    menu.hidden = true;
     const a = t.closest<HTMLElement>("[data-n]")?.dataset.n;
     if (a === "read") notes.forEach((n) => (n.read = true));
     else if (a === "clear") notes = [];
