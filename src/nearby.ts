@@ -197,12 +197,16 @@ async function setRunning(on: boolean, rerender: () => void) {
 }
 
 /** Incoming request: ask before anything is written. */
+const ios = /iPhone|iPad/i.test(navigator.userAgent);
+/** iOS keeps received files in the app's Documents folder, which Files shows as On My iPhone › Kermius. */
+const dirLabel = (dir: string) => (ios && /\/Documents\/?$/.test(dir) ? `Files › On My ${/iPad/i.test(navigator.userAgent) ? "iPad" : "iPhone"} › Kermius` : dir);
+
 function requestDialog(id: string, alias: string, files: [string, number][], count: number, total: number) {
   const el = document.createElement("div");
   el.className = "modal-wrap";
   el.dataset.request = id;
   el.innerHTML = `<div class="modal"><h3>${esc(alias)} wants to send you ${count.toLocaleString()} file${count === 1 ? "" : "s"}</h3>
-    <p class="muted">${fmtSize(total)} · saved to ${esc(status.dir)}</p>
+    <p class="muted nb-req-dir">${fmtSize(total)} · saved to ${esc(dirLabel(status.dir))}${ios ? " (photos and videos also go to Photos)" : ""}</p>
     <div class="nb-req-files">${files.map(([n, s]) => `<div><span>${esc(n)}</span><small>${fmtSize(s)}</small></div>`).join("")}
       ${count > files.length ? `<div class="muted">… and ${(count - files.length).toLocaleString()} more</div>` : ""}</div>
     <div class="modal-actions"><button class="btn ghost" data-r="0">Decline</button><button class="btn primary" data-r="1">Accept</button></div></div>`;
@@ -406,7 +410,7 @@ export function renderNearby(root: HTMLElement) {
       ${phone ? "" : `<button class="btn sm" data-nb="open" title="${esc(status.dir)}">${icon("folder", 14)} Received files</button>`}
     </div>
     <div class="content">
-      <div class="nb-save">${icon("folder", 14)}<span>Received files go to</span><code title="${esc(status.dir)}">${esc(status.dir)}</code>
+      <div class="nb-save">${icon("folder", 14)}<span>Received files go to</span><code title="${esc(status.dir)}">${esc(dirLabel(status.dir))}</code>
         ${phone ? "" : `<button class="btn ghost sm" data-nb="pick-dir">Change…</button>`}
         ${savedDir() && !phone ? `<button class="btn ghost sm" data-nb="reset-dir" title="Back to the Downloads folder">Use Downloads</button>` : ""}</div>
       ${on && status.blocked

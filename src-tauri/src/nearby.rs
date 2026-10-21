@@ -1155,6 +1155,11 @@ async fn upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketAddr>, Qu
         }
         return (StatusCode::INTERNAL_SERVER_ERROR, msg);
     }
+    #[cfg(target_os = "ios")]
+    {
+        let p = path.clone();
+        let _ = me.app.run_on_main_thread(move || crate::ios_photos::save(&p));
+    }
     let mut s = me.session.lock();
     if let Some(sess) = s.as_mut().filter(|s| s.id == q.session_id) {
         sess.received += 1;

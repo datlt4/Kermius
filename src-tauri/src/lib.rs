@@ -1,5 +1,7 @@
 mod crypto;
 mod files;
+#[cfg(target_os = "ios")]
+mod ios_photos;
 mod foldersync;
 mod watch;
 #[cfg(not(target_os = "ios"))]
