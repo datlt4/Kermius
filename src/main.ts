@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
-import { bellButton, initOsNotifications, onNotesChange, toggleNotesPanel } from "./notify";
+import { bellButton, initOsNotifications, notesTtl, onNotesChange, setNotesTtl, toggleNotesPanel, TTLS, ttlLabel } from "./notify";
 import { VncTab } from "./vnc";
 import { checkUpdate, pendingUpdate, updateDialog } from "./update";
 import { sshExportDialog } from "./sshexport";
@@ -999,6 +999,11 @@ els.page.addEventListener("change", (e) => {
       (err) => toast(String(err), "err"),
     );
   }
+  if (t.id === "s-notes-read") {
+    const n = setNotesTtl(notesTtl().hours, (t as unknown as HTMLInputElement).checked);
+    if (n) toast(`Deleted ${n} old notification${n > 1 ? "s" : ""}`, "ok");
+    return;
+  }
   if (t.id !== "s-renderer") return;
   if (t.value) localStorage.setItem("kermius.renderer", t.value);
   else localStorage.removeItem("kermius.renderer");
@@ -1025,6 +1030,13 @@ function renderSettings() {
           <small>Use the same passphrase on every device. If you lose it, synced data cannot be recovered.</small></label>
         <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>${isWeb ? `<button class="btn ghost" data-set="lock">${icon("lock", 15)} Lock</button>` : ""}
           <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">${icon("bell")}<div><h3>Notifications</h3></div></div>
+        <div class="font-pick ttl-pick"><button class="font-current" data-set="ttl-open">${ttlLabel(notesTtl().hours)}${icon("chevron", 14)}</button>
+          <div class="font-menu" hidden>${TTLS.map(([h]) => `<button class="font-item ${h === notesTtl().hours ? "on" : ""}" data-set="ttl" data-h="${h}">${ttlLabel(h)}</button>`).join("")}</div></div>
+        <label class="toggle-row"><span><b>Only delete read notifications</b><small class="muted">Off: every notification older than the limit is deleted, read or not</small></span>
+          <input type="checkbox" class="toggle" id="s-notes-read" ${notesTtl().readOnly ? "checked" : ""} /></label>
       </div>
       ${desktop ? `<div class="panel">
         <div class="panel-head">${icon("settings")}<div><h3>General</h3></div></div>
@@ -1123,8 +1135,15 @@ els.page.addEventListener("click", async (e) => {
     } catch (err) {
       toast(String(err), "err");
     }
+  } else if (a === "ttl-open") {
+    const menu = $(".ttl-pick .font-menu", els.page);
+    menu.hidden = !menu.hidden;
+  } else if (a === "ttl") {
+    const n = setNotesTtl(Number((e.target as HTMLElement).closest<HTMLElement>("[data-h]")!.dataset.h), notesTtl().readOnly);
+    renderSettings();
+    if (n) toast(`Deleted ${n} old notification${n > 1 ? "s" : ""}`, "ok");
   } else if (a === "font-open") {
-    const menu = $(".font-menu", els.page);
+    const menu = $(".font-pick:not(.ttl-pick) .font-menu", els.page);
     menu.hidden = !menu.hidden;
     if (menu.hidden) return;
     state.fonts ??= await api.listFonts().catch(() => []);
@@ -1167,8 +1186,10 @@ els.page.addEventListener("input", (e) => {
 });
 
 addEventListener("pointerdown", (e) => {
-  const menu = document.querySelector<HTMLElement>(".font-menu");
-  if (menu && !menu.hidden && !(e.target as HTMLElement).closest(".font-pick")) menu.hidden = true;
+  const pick = (e.target as HTMLElement).closest(".font-pick");
+  document.querySelectorAll<HTMLElement>(".font-menu").forEach((m) => {
+    if (!m.hidden && m.closest(".font-pick") !== pick) m.hidden = true;
+  });
 });
 
 // ---------- editor drawer ----------
