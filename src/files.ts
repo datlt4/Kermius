@@ -1,6 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api, Channel, type FileEntry, type Host, type TransferEvent } from "./api";
-import { confirmDialog, contextMenu, esc, icon, promptDialog, toast } from "./ui";
+import { confirmDialog, contextMenu, esc, fuzzyScore, icon, promptDialog, toast } from "./ui";
 
 type Side = "local" | "remote";
 type SortKey = "name" | "size" | "mtime";
@@ -22,22 +22,6 @@ function sortEntries(list: FileEntry[], s: Pane["sort"]) {
   const byName = (a: FileEntry, b: FileEntry) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
   const by = s.key === "name" ? byName : s.key === "size" ? (a: FileEntry, b: FileEntry) => a.size - b.size : (a: FileEntry, b: FileEntry) => a.mtime - b.mtime;
   return list.sort((a, b) => Number(b.isDir) - Number(a.isDir) || (s.desc ? -1 : 1) * by(a, b) || byName(a, b));
-}
-
-/** fzf-style score of `q` as a subsequence of `name`; -1 = no match. Runs and word starts score higher. */
-function fuzzyScore(q: string, name: string) {
-  const s = name.toLowerCase();
-  let score = s.includes(q) ? 20 : 0;
-  let j = 0;
-  let prev = -2;
-  for (let i = 0; i < s.length && j < q.length; i++) {
-    if (s[i] !== q[j]) continue;
-    score += i === prev + 1 ? 5 : 1;
-    if (i === 0 || /[\s._\-]/.test(s[i - 1])) score += 3;
-    prev = i;
-    j++;
-  }
-  return j === q.length ? score - s.length * 0.01 : -1;
 }
 
 /** Show dot-files; one setting for both panes, kept across tabs. */

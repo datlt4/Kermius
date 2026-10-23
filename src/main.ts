@@ -13,7 +13,7 @@ import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJob
 import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
-import { $, confirmDialog, contextMenu, esc, hue, icon, toast } from "./ui";
+import { $, confirmDialog, contextMenu, esc, fuzzyBest, fuzzyScore, hue, icon, toast } from "./ui";
 
 /** Open tabs: terminals (SSH / local) and SFTP file managers. */
 type Tab = Session | FilesTab | VncTab;
@@ -98,9 +98,8 @@ function tags() {
   return [...m].sort((a, b) => byName(a[0], b[0]));
 }
 
-function matches(h: Host, q: string) {
-  return [h.name, h.address, h.username, h.folder, ...h.tags].some((s) => s.toLowerCase().includes(q));
-}
+const hostScore = (h: Host, q: string) => fuzzyBest(q, [h.name, h.address, h.username, h.folder, ...h.tags]);
+const matches = (h: Host, q: string) => hostScore(h, q) >= 0;
 
 function visibleHosts() {
   const q = state.query.trim().toLowerCase();
@@ -109,7 +108,8 @@ function visibleHosts() {
   else if (state.tag) list = list.filter((h) => h.tags.includes(state.tag!));
   else list = list.filter((h) => h.folder === (state.folder ?? ""));
   if (state.tag && q) list = list.filter((h) => h.tags.includes(state.tag!));
-  return [...list].sort(byOrder);
+  // A search lists the best matches first.
+  return q ? [...list].sort((a, b) => hostScore(b, q) - hostScore(a, q) || byOrder(a, b)) : [...list].sort(byOrder);
 }
 
 // ---------- sidebar ----------
@@ -229,7 +229,7 @@ function renderTabs() {
     <div class="tabs-scroll" data-tauri-drag-region>
       ${state.sessions
         .map(
-          (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
+          (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" draggable="${desktop}" title="${esc(s.host.username)}@${esc(s.host.address)}">
             ${s.kind === "files" ? icon("folder", 13) : s.kind === "vnc" ? icon("monitor", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : s.kind === "vnc" ? " · VNC" : ""}</span>
             <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
         )
@@ -243,6 +243,7 @@ function renderTabs() {
       <button data-win="min" title="Minimize">${icon("min", 15)}</button>
       <button data-win="max" title="Maximize">${icon("max", 13)}</button>
       <button data-win="close" class="close" title="Close">${icon("x", 15)}</button></div>` : ""}`;
+  saveOpenTabs();
   // Keep the open tab in view; the rest of the strip scrolls on its own.
   const sc = els.tabs.querySelector<HTMLElement>(".tabs-scroll")!;
   sc.scrollLeft = prev;
@@ -252,6 +253,82 @@ function renderTabs() {
     else if (on.offsetLeft + on.offsetWidth > sc.scrollLeft + sc.clientWidth) sc.scrollLeft = on.offsetLeft + on.offsetWidth - sc.clientWidth + 8;
   }
 }
+
+// ---------- reopen tabs from last time ----------
+
+const RESTORE_KEY = "kermius.restoreTabs";
+const LAST_TABS_KEY = "kermius.lastTabs";
+let tabsRestored = false;
+
+/** Open tabs as {kind, host id}, so the next start can reopen them (only after the restore ran). */
+function saveOpenTabs() {
+  if (!tabsRestored || isWeb) return;
+  const tabs = state.sessions.map((s) => ({ kind: s.kind, local: "local" in s && s.local, host: s.host.id }));
+  const active = state.sessions.findIndex((s) => s.id === state.active);
+  localStorage.setItem(LAST_TABS_KEY, JSON.stringify({ tabs, active }));
+}
+
+function restoreTabs() {
+  tabsRestored = true;
+  if (localStorage.getItem(RESTORE_KEY) !== "1") return saveOpenTabs();
+  let last: { tabs: { kind: string; local: boolean; host: string }[]; active: number } | null = null;
+  try {
+    last = JSON.parse(localStorage.getItem(LAST_TABS_KEY) || "null");
+  } catch {
+    last = null;
+  }
+  for (const t of last?.tabs ?? []) {
+    if (t.local) {
+      if (!/iPhone|iPad/i.test(navigator.userAgent)) openSession(null);
+      continue;
+    }
+    const h = state.hosts.find((x) => x.id === t.host);
+    if (!h) continue;
+    if (t.kind === "files") openFiles(h);
+    else if (t.kind === "vnc") openVnc(h);
+    else openSession(h);
+  }
+  const want = state.sessions[last?.active ?? -1];
+  activate(want?.id ?? "home");
+}
+
+// ---------- drag tabs to reorder ----------
+
+let dragTab = "";
+const clearDropMarks = () => els.tabs.querySelectorAll(".drop-before, .drop-after").forEach((x) => x.classList.remove("drop-before", "drop-after"));
+els.tabs.addEventListener("dragstart", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
+  if (!t || t.dataset.tab === "home") return;
+  dragTab = t.dataset.tab!;
+  e.dataTransfer!.effectAllowed = "move";
+  e.dataTransfer!.setData("text/plain", dragTab);
+});
+els.tabs.addEventListener("dragover", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>(".tabs-scroll [data-tab]");
+  if (!dragTab || !t) return;
+  e.preventDefault();
+  const r = t.getBoundingClientRect();
+  clearDropMarks();
+  if (t.dataset.tab !== dragTab) t.classList.add(e.clientX > r.left + r.width / 2 ? "drop-after" : "drop-before");
+});
+els.tabs.addEventListener("drop", (e) => {
+  const t = (e.target as HTMLElement).closest<HTMLElement>(".tabs-scroll [data-tab]");
+  if (!dragTab || !t) return;
+  e.preventDefault();
+  const after = t.classList.contains("drop-after");
+  const from = state.sessions.findIndex((s) => s.id === dragTab);
+  if (from >= 0 && t.dataset.tab !== dragTab) {
+    const [moved] = state.sessions.splice(from, 1);
+    const to = state.sessions.findIndex((s) => s.id === t.dataset.tab) + (after ? 1 : 0);
+    state.sessions.splice(to, 0, moved);
+  }
+  dragTab = "";
+  renderTabs();
+});
+els.tabs.addEventListener("dragend", () => {
+  dragTab = "";
+  clearDropMarks();
+});
 
 // A mouse wheel scrolls the tab strip sideways.
 els.tabs.addEventListener(
@@ -752,7 +829,7 @@ function ruleDialog(key?: string) {
   el.querySelector<HTMLInputElement>(rule ? '[name="label"]' : ".fs-route-filter")!.focus();
   el.querySelector(".fs-route-filter")?.addEventListener("input", (e) => {
     const q = (e.target as HTMLInputElement).value.trim().toLowerCase();
-    el.querySelectorAll<HTMLElement>(".fs-route").forEach((r) => (r.hidden = !!q && !r.dataset.search!.includes(q)));
+    el.querySelectorAll<HTMLElement>(".fs-route").forEach((r) => (r.hidden = !!q && fuzzyBest(q, [r.dataset.search!]) < 0));
   });
   el.addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
@@ -889,7 +966,7 @@ function renderSnippets() {
 function renderSnippetList() {
   const q = state.query.trim().toLowerCase();
   const list = state.snippets
-    .filter((x) => !q || x.name.toLowerCase().includes(q) || x.script.toLowerCase().includes(q))
+    .filter((x) => !q || fuzzyBest(q, [x.name]) >= 0 || x.script.toLowerCase().includes(q))
     .sort((a, b) => byName(a.name, b.name));
   const canRun = !isWeb && state.sessions.length > 0;
   $(".snip-list", els.page).innerHTML = list.length
@@ -1008,6 +1085,10 @@ els.page.addEventListener("change", (e) => {
       (err) => toast(String(err), "err"),
     );
   }
+  if (t.id === "s-restore-tabs") {
+    localStorage.setItem("kermius.restoreTabs", (t as unknown as HTMLInputElement).checked ? "1" : "0");
+    return;
+  }
   if (t.id === "s-notes-read") {
     const n = setNotesTtl(notesTtl().hours, (t as unknown as HTMLInputElement).checked);
     if (n) toast(`Deleted ${n} old notification${n > 1 ? "s" : ""}`, "ok");
@@ -1040,6 +1121,11 @@ function renderSettings() {
         <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>${isWeb ? `<button class="btn ghost" data-set="lock">${icon("lock", 15)} Lock</button>` : ""}
           <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
       </div>
+      ${isWeb ? "" : `<div class="panel">
+        <div class="panel-head">${icon("sync")}<div><h3>On startup</h3></div></div>
+        <label class="toggle-row"><span><b>Reopen the tabs from last time</b><small class="muted">Like a browser's "Continue where you left off": terminals, SFTP and VNC tabs reconnect when Kermius starts</small></span>
+          <input type="checkbox" class="toggle" id="s-restore-tabs" ${localStorage.getItem("kermius.restoreTabs") === "1" ? "checked" : ""} /></label>
+      </div>`}
       <div class="panel">
         <div class="panel-head">${icon("bell")}<div><h3>Notifications</h3></div></div>
         <div class="font-pick ttl-pick"><button class="font-current" data-set="ttl-open">${ttlLabel(notesTtl().hours)}${icon("chevron", 14)}</button>
@@ -1169,7 +1255,7 @@ function renderFontList(q: string) {
   const system = (state.fonts ?? []).filter((f) => !BUILTIN_FONTS.includes(f));
   const item = (f: string) =>
     `<button class="font-item ${f === cur ? "on" : ""}" data-font="${esc(f)}" style="font-family:${esc(fontStack(f))}">${esc(f)}</button>`;
-  const match = (f: string) => f.toLowerCase().includes(q.toLowerCase());
+  const match = (f: string) => !q || fuzzyScore(q, f) >= 0;
   const b = BUILTIN_FONTS.filter(match);
   const sys = system.filter(match);
   $(".font-list", els.page).innerHTML =
@@ -1727,6 +1813,7 @@ function webUnlock(): Promise<void> {
   await reload();
   renderPage();
   activate("home");
+  restoreTabs();
   runSync(false);
   setInterval(() => runSync(false), 60_000);
   if (!isWeb) {

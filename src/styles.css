@@ -843,3 +843,5 @@ details .field + .field { margin-top: 10px; }
 .nb-tr-title .btn { color: var(--text); text-transform: none; letter-spacing: normal; font-weight: 500; }
 .nb-req-dir { overflow-wrap: anywhere; }
 .ttl-pick { flex: none; max-width: 280px; }
+.tab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
+.tab.drop-after { box-shadow: inset -2px 0 0 var(--accent); }

@@ -3,7 +3,7 @@ import { api, type FsEndpoint, type FsEvent, type FsJob, type Host } from "./api
 import { conflictsDialog } from "./conflicts";
 import { notify } from "./notify";
 import { pickFolder } from "./folderpicker";
-import { confirmDialog, contextMenu, esc, icon, morphHtml, toast } from "./ui";
+import { confirmDialog, contextMenu, esc, fuzzyBest, icon, morphHtml, toast } from "./ui";
 
 export interface FolderSyncCtx {
   hosts(): Host[];
@@ -688,7 +688,7 @@ function jobDialog(job: FsJob, ctx: FolderSyncCtx) {
     if (!t.classList.contains("fs-route-filter")) return;
     const q = t.value.trim().toLowerCase();
     t.closest(".fs-side")!.querySelectorAll<HTMLElement>(".fs-route").forEach((r) => {
-      r.hidden = !!q && !q.split(/\s+/).every((w) => r.dataset.search!.includes(w)) && !r.querySelector("input")!.checked;
+      r.hidden = !!q && fuzzyBest(q, [r.dataset.search!]) < 0 && !r.querySelector("input")!.checked;
     });
   });
   el.addEventListener("change", (e) => {
