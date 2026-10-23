@@ -221,10 +221,12 @@ $(".collapse-btn").addEventListener("click", () => {
 
 function renderTabs() {
   const prev = els.tabs.querySelector<HTMLElement>(".tabs-scroll")?.scrollLeft ?? 0;
+  // Empty space in the bar moves the window, like a browser's tab strip.
+  if (desktop) els.tabs.setAttribute("data-tauri-drag-region", "");
   els.tabs.innerHTML = `
     <button class="icon-btn menu-btn" data-act="menu">${icon("menu")}</button>
     <button class="tab home ${state.active === "home" ? "on" : ""}" data-tab="home">${icon("lock", 15)}<span>Vault</span></button>
-    <div class="tabs-scroll">
+    <div class="tabs-scroll" data-tauri-drag-region>
       ${state.sessions
         .map(
           (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" title="${esc(s.host.username)}@${esc(s.host.address)}">
@@ -321,6 +323,13 @@ els.tabs.addEventListener("contextmenu", (e) => {
     ...(s.local ? [] : [{ label: "Copy password", icon: "key", action: () => s.copyPassword() }]),
     "-" as const,
     { label: "Close others", icon: "x", action: () => state.sessions.filter((x) => x !== s).forEach((x) => closeSession(x.id)) },
+    { label: "Close tabs to the right", icon: "x", action: () => state.sessions.slice(state.sessions.indexOf(s) + 1).forEach((x) => closeSession(x.id)) },
+    {
+      label: s.local ? "Close all local terminals" : `Close all tabs of ${s.host.name}`,
+      icon: "x",
+      action: () => state.sessions.filter((x) => (s.local ? x.local : !x.local && x.host.id === s.host.id)).forEach((x) => closeSession(x.id)),
+    },
+    { label: "Close all tabs", icon: "x", action: () => [...state.sessions].forEach((x) => closeSession(x.id)) },
     { label: "Close", icon: "x", danger: true, action: () => closeSession(s.id) },
   ]);
 });
