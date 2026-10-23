@@ -1,6 +1,6 @@
 // Export hosts to ~/.ssh/config: pick groups/hosts in a tree, preview, copy or save.
 import { api, type Host } from "./api";
-import { esc, icon, toast } from "./ui";
+import { esc, fuzzyBest, icon, toast } from "./ui";
 
 export function sshExportDialog(hosts: Host[]) {
   const groups = new Map<string, Host[]>();
@@ -36,7 +36,7 @@ export function sshExportDialog(hosts: Host[]) {
   document.body.append(el);
   const close = () => el.remove();
 
-  const visible = (h: Host) => !filter || `${h.name} ${h.address} ${h.username} ${h.folder}`.toLowerCase().includes(filter);
+  const visible = (h: Host) => !filter || fuzzyBest(filter, [h.name, h.address, h.username, h.folder]) >= 0;
   const ids = () => hosts.filter((h) => picked.has(h.id)).map((h) => h.id);
   const setBox = (box: HTMLInputElement, list: Host[]) => {
     const n = list.filter((h) => picked.has(h.id)).length;

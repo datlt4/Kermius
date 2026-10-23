@@ -191,3 +191,31 @@ function morphNode(a: Node, b: Node) {
   for (const at of [...eb.attributes]) if (ea.getAttribute(at.name) !== at.value) ea.setAttribute(at.name, at.value);
   morphChildren(a, b);
 }
+
+/** fzf-style score of `q` as a subsequence of `text`, ignoring case; -1 = no match. Substrings, runs and word starts rank higher. */
+export function fuzzyScore(q: string, text: string) {
+  const s = text.toLowerCase();
+  q = q.toLowerCase();
+  let score = s.includes(q) ? 20 : 0;
+  let j = 0;
+  let prev = -2;
+  for (let i = 0; i < s.length && j < q.length; i++) {
+    if (s[i] !== q[j]) continue;
+    score += i === prev + 1 ? 5 : 1;
+    if (i === 0 || /[\s._\-/@:]/.test(s[i - 1])) score += 3;
+    prev = i;
+    j++;
+  }
+  return j === q.length ? score - s.length * 0.01 : -1;
+}
+
+/** Score of a query against several fields: every word must match one of them; -1 = no match. */
+export function fuzzyBest(q: string, fields: string[]) {
+  let total = 0;
+  for (const w of q.split(/\s+/).filter(Boolean)) {
+    const best = Math.max(-1, ...fields.map((f) => fuzzyScore(w, f)));
+    if (best < 0) return -1;
+    total += best;
+  }
+  return total;
+}
