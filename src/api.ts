@@ -140,6 +140,9 @@ export interface Snippet {
   deleted: boolean;
 }
 
+/** Integration API (desktop): `kermius --new-terminal [--cwd DIR]`, `kermius --share PATH...`, `kermius://terminal?cwd=DIR`. */
+export type Launch = { kind: "terminal"; cwd: string } | { kind: "share"; files: string[]; dirs: string[] };
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -319,8 +322,10 @@ const tauriApi = {
   clipboardRead: () => invoke<string>("clipboard_read"),
   sshConnect: (hostId: string, cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
     invoke<string>("ssh_connect", { hostId, cols, rows, onData, onStatus }),
-  localOpen: (cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
-    invoke<string>("local_open", { cols, rows, onData, onStatus }),
+  localOpen: (cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>, cwd = "") =>
+    invoke<string>("local_open", { cols, rows, onData, onStatus, cwd: cwd || null }),
+  /** Integration API requests that arrived before the UI listened for `kermius-launch`. */
+  launchReady: () => invoke<Launch[]>("launch_ready"),
   listFonts: () => invoke<string[]>("list_fonts"),
   sshUpload: (sid: string, ext: string, bytes: Uint8Array) => invoke<string>("ssh_upload", bytes, { headers: { sid, ext } }),
   saveClipboardImage: () => invoke<string>("save_clipboard_image"),

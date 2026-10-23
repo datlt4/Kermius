@@ -1,13 +1,14 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Snippet, type SyncSettings, type Tunnel } from "./api";
+import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Launch, type Snippet, type SyncSettings, type Tunnel } from "./api";
+import { listen } from "@tauri-apps/api/event";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
 import { bellButton, initOsNotifications, notesTtl, onNotesChange, setNotesTtl, toggleNotesPanel, TTLS, ttlLabel } from "./notify";
 import { VncTab } from "./vnc";
 import { checkUpdate, pendingUpdate, updateDialog } from "./update";
 import { sshExportDialog } from "./sshexport";
-import { bindNearby, initNearby, renderNearby } from "./nearby";
+import { bindNearby, initNearby, renderNearby, shareFromLaunch } from "./nearby";
 import { bindWol, renderWol, type WolCtx } from "./wol";
 import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJobs, syncActivity, type FolderSyncCtx } from "./foldersync";
 import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
@@ -292,6 +293,15 @@ function restoreTabs() {
   activate(want?.id ?? "home");
 }
 
+// ---------- Integration API (other apps) ----------
+
+function onLaunch(l: Launch) {
+  if (l.kind === "terminal") return openSession(null, l.cwd);
+  shareFromLaunch(l.files, l.dirs);
+  state.view = "nearby";
+  goHome();
+}
+
 // ---------- drag tabs to reorder ----------
 
 let dragTab = "";
@@ -433,9 +443,9 @@ function goHome() {
   activate("home");
 }
 
-function openSession(h: Host | null) {
+function openSession(h: Host | null, cwd = "") {
   if (h?.protocol === "vnc") return openVnc(h);
-  const s = new Session(h, renderTabs, (x) => closeSession(x.id));
+  const s = new Session(h, renderTabs, (x) => closeSession(x.id), cwd);
   state.sessions.push(s);
   s.mount(els.terms);
   els.shell.classList.remove("side-open");
@@ -1814,6 +1824,10 @@ function webUnlock(): Promise<void> {
   renderPage();
   activate("home");
   restoreTabs();
+  if (desktop) {
+    await listen<Launch>("kermius-launch", (e) => onLaunch(e.payload));
+    (await api.launchReady().catch(() => [])).forEach(onLaunch);
+  }
   runSync(false);
   setInterval(() => runSync(false), 60_000);
   if (!isWeb) {

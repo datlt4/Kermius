@@ -73,6 +73,12 @@ const baseName = (p: string) => {
   return d.split(/[\\/:]/).filter(Boolean).pop() || p;
 };
 
+/** Integration API (`kermius --share`): put files and folders into the selection. */
+export function shareFromLaunch(files: string[], dirs: string[]) {
+  addPaths(files);
+  addPaths(dirs, true);
+}
+
 function addPaths(paths: string[], dir = false) {
   for (const path of paths) if (!selection.some((i) => i.kind === "path" && i.path === path)) selection.push({ kind: "path", path, dir });
 }

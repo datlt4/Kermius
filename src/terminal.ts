@@ -182,7 +182,8 @@ export class Session {
   readonly local: boolean;
   host: Host;
 
-  constructor(host: Host | null, private onChange: () => void, private onClose: (s: Session) => void) {
+  /** `cwd`: folder for a local terminal ("" = home). */
+  constructor(host: Host | null, private onChange: () => void, private onClose: (s: Session) => void, private cwd = "") {
     this.local = !host;
     this.host = host ?? { ...emptyHost(), name: "Local" };
     const prefs = loadPrefs();
@@ -523,7 +524,7 @@ export class Session {
     try {
       const { cols, rows } = this.term;
       this.sid = this.local
-        ? await api.localOpen(cols, rows, onData, onStatus)
+        ? await api.localOpen(cols, rows, onData, onStatus, this.cwd)
         : await api.sshConnect(this.host.id, cols, rows, onData, onStatus);
     } catch (e) {
       if (gen === this.gen) this.fail(String(e));

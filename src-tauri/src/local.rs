@@ -25,8 +25,9 @@ pub fn spawn(
     on_data: Channel<InvokeResponseBody>,
     on_status: Channel<Status>,
     flow: Arc<Flow>,
+    cwd: Option<String>,
 ) -> Result<mpsc::UnboundedSender<Cmd>, String> {
-    spawn_cmd(shell(), cols, rows, on_data, on_status, flow)
+    spawn_cmd(shell(), cols, rows, on_data, on_status, flow, cwd)
 }
 
 /// Run `program args` in a local PTY (e.g. mosh).
@@ -42,7 +43,7 @@ pub fn spawn_program(
 ) -> Result<mpsc::UnboundedSender<Cmd>, String> {
     let mut cmd = CommandBuilder::new(program);
     cmd.args(args);
-    spawn_cmd(cmd, cols, rows, on_data, on_status, flow)
+    spawn_cmd(cmd, cols, rows, on_data, on_status, flow, None)
 }
 
 fn spawn_cmd(
@@ -52,13 +53,15 @@ fn spawn_cmd(
     on_data: Channel<InvokeResponseBody>,
     on_status: Channel<Status>,
     flow: Arc<Flow>,
+    cwd: Option<String>,
 ) -> Result<mpsc::UnboundedSender<Cmd>, String> {
     let e = |err: anyhow::Error| err.to_string();
     let pair = native_pty_system().openpty(size(cols, rows)).map_err(e)?;
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    if let Some(home) = dirs::home_dir() {
-        cmd.cwd(home);
+    // A requested folder (Integration API) if it exists, else home.
+    if let Some(dir) = cwd.filter(|d| std::path::Path::new(d).is_dir()).map(std::path::PathBuf::from).or_else(dirs::home_dir) {
+        cmd.cwd(dir);
     }
     let mut child = pair.slave.spawn_command(cmd).map_err(e)?;
     drop(pair.slave);
