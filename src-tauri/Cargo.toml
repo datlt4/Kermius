@@ -50,6 +50,9 @@ fontdb = "0.23"
 serialport = { version = "4", default-features = false }
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
+# Integration API: `kermius --new-terminal / --share` and kermius:// reach the running instance.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 portable-pty = "0.9"

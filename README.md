@@ -114,6 +114,20 @@ Devices find each other by UDP multicast, which does not cross VPNs or routers. 
 | `Ctrl+Tab` / `Ctrl+1…9` | Switch tabs |
 | `Ctrl+Shift+C` / `Ctrl+Shift+V` | Copy / paste in terminal |
 | `Ctrl+S` / `Esc` | Save / close host editor |
+| `Ctrl+Shift+L` (Control on macOS too) | New local terminal |
+
+## Integration API (desktop)
+
+Other apps (file managers, launchers, scripts) can drive Kermius. If Kermius is already running, the request goes to that window (it comes to the front); otherwise Kermius starts and handles it once its window is ready.
+
+| Command | Does |
+| --- | --- |
+| `kermius --new-terminal` | Opens a local terminal in the home folder |
+| `kermius --new-terminal --cwd DIR` | Opens a local terminal in `DIR` (relative to the caller's folder; falls back to home if missing) |
+| `kermius --share PATH...` | Puts the files and folders into the Nearby Share selection and opens Nearby Share; the user picks the device. Missing paths are skipped. |
+| `kermius://terminal?cwd=/some/dir` | Same as `--new-terminal --cwd`. Links may come from web pages, so a link can only choose a folder; it cannot run commands or share files. |
+
+Example, a file manager "Share with Kermius" action: `kermius --share "/home/me/Pictures/a.png" "/home/me/Docs"`.
 
 ## License
 

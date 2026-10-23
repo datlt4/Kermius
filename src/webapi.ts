@@ -188,6 +188,7 @@ export const webApi: Api = {
   clipboardRead: async () => (navigator.clipboard && isSecureContext ? navigator.clipboard.readText() : unsupported()),
   sshConnect: unsupported,
   localOpen: unsupported,
+  launchReady: async () => [],
   listFonts: async () => [],
   sshUpload: unsupported,
   saveClipboardImage: unsupported,

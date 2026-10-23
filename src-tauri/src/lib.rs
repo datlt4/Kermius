@@ -1,5 +1,7 @@
 mod crypto;
 mod files;
+#[cfg(desktop)]
+mod launch;
 #[cfg(target_os = "ios")]
 mod ios_photos;
 mod foldersync;
@@ -572,6 +574,18 @@ fn session_write(state: State<AppState>, sid: String, data: Vec<u8>) {
     send_cmd(&state, &sid, ssh::Cmd::Data(data));
 }
 
+/// The UI listens for `kermius-launch` now; returns requests that came before.
+#[tauri::command]
+fn launch_ready(app: tauri::AppHandle) -> Vec<serde_json::Value> {
+    #[cfg(desktop)]
+    return launch::ready(&app).into_iter().filter_map(|l| serde_json::to_value(l).ok()).collect();
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Vec::new()
+    }
+}
+
 #[tauri::command]
 fn local_open(
     state: State<AppState>,
@@ -579,13 +593,14 @@ fn local_open(
     rows: u32,
     on_data: Channel<InvokeResponseBody>,
     on_status: Channel<ssh::Status>,
+    cwd: Option<String>,
 ) -> Res<String> {
     #[cfg(target_os = "ios")]
     return Err("Local terminal is not available on iOS".into());
     #[cfg(not(target_os = "ios"))]
     {
         let flow = Arc::new(ssh::Flow::default());
-        let tx = local::spawn(cols, rows, on_data, on_status, flow.clone())?;
+        let tx = local::spawn(cols, rows, on_data, on_status, flow.clone(), cwd)?;
         let sid = uuid::Uuid::new_v4().to_string();
         state.sessions.lock().insert(sid.clone(), (tx, flow));
         Ok(sid)
@@ -1199,7 +1214,15 @@ fn ios_fix_webview(webview: tauri::webview::PlatformWebview) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // First: a second `kermius …` (or a kermius:// link) hands its request to this instance and exits.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            launch::handle(app, launch::from_args(&argv, std::path::Path::new(&cwd)), true);
+        }))
+        .plugin(tauri_plugin_deep_link::init());
+    builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1215,6 +1238,20 @@ pub fn run() {
             #[cfg(target_os = "ios")]
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.with_webview(ios_fix_webview);
+            }
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.manage(launch::Pending::default());
+                let args: Vec<String> = std::env::args().collect();
+                launch::handle(app.handle(), launch::from_args(&args, &std::env::current_dir().unwrap_or_default()), false);
+                // Installed packages register kermius:// themselves; this covers AppImage and portable builds.
+                #[cfg(any(target_os = "linux", windows))]
+                let _ = app.deep_link().register_all();
+                let h = app.handle().clone();
+                app.deep_link().on_open_url(move |ev| {
+                    launch::handle(&h, ev.urls().iter().filter_map(|u| launch::from_url(u.as_str())).collect(), true);
+                });
             }
             app.manage(nearby::Nearby::new(app.handle().clone()));
             let store = Store::open(app.path().app_data_dir()?)?;
@@ -1270,6 +1307,7 @@ pub fn run() {
             clipboard_read,
             ssh_connect,
             local_open,
+            launch_ready,
             list_fonts,
             ssh_write,
             ssh_upload,
