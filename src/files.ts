@@ -40,11 +40,15 @@ function fuzzyScore(q: string, name: string) {
   return j === q.length ? score - s.length * 0.01 : -1;
 }
 
+/** Show dot-files; one setting for both panes, kept across tabs. */
+let showHidden = localStorage.getItem("kermius.files.hidden") === "1";
+
 /** Rows to show: all entries, or the fuzzy matches best first. */
 function shown(p: Pane) {
   const q = p.filter.toLowerCase();
-  if (!q) return p.entries;
-  return p.entries
+  const list = showHidden ? p.entries : p.entries.filter((e) => !e.name.startsWith("."));
+  if (!q) return list;
+  return list
     .map((e) => [e, fuzzyScore(q, e.name)] as const)
     .filter(([, s]) => s >= 0)
     .sort((a, b) => b[1] - a[1])
@@ -57,6 +61,10 @@ interface Transfer {
   upload: boolean;
   done: number;
   total: number;
+  /** Smoothed bytes/s and the last sample it was measured from. */
+  rate: number;
+  at: number;
+  atDone: number;
   status: "running" | "done" | "error";
   message: string;
 }
@@ -71,6 +79,16 @@ const fmtSize = (n: number) => {
   } while (n >= 1024 && i < u.length - 1);
   return `${n.toFixed(n < 10 ? 1 : 0)} ${u[i]}`;
 };
+/** " · 12 MB/s · 3m 10s left · done ~14:05" once the speed is known. */
+function eta(t: Transfer) {
+  if (!t.rate) return "";
+  const speed = ` · ${fmtSize(t.rate)}/s`;
+  if (!t.total || t.done >= t.total) return speed;
+  const s = Math.round((t.total - t.done) / t.rate);
+  const left = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  const end = new Date(Date.now() + s * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return `${speed} · ${left} left · done ~${end}`;
+}
 const fmtDate = (s: number) => (s ? new Date(s * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "");
 const parent = (p: string) => {
   const sep = p.includes("\\") && !p.includes("/") ? "\\" : "/";
@@ -110,6 +128,8 @@ export class FilesTab {
                 <button class="icon-btn" data-f="home" title="Home">${icon("server", 15)}</button>
                 <input class="fpath" spellcheck="false" />
                 <input class="ffilter" placeholder="Filter" spellcheck="false" title="Fuzzy filter this folder (or just start typing in the list)" />
+                <button class="icon-btn" data-f="hidden" title="Show hidden files">${icon("eye-off", 15)}</button>
+                <button class="icon-btn" data-f="delete" title="Delete selected (Del)">${icon("trash", 15)}</button>
                 <button class="icon-btn" data-f="refresh" title="Refresh">${icon("sync", 15)}</button>
                 <button class="icon-btn" data-f="mkdir" title="New folder">${icon("plus", 15)}</button>
               </div>
@@ -205,6 +225,9 @@ export class FilesTab {
 
   private renderPane(p: Pane) {
     (p.el.querySelector(".fpath") as HTMLInputElement).value = p.path;
+    const hid = p.el.querySelector<HTMLElement>('[data-f="hidden"]')!;
+    hid.innerHTML = icon(showHidden ? "eye" : "eye-off", 15);
+    hid.title = showHidden ? "Hide hidden files" : "Show hidden files";
     p.el.querySelectorAll<HTMLElement>(".flist-head [data-sort]").forEach((b) => {
       const on = b.dataset.sort === p.sort.key;
       b.classList.toggle("on", on);
@@ -249,6 +272,9 @@ export class FilesTab {
       upload,
       done: 0,
       total: 0,
+      rate: 0,
+      at: 0,
+      atDone: 0,
       status: "running",
       message: "",
     };
@@ -256,6 +282,13 @@ export class FilesTab {
     const ch = new Channel<TransferEvent>();
     ch.onmessage = (ev) => {
       if (ev.type === "progress") {
+        const now = performance.now();
+        if (!t.at || ev.done < t.atDone) Object.assign(t, { at: now, atDone: ev.done });
+        else if (now - t.at > 500) {
+          const r = ((ev.done - t.atDone) / (now - t.at)) * 1000;
+          t.rate = t.rate ? t.rate * 0.7 + r * 0.3 : r;
+          Object.assign(t, { at: now, atDone: ev.done });
+        }
         t.done = ev.done;
         // Unknown size (folders): keep the estimate unless it moves by more than 2%.
         t.total = known || (t.total && Math.abs(ev.total - t.total) <= t.total * 0.02 ? t.total : ev.total);
@@ -317,6 +350,12 @@ export class FilesTab {
         else if (f === "home") (p.side === "remote" ? api.sftpHome(this.sid) : api.localHome()).then((h) => this.cd(p, h));
         else if (f === "refresh") this.refresh(p);
         else if (f === "mkdir") this.mkdir(p);
+        else if (f === "delete") this.remove(p, this.selection(p));
+        else if (f === "hidden") {
+          showHidden = !showHidden;
+          localStorage.setItem("kermius.files.hidden", showHidden ? "1" : "0");
+          Object.values(this.panes).forEach((x) => this.renderPane(x));
+        }
       });
       p.el.querySelector(".flist-head")!.addEventListener("click", (e) => {
         const key = (e.target as HTMLElement).closest<HTMLElement>("[data-sort]")?.dataset.sort as SortKey | undefined;
@@ -412,7 +451,7 @@ export class FilesTab {
         const sel = this.selection(p);
         const verb = p.side === "local" ? `Upload to ${this.host.name}` : "Download to this computer";
         contextMenu(e.clientX, e.clientY, [
-          ...(sel.length ? [{ label: verb, icon: p.side === "local" ? "import" : "import", action: () => this.transfer(p.side, sel.map((x) => x.path)) }] : []),
+          ...(sel.length ? [{ label: verb, icon: p.side === "local" ? "upload" : "import", action: () => this.transfer(p.side, sel.map((x) => x.path)) }] : []),
           ...(sel.length === 1 && sel[0].isDir ? [{ label: "Open", icon: "folder", action: () => this.cd(p, sel[0].path) }] : []),
           ...(sel.length === 1 ? [{ label: "Rename", icon: "edit", action: () => this.rename(p, sel[0]) }] : []),
           ...(sel.length ? [{ label: "Copy path", icon: "copy", action: () => api.clipboardWrite(sel.map((x) => x.path).join("\n")).then(() => toast("Copied", "ok")) }] : []),
@@ -493,7 +532,7 @@ export class FilesTab {
         return `<div class="ft-row ${t.status}">
           <span class="ft-dir">${t.upload ? "↑" : "↓"}</span><span class="ft-name">${esc(t.label)}</span>
           <div class="bar"><i style="width:${pct}%"></i></div>
-          <span class="ft-info">${t.status === "error" ? esc(t.message) : t.status === "done" ? "Done" : `${pct}% · ${fmtSize(t.done)}${t.total ? ` / ${fmtSize(t.total)}` : ""}`}</span>
+          <span class="ft-info">${t.status === "error" ? esc(t.message) : t.status === "done" ? "Done" : `${pct}% · ${fmtSize(t.done)}${t.total ? ` / ${fmtSize(t.total)}` : ""}${eta(t)}`}</span>
           ${t.status === "running" && t.tid ? `<button class="icon-btn" data-cancel="${t.tid}" title="Cancel">${icon("x", 13)}</button>` : ""}</div>`;
       })
       .join("");
