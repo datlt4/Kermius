@@ -1,6 +1,6 @@
 [package]
 name = "kermius"
-version = "1.38.21"
+version = "1.38.22"
 edition = "2021"
 license = "MIT"
 
