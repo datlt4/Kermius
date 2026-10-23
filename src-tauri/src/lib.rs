@@ -1215,13 +1215,11 @@ fn ios_fix_webview(webview: tauri::webview::PlatformWebview) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
-    // First: a second `kermius …` (or a kermius:// link) hands its request to this instance and exits.
+    // First: a second `kermius …` hands its request to this instance and exits.
     #[cfg(desktop)]
-    let builder = builder
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            launch::handle(app, launch::from_args(&argv, std::path::Path::new(&cwd)), true);
-        }))
-        .plugin(tauri_plugin_deep_link::init());
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+        launch::handle(app, launch::from_args(&argv, std::path::Path::new(&cwd)), true);
+    }));
     builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1241,17 +1239,9 @@ pub fn run() {
             }
             #[cfg(desktop)]
             {
-                use tauri_plugin_deep_link::DeepLinkExt;
                 app.manage(launch::Pending::default());
                 let args: Vec<String> = std::env::args().collect();
                 launch::handle(app.handle(), launch::from_args(&args, &std::env::current_dir().unwrap_or_default()), false);
-                // Installed packages register kermius:// themselves; this covers AppImage and portable builds.
-                #[cfg(any(target_os = "linux", windows))]
-                let _ = app.deep_link().register_all();
-                let h = app.handle().clone();
-                app.deep_link().on_open_url(move |ev| {
-                    launch::handle(&h, ev.urls().iter().filter_map(|u| launch::from_url(u.as_str())).collect(), true);
-                });
             }
             app.manage(nearby::Nearby::new(app.handle().clone()));
             let store = Store::open(app.path().app_data_dir()?)?;

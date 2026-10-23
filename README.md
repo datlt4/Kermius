@@ -125,7 +125,6 @@ Other apps (file managers, launchers, scripts) can drive Kermius. If Kermius is 
 | `kermius --new-terminal` | Opens a local terminal in the home folder |
 | `kermius --new-terminal --cwd DIR` | Opens a local terminal in `DIR` (relative to the caller's folder; falls back to home if missing) |
 | `kermius --share PATH...` | Puts the files and folders into the Nearby Share selection and opens Nearby Share; the user picks the device. Missing paths are skipped. |
-| `kermius://terminal?cwd=/some/dir` | Same as `--new-terminal --cwd`. Links may come from web pages, so a link can only choose a folder; it cannot run commands or share files. |
 
 Example, a file manager "Share with Kermius" action: `kermius --share "/home/me/Pictures/a.png" "/home/me/Docs"`.
 

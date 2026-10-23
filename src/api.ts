@@ -140,7 +140,7 @@ export interface Snippet {
   deleted: boolean;
 }
 
-/** Integration API (desktop): `kermius --new-terminal [--cwd DIR]`, `kermius --share PATH...`, `kermius://terminal?cwd=DIR`. */
+/** Integration API (desktop): `kermius --new-terminal [--cwd DIR]`, `kermius --share PATH...`. */
 export type Launch = { kind: "terminal"; cwd: string } | { kind: "share"; files: string[]; dirs: string[] };
 
 export interface FileEntry {
