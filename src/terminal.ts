@@ -456,16 +456,26 @@ export class Session {
   }
 
   /** Fit to the container and repaint everything (renderers can leave stale rows after resize). */
+  /** Box size + font the terminal was last fitted to: refitting the same box does nothing. */
+  private fitKey = "";
+
   private refit() {
     if (!this.el.offsetParent) return;
-    this.fit.fit();
-    // At fractional scaling the fit can leave the last row half outside the box: drop a row until it fits.
     const box = this.el.querySelector<HTMLElement>(".term")!;
+    const key = `${box.clientWidth}x${box.clientHeight}@${devicePixelRatio}/${this.term.options.fontSize}/${this.term.options.fontFamily}`;
+    if (key === this.fitKey) return;
+    this.fitKey = key;
+    const dims = this.fit.proposeDimensions();
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    let { cols, rows } = dims;
+    // At fractional scaling a rendered row is a bit taller than the CSS cell, so the last row could sit
+    // half outside the box: size by the real row height, once (each resize rewrites every buffer line).
     const screen = this.el.querySelector<HTMLElement>(".xterm-screen");
-    while (screen && this.term.rows > 1 && screen.getBoundingClientRect().bottom > box.getBoundingClientRect().bottom + 0.5) {
-      this.term.resize(this.term.cols, this.term.rows - 1);
-    }
-    this.term.refresh(0, this.term.rows - 1);
+    const rowH = screen && this.term.rows ? screen.getBoundingClientRect().height / this.term.rows : 0;
+    const cs = getComputedStyle(box);
+    const avail = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    if (rowH > 0 && rows * rowH > avail + 0.5) rows = Math.max(1, Math.floor((avail + 0.5) / rowH));
+    if (cols !== this.term.cols || rows !== this.term.rows) this.term.resize(cols, rows);
   }
 
   /** `raw`: already a complete key sequence (tmux commands), so Ctrl/Alt do not apply. */
