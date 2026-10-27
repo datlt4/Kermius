@@ -408,6 +408,24 @@ impl Drop for KillGroup {
 }
 
 /// Runs rsync. `progress` gets (done, total) bytes; `on_line` gets every other stdout line.
+/// rsync processes from an earlier Kermius that died mid-transfer (macOS has no parent-death signal):
+/// orphans (parent 1) whose command line runs this executable as `--ssh-bridge`. Killed at start.
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+pub fn kill_orphan_rsyncs() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe = exe.to_string_lossy().into_owned();
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid=,command="]).output() else { return };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next().and_then(|p| p.parse::<i32>().ok()), f.next()) else { continue };
+        let cmd = f.collect::<Vec<_>>().join(" ");
+        let ours = cmd.contains("--ssh-bridge") && cmd.contains(&exe);
+        if ppid == "1" && ours && (cmd.starts_with("rsync") || cmd.contains("/rsync ") || cmd.starts_with(&exe)) {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
 pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send, on_line: impl Fn(&str) + Send) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new(rsync_bin());
     cmd.args(&args);

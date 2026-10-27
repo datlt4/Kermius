@@ -59,6 +59,15 @@ fn spawn_cmd(
     let pair = native_pty_system().openpty(size(cols, rows)).map_err(e)?;
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // Apps started from the macOS Dock get no locale (Terminal.app sets one itself): the shell then
+    // reads typed UTF-8 (Vietnamese đ, ệ…) byte by byte. Give it a UTF-8 one when none is set.
+    let ctype = ["LC_ALL", "LC_CTYPE", "LANG"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
+    if !ctype.is_some_and(|v| v.to_ascii_lowercase().replace('-', "").contains("utf8")) {
+        let utf8 = if cfg!(target_os = "macos") { "en_US.UTF-8" } else { "C.UTF-8" };
+        cmd.env_remove("LC_ALL");
+        cmd.env("LANG", utf8);
+        cmd.env("LC_CTYPE", utf8);
+    }
     // A requested folder (Integration API) if it exists, else home.
     if let Some(dir) = cwd.filter(|d| std::path::Path::new(d).is_dir()).map(std::path::PathBuf::from).or_else(dirs::home_dir) {
         cmd.cwd(dir);

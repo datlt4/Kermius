@@ -1243,6 +1243,8 @@ pub fn run() {
                 let args: Vec<String> = std::env::args().collect();
                 launch::handle(app.handle(), launch::from_args(&args, &std::env::current_dir().unwrap_or_default()), false);
             }
+            #[cfg(all(unix, desktop))]
+            std::thread::spawn(files::kill_orphan_rsyncs);
             app.manage(nearby::Nearby::new(app.handle().clone()));
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
