@@ -3,7 +3,7 @@ import { api, type FsEndpoint, type FsEvent, type FsJob, type Host } from "./api
 import { conflictsDialog } from "./conflicts";
 import { notify } from "./notify";
 import { pickFolder } from "./folderpicker";
-import { confirmDialog, contextMenu, esc, fuzzyBest, icon, morphHtml, toast } from "./ui";
+import { byOrder, confirmDialog, contextMenu, dragReorder, esc, fuzzyBest, icon, loadOrder, morphHtml, saveOrder, toast } from "./ui";
 
 export interface FolderSyncCtx {
   hosts(): Host[];
@@ -121,6 +121,8 @@ const installList = (rows: [string, string][]) =>
 let rsyncLocal: boolean | null = null;
 
 let jobs: FsJob[] = [];
+/** Card order chosen by dragging (this device only). */
+const ORDER_KEY = "kermius.fsyncOrder";
 const live = new Map<string, Live>();
 /** Watcher state per "<job id>:<side>". */
 const watching = new Map<string, { state: string; message: string }>();
@@ -209,7 +211,7 @@ function noteResult(id: string, ok: boolean, summary: string) {
 }
 
 export async function loadJobs() {
-  jobs = await api.fsyncList().catch(() => []);
+  jobs = byOrder(await api.fsyncList().catch(() => []), loadOrder(ORDER_KEY), (j) => j.id);
   rsyncLocal ??= await api.rsyncAvailable().catch(() => false);
 }
 
@@ -424,6 +426,11 @@ export function runDueJobs(ctx: FolderSyncCtx) {
 }
 
 export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: () => boolean) {
+  dragReorder(root, ".fs-card[data-job]", "data-job", active, (id, before) => {
+    saveOrder(ORDER_KEY, jobs.map((j) => j.id), id, before);
+    jobs = byOrder(jobs, loadOrder(ORDER_KEY), (j) => j.id);
+    ctx.rerender();
+  });
   root.addEventListener("click", async (e) => {
     if (!active()) return;
     const t = e.target as HTMLElement;

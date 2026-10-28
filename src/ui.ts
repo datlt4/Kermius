@@ -166,6 +166,94 @@ export function promptDialog(title: string, label: string, value = "", password 
 }
 
 /** Patch `target`'s children to match `html`, reusing existing nodes (keeps hover/focus/scroll). */
+/** Saved order (ids) for a list, from localStorage. */
+export function loadOrder(key: string): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+/** `items` sorted by the saved order; items not in it keep their relative order at the end. */
+export function byOrder<T>(items: T[], order: string[], id: (x: T) => string): T[] {
+  const rank = (x: T) => {
+    const i = order.indexOf(id(x));
+    return i < 0 ? order.length : i;
+  };
+  return items.map((x, i) => [x, i] as const).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([x]) => x);
+}
+
+/** Move `id` before `before` (end when null) in `ids` and save it under `key`. */
+export function saveOrder(key: string, ids: string[], id: string, before: string | null) {
+  const list = ids.filter((x) => x !== id);
+  const at = before ? list.indexOf(before) : -1;
+  list.splice(at < 0 ? list.length : at, 0, id);
+  try {
+    localStorage.setItem(key, JSON.stringify(list));
+  } catch {}
+}
+
+/** Pointer-based drag to reorder `item` elements (siblings) inside `root`; `attr` holds each item's id.
+ *  `drop(id, before)`: `before` is the id it lands in front of, null = the end. */
+export function dragReorder(root: HTMLElement, item: string, attr: string, enabled: () => boolean, drop: (id: string, before: string | null) => void) {
+  let justEnded = false;
+  root.addEventListener("pointerdown", (e) => {
+    const t = e.target as HTMLElement;
+    const card = t.closest<HTMLElement>(item);
+    if (!card || e.button !== 0 || !enabled() || t.closest("button, input, select, textarea, a, label")) return;
+    const id = card.getAttribute(attr)!;
+    const [x0, y0] = [e.clientX, e.clientY];
+    let ghost: HTMLElement | null = null;
+    let target: { before: string | null } | null = null;
+    const clear = () => root.querySelectorAll(".drop-before,.drop-after,.drop-above,.drop-below").forEach((el) => el.classList.remove("drop-before", "drop-after", "drop-above", "drop-below"));
+    const move = (ev: PointerEvent) => {
+      if (!ghost) {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+        const r = card.getBoundingClientRect();
+        ghost = card.cloneNode(true) as HTMLElement;
+        ghost.classList.add("drag-ghost");
+        Object.assign(ghost.style, { width: `${r.width}px`, left: `${r.left}px`, top: `${r.top}px` });
+        ghost.dataset.dx = String(x0 - r.left);
+        ghost.dataset.dy = String(y0 - r.top);
+        document.body.append(ghost);
+        document.body.classList.add("no-select");
+      }
+      ghost.style.left = `${ev.clientX - +ghost.dataset.dx!}px`;
+      ghost.style.top = `${ev.clientY - +ghost.dataset.dy!}px`;
+      clear();
+      target = null;
+      // Live re-renders may reuse elements, so the dragged one is found by id each time.
+      root.querySelectorAll<HTMLElement>(item).forEach((el) => el.classList.toggle("dragging", el.getAttribute(attr) === id));
+      const over = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>(item);
+      if (!over || over.getAttribute(attr) === id || !root.contains(over)) return;
+      const r = over.getBoundingClientRect();
+      // Full-width rows stack vertically; grid cards sit side by side.
+      const vertical = r.width > over.parentElement!.clientWidth * 0.6;
+      const after = vertical ? ev.clientY > r.top + r.height / 2 : ev.clientX > r.left + r.width / 2;
+      over.classList.add(vertical ? (after ? "drop-below" : "drop-above") : after ? "drop-after" : "drop-before");
+      const next = after ? (over.nextElementSibling as HTMLElement | null) : over;
+      target = { before: next?.matches(item) ? next.getAttribute(attr) : null };
+    };
+    const up = () => {
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      if (!ghost) return;
+      ghost.remove();
+      document.body.classList.remove("no-select");
+      root.querySelectorAll(".dragging").forEach((el) => el.classList.remove("dragging"));
+      clear();
+      justEnded = true;
+      setTimeout(() => (justEnded = false));
+      if (target && target.before !== id) drop(id, target.before);
+    };
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", up);
+  });
+  // A drag ends with a click on the item under the pointer: swallow it.
+  root.addEventListener("click", (e) => justEnded && (e.stopImmediatePropagation(), e.preventDefault()), true);
+}
+
 export function morphHtml(target: HTMLElement, html: string) {
   const next = document.createElement("div");
   next.innerHTML = html;

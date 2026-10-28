@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, type Host, type NearbyEvent, type NearbyStatus, type NearbyTransfer } from "./api";
 import { notify, systemAlert } from "./notify";
-import { esc, icon, morphHtml, promptDialog, toast } from "./ui";
+import { byOrder, dragReorder, esc, icon, loadOrder, morphHtml, promptDialog, saveOrder, toast } from "./ui";
 
 const KEY = "kermius.nearby";
 /** Phones cannot open folders or pick a save folder (pickers return content:// URIs). */
@@ -362,15 +362,23 @@ function agoAt(ts: number) {
 /** Saved hosts that are this very device (its own LAN / VPN addresses) are left out. */
 const isSelf = (h: Host) => status.own.some((a) => a.toLowerCase() === h.address.trim().toLowerCase());
 
-function hostCards() {
+/** Host card order chosen by dragging (this device only). */
+const ORDER_KEY = "kermius.nearbyHostOrder";
+
+function shownHosts() {
   const list = hosts().filter((h) => h.nearby && h.address && !isSelf(h)).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return byOrder(list, loadOrder(ORDER_KEY), (h) => h.id);
+}
+
+function hostCards() {
+  const list = shownHosts();
   if (!list.length) return "";
   return `<h4 class="section">Your hosts</h4><div class="grid">${list
     .map((h) => {
       const fp = probed.get(h.id);
       const dev = fp ? status.devices.find((d) => d.fingerprint === fp) : undefined;
       const state = fp === undefined ? "Checking…" : dev ? `${dev.alias} · ${dev.deviceModel || "online"}` : "Offline: Kermius / LocalSend not running";
-      return `<div class="card nb-dev ${dev ? "" : "offline"}" ${dev ? `data-nb-dev="${esc(dev.fingerprint)}"` : ""}>
+      return `<div class="card nb-dev ${dev ? "" : "offline"}" data-nb-host="${esc(h.id)}" ${dev ? `data-nb-dev="${esc(dev.fingerprint)}"` : ""}>
         <div class="avatar" style="--h:${dev ? 150 : 220}">${icon("server", 20)}</div>
         <div class="card-body"><div class="card-title">${esc(h.name || h.address)}</div><div class="card-sub">${esc(h.address)} · ${esc(state)}</div></div></div>`;
     })
@@ -446,6 +454,11 @@ export function renderNearby(root: HTMLElement) {
 }
 
 export function bindNearby(root: HTMLElement, rerender: () => void, active: () => boolean) {
+  // Touch screens scroll with the same gesture, so dragging is desktop-only.
+  dragReorder(root, "[data-nb-host]", "data-nb-host", () => !phone && active(), (id, before) => {
+    saveOrder(ORDER_KEY, shownHosts().map((h) => h.id), id, before);
+    rerender();
+  });
   root.addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (!active()) return;
