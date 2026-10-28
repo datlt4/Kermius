@@ -426,8 +426,46 @@ pub fn kill_orphan_rsyncs() {
     }
 }
 
+/// `systemd-run --user --scope` works here (a Linux desktop with a systemd user session).
+/// Processes started through it get a cgroup of their own, so their memory and page cache are
+/// not charged to Kermius and systemd-oomd under pressure kills only them, not the whole app.
+#[cfg(target_os = "linux")]
+pub fn own_scope_available() -> bool {
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OK.get_or_init(|| {
+        std::process::Command::new("systemd-run")
+            .args(["--user", "--scope", "--quiet", "--collect", "true"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
+/// Prefix that starts a program in its own scope (empty where that is not available).
+#[cfg(target_os = "linux")]
+pub fn own_scope_prefix(unit: &str) -> Vec<String> {
+    if !own_scope_available() {
+        return Vec::new();
+    }
+    let name = format!("--unit={unit}-{}", uuid::Uuid::new_v4().simple());
+    ["systemd-run", "--user", "--scope", "--quiet", "--collect", name.as_str(), "--"].map(String::from).to_vec()
+}
+
 pub async fn run_rsync(args: Vec<String>, progress: impl Fn(u64, u64) + Send, on_line: impl Fn(&str) + Send) -> Result<String, String> {
-    let mut cmd = tokio::process::Command::new(rsync_bin());
+    // Linux: rsync's page cache (often many GB) goes to its own scope, see `own_scope_prefix`.
+    #[cfg(target_os = "linux")]
+    let prefix = own_scope_prefix("kermius-rsync");
+    #[cfg(not(target_os = "linux"))]
+    let prefix: Vec<String> = Vec::new();
+    let mut cmd = match prefix.split_first() {
+        Some((first, rest)) => {
+            let mut c = tokio::process::Command::new(first);
+            c.args(rest).arg(rsync_bin());
+            c
+        }
+        None => tokio::process::Command::new(rsync_bin()),
+    };
     cmd.args(&args);
     // A group of its own, so the group can be killed together with rsync's children.
     #[cfg(unix)]
