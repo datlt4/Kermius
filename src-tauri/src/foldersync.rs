@@ -800,7 +800,7 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
         })
         .collect();
     if job.mode == "mirror" {
-        return mirror(&a, &b, &job, dry_run, via.first(), &emit).await;
+        return mirror(&a, &b, &job, dry_run, via.first(), false, &emit).await;
     }
     phase(&emit, "scanning", via.first().map(|v| format!("via {v}")).unwrap_or_default());
     let ta = scan(&a, &job, "a", &emit).await?;
@@ -846,8 +846,39 @@ pub async fn run(store: Arc<Store>, job: Job, dry_run: bool, emit: Emit) -> Resu
     Ok((summary(&plan), plan))
 }
 
+/// Copy into side `to` ("a"/"b") what it lacks from the other side, for recovering a wiped or
+/// re-formatted folder. Never deletes and never replaces a file that is newer on `to`, so the
+/// two-way state stays valid (restored files match it again).
+pub async fn restore(store: Arc<Store>, job: Job, to: &str, emit: Emit) -> Result<(String, Plan), String> {
+    validate(&job)?;
+    let (src_ep, dst_ep) = if to == "a" { (&job.b, &job.a) } else { (&job.a, &job.b) };
+    // Creating it here could fill the empty mount point of an unmounted disk instead.
+    if dst_ep.kind != "remote" && !Path::new(&dst_ep.path).is_dir() {
+        return Err(format!("{} does not exist; create the folder first (that also confirms the disk is mounted)", dst_ep.path));
+    }
+    let vault = store.state.lock().vault.clone();
+    phase(&emit, "connecting", "");
+    let src = open_side(&store, &vault, src_ep, &emit).await?;
+    let dst = open_side(&store, &vault, dst_ep, &emit).await?;
+    if is_empty_dir(&src).await? {
+        return Err(format!("{} is empty; nothing to restore", src.label()));
+    }
+    let via = [&src, &dst].into_iter().find_map(|s| match s {
+        Side::Remote { host, .. } => Some(host.name.clone()),
+        Side::Local(_) => None,
+    });
+    let job = Job { delete: false, ..job };
+    let (_, mut plan) = mirror(&src, &dst, &job, false, via.as_ref(), true, &emit).await?;
+    // Source stats only; the job's own side stats are refreshed by its next normal run.
+    plan.stats = None;
+    let s = summary(&plan);
+    let s = if plan.is_empty() { "Nothing to restore".into() } else if s.is_empty() { "Restored: folders only".into() } else { format!("Restored: {s}") };
+    Ok((s, plan))
+}
+
 /// Mirror a → b with a single rsync (it compares both sides itself; no separate scan).
-async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&String>, emit: &Emit) -> Result<(String, Plan), String> {
+/// `keep_newer`: skip files that are newer in b (restore).
+async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&String>, keep_newer: bool, emit: &Emit) -> Result<(String, Plan), String> {
     // An unmounted disk looks like an empty folder: never let --delete wipe the backup because of it,
     // not even on the first run (the destination may be an existing backup).
     if job.delete && is_empty_dir(a).await? && !is_empty_dir(b).await.unwrap_or(true) {
@@ -863,6 +894,9 @@ async fn mirror(a: &Side, b: &Side, job: &Job, dry_run: bool, via: Option<&Strin
     }
     if job.delete {
         args.push("--delete".into());
+    }
+    if keep_newer {
+        args.push("--update".into());
     }
     for x in job.excludes.iter().map(|x| x.trim()).filter(|x| !x.trim_matches('/').is_empty()) {
         // Same meaning as `excluded`: patterns with a slash are anchored at the folder root.
@@ -1470,6 +1504,71 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn foldersync_e2e_restore() {
+        let tmp = std::env::temp_dir().join(format!("kermius-fsr-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(Store::open(tmp.join("store")).unwrap());
+        let ep = |p: &Path| Endpoint { kind: "local".into(), path: p.to_string_lossy().into(), hosts: vec![] };
+        let read = |p: PathBuf| std::fs::read_to_string(p).unwrap();
+
+        // Mirror: the source disk is re-formatted; B is the only full copy.
+        let (a, b) = (tmp.join("ma"), tmp.join("mb"));
+        write(&a.join("one.txt"), "1");
+        write(&a.join("d/two.txt"), "22");
+        write(&a.join("edit.txt"), "old");
+        std::fs::create_dir_all(&b).unwrap();
+        let mut job = Job { id: "rm".into(), mode: "mirror".into(), a: ep(&a), b: ep(&b), delete: true, ..Default::default() };
+        run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        job.last_run = 1;
+        std::fs::remove_dir_all(&a).unwrap();
+        // Missing folder (disk not mounted, or not recreated yet): refused and not created.
+        let err = restore(store.clone(), job.clone(), "a", emit()).await.unwrap_err();
+        assert!(err.contains("create the folder"), "{err}");
+        assert!(!a.exists());
+        // Partly refilled by hand, with a newer edit and a new file: both must survive.
+        write(&a.join("edit.txt"), "newer in A");
+        touch_later(&a.join("edit.txt"), 60);
+        write(&a.join("extra.txt"), "only in A");
+        let (s, _) = restore(store.clone(), job.clone(), "a", emit()).await.unwrap();
+        assert_eq!(s, "Restored: 2 copied");
+        assert_eq!((read(a.join("one.txt")), read(a.join("d/two.txt"))), ("1".into(), "22".into()));
+        assert_eq!(read(a.join("edit.txt")), "newer in A");
+        assert!(a.join("extra.txt").exists());
+        // The backup is untouched (no --delete, no copy into B).
+        assert_eq!(read(b.join("edit.txt")), "old");
+        assert!(b.join("one.txt").exists() && !b.join("extra.txt").exists());
+        assert_eq!(restore(store.clone(), job.clone(), "a", emit()).await.unwrap().0, "Nothing to restore");
+        // An empty source has nothing to give.
+        std::fs::create_dir_all(tmp.join("empty")).unwrap();
+        let err = restore(store.clone(), Job { b: ep(&tmp.join("empty")), ..job.clone() }, "a", emit()).await.unwrap_err();
+        assert!(err.contains("nothing to restore"), "{err}");
+
+        // Two-way: B is re-formatted and one file copied back by hand.
+        let (a, b) = (tmp.join("ta"), tmp.join("tb"));
+        write(&a.join("x.txt"), "x");
+        write(&a.join("sub/y.txt"), "y");
+        write(&a.join("z.txt"), "z");
+        std::fs::create_dir_all(&b).unwrap();
+        let job = Job { id: "rt".into(), mode: "twoway".into(), a: ep(&a), b: ep(&b), last_run: 1, ..Default::default() };
+        run(store.clone(), job.clone(), false, emit()).await.unwrap();
+        std::fs::remove_dir_all(&b).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::copy(a.join("x.txt"), b.join("x.txt")).unwrap();
+        let t = std::fs::metadata(a.join("x.txt")).unwrap().modified().unwrap();
+        std::fs::File::options().write(true).open(b.join("x.txt")).unwrap().set_modified(t).unwrap();
+        // The danger restore exists for: a normal sync would treat the missing files as deleted.
+        let (_, plan) = run(store.clone(), job.clone(), true, emit()).await.unwrap();
+        assert!(plan.delete_a.contains(&"z.txt".to_string()), "{:?}", plan.delete_a);
+        let (s, _) = restore(store.clone(), job.clone(), "b", emit()).await.unwrap();
+        assert_eq!(s, "Restored: 2 copied");
+        // Restored files match the saved state again: nothing to sync, nothing deleted.
+        assert_eq!(run(store.clone(), job.clone(), false, emit()).await.unwrap().0, "Up to date");
+        for f in ["x.txt", "sub/y.txt", "z.txt"] {
+            assert!(a.join(f).exists() && b.join(f).exists(), "{f}");
+        }
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[tokio::test]
     async fn foldersync_scan_stops_when_dropped() {
         let tmp = std::env::temp_dir().join(format!("kermius-fsc-{}", uuid::Uuid::new_v4()));
         for i in 0..3000 {
@@ -1520,12 +1619,12 @@ mod e2e {
             b: Endpoint { kind: "remote".into(), path: b.to_string_lossy().into(), hosts: vec!["dead-route".into(), "good-route".into()] },
             ..Default::default()
         };
-        scenario(store.clone(), job.clone(), a, b.clone()).await;
+        scenario(store.clone(), job.clone(), a.clone(), b.clone()).await;
         // Mirror the remote folder down to a local one.
         let m = tmp.join("m");
         std::fs::create_dir_all(&m).unwrap();
         write(&m.join("extra.txt"), "x");
-        let mirror = Job { id: "r2".into(), mode: "mirror".into(), a: job.b, b: Endpoint { kind: "local".into(), path: m.to_string_lossy().into(), hosts: vec![] }, delete: true, ..Default::default() };
+        let mirror = Job { id: "r2".into(), mode: "mirror".into(), a: job.b.clone(), b: Endpoint { kind: "local".into(), path: m.to_string_lossy().into(), hosts: vec![] }, delete: true, ..Default::default() };
         let (_, plan) = run(store.clone(), mirror.clone(), false, emit()).await.unwrap();
         assert_eq!(plan.delete_b, ["extra.txt"]);
         let names = |p: &Path| { let mut v: Vec<_> = std::fs::read_dir(p).unwrap().map(|e| e.unwrap().file_name()).collect(); v.sort(); v };
@@ -1533,8 +1632,20 @@ mod e2e {
         // Incremental: only the reported remote paths are listed (find over ssh) and copied.
         write(&b.join("inc/one.txt"), "1");
         write(&b.join("other.txt"), "o");
-        let (s, _) = run_paths(store, mirror, vec!["inc".into(), "missing.txt".into()], emit()).await.unwrap();
+        let (s, _) = run_paths(store.clone(), mirror.clone(), vec!["inc".into(), "missing.txt".into()], emit()).await.unwrap();
         assert_eq!(s, "1 copied");
         assert!(m.join("inc/one.txt").exists() && !m.join("other.txt").exists());
+        // Restore the remote source from the local backup: copies over SSH, deletes nothing.
+        std::fs::remove_file(b.join("inc/one.txt")).unwrap();
+        let (s, _) = restore(store.clone(), mirror, "a", emit()).await.unwrap();
+        assert_eq!(s, "Restored: 1 copied");
+        assert!(b.join("inc/one.txt").exists() && b.join("other.txt").exists());
+        // Two-way: the local side is wiped and refilled from the remote, then nothing is left to sync.
+        std::fs::remove_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&a).unwrap();
+        let (s, _) = restore(store.clone(), job.clone(), "a", emit()).await.unwrap();
+        assert!(s.starts_with("Restored: "), "{s}");
+        assert_eq!(names(&a), names(&b));
+        assert_eq!(run(store, job, false, emit()).await.unwrap().0, "Up to date");
     }
 }

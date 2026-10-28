@@ -181,8 +181,10 @@ function status(job: FsJob) {
   if (!job.lastResult) return { cls: "", text: "Never synced" };
   if (job.lastResult.startsWith(OFFLINE)) return { cls: "off", text: `Offline · ${job.lastResult.slice(OFFLINE.length)}` };
   if (job.lastResult === "Stopped") return { cls: "", text: `Stopped · ${job.paused ? "paused" : "will resume on the next run"}` };
-  const ok = /^Up to date$|copied|deleted|conflicts kept/.test(job.lastResult);
-  if (ok) return { cls: "ok", text: `${job.lastResult} · ${ago(job.lastRun)}` };
+  const ok = /^Up to date$|copied|deleted|conflicts kept|^Restored|^Nothing to restore$/.test(job.lastResult);
+  // A restore does not count as a sync, so it only moves lastAttempt.
+  const at = /^Restored|^Nothing to restore$/.test(job.lastResult) ? job.lastAttempt : job.lastRun;
+  if (ok) return { cls: "ok", text: `${job.lastResult} · ${ago(at)}` };
   // A few files failed (rsync 23/24): the rest synced, so warn rather than fail.
   return { cls: isPartial(job.lastResult) ? "warn" : "err", text: job.lastResult.split("\n")[0] };
 }
@@ -497,6 +499,7 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
     contextMenu(e.clientX, e.clientY, [
       { label: "Sync now", icon: "play", action: () => syncNow(job, ctx) },
       { label: "Edit", icon: "edit", action: () => jobDialog(job, ctx) },
+      { label: "Restore…", icon: "import", action: () => restoreDialog(job, ctx) },
       ...(job.mode === "twoway" ? [{ label: "Resolve conflicts", icon: "eye", action: () => conflictsDialog(job, () => loadJobs().then(ctx.rerender)) }] : []),
       "-" as const,
       {
@@ -511,6 +514,64 @@ export function bindFolderSync(root: HTMLElement, ctx: FolderSyncCtx, active: ()
         },
       },
     ]);
+  });
+}
+
+/** Refill a wiped side from the other one: copies only, never deletes, keeps newer files. Pauses the job. */
+function restoreDialog(job: FsJob, ctx: FolderSyncCtx) {
+  const where = (ep: FsEndpoint) => sideLabel(ep, ctx);
+  // A mirror's B is the backup, so only A can be restored from it.
+  const sides: ("a" | "b")[] = job.mode === "mirror" ? ["a"] : ["a", "b"];
+  const el = document.createElement("div");
+  el.className = "modal-wrap";
+  el.innerHTML = `<form class="modal form-modal"><h3>Restore: ${esc(job.name || "Untitled")}</h3>
+    <p>Copy back the files a folder is missing, e.g. after formatting its disk.</p>
+    <div class="fs-opts">${sides
+      .map((to, i) => {
+        const from = to === "a" ? "b" : "a";
+        return `<label class="check"><input type="radio" name="to" value="${to}" ${i ? "" : "checked"} />
+          Restore ${to.toUpperCase()} from ${from.toUpperCase()}: ${where(job[from])} → ${where(job[to])}</label>`;
+      })
+      .join("")}</div>
+    <ul class="muted">
+      <li>Nothing is deleted on either side.</li>
+      <li>Files that are newer in the restored folder are kept.</li>
+      <li>The restored folder must exist (create it after formatting); that also proves the disk is mounted.</li>
+      <li>The job is paused first (a running sync is stopped), so no sync runs on a half-restored folder. Resume it when the restore is done.</li>
+    </ul>
+    <div class="modal-actions"><button type="button" class="btn ghost" data-m="cancel">Cancel</button><button type="submit" class="btn primary">Restore</button></div></form>`;
+  document.body.append(el);
+  el.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t === el || t.dataset.m === "cancel") el.remove();
+  });
+  el.addEventListener("keydown", (e) => e.key === "Escape" && el.remove());
+  el.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const to = (el.querySelector('input[name="to"]:checked') as HTMLInputElement).value as "a" | "b";
+    el.remove();
+    // Pause first: stops a running sync and keeps the schedule and watcher off the folder.
+    try {
+      await api.fsyncPause([job.id], true);
+    } catch (x) {
+      return toast(String(x), "err");
+    }
+    await loadJobs();
+    ctx.rerender();
+    for (let i = 0; i < 100 && live.has(job.id); i++) await new Promise((r) => setTimeout(r, 100));
+    if (live.has(job.id)) return toast("The running sync did not stop; try again", "err");
+    live.set(job.id, newLive());
+    ctx.rerender();
+    ctx.activity();
+    try {
+      toast((await api.fsyncRestore(job.id, to)).summary, "ok");
+    } catch (x) {
+      toast(String(x).split("\n")[0].replace(OFFLINE, "Offline: "), "err");
+    } finally {
+      live.delete(job.id);
+      await loadJobs();
+      ctx.rerender();
+    }
   });
 }
 
