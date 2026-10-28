@@ -107,7 +107,7 @@ fn start(app: AppHandle, job: Job, states: States) -> Vec<JoinHandle<()>> {
                     _ => {}
                 }
             }
-            while let Err(err) = run_job(app.clone(), id.clone(), false, paths.clone()).await {
+            while let Err(err) = run_job(app.clone(), id.clone(), false, paths.clone(), None).await {
                 if err != "Already running" {
                     break;
                 }
