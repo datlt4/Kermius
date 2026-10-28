@@ -10,6 +10,18 @@ fn shell() -> CommandBuilder {
     return CommandBuilder::new("powershell.exe");
     #[cfg(target_os = "android")]
     return CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "/system/bin/sh".into()));
+    // Linux: each terminal in its own scope (like GNOME Terminal), so a big job started in it is
+    // what systemd-oomd kills, not Kermius with every other tab.
+    #[cfg(target_os = "linux")]
+    {
+        let prefix = crate::files::own_scope_prefix("kermius-term");
+        if !prefix.is_empty() {
+            let mut c = CommandBuilder::new(&prefix[0]);
+            c.args(&prefix[1..]);
+            c.args([std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()), "-l".into()]);
+            return c;
+        }
+    }
     #[cfg(not(any(windows, target_os = "android")))]
     return CommandBuilder::new_default_prog();
 }
