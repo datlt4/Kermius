@@ -657,6 +657,31 @@ async fn ssh_upload(state: State<'_, AppState>, request: tauri::ipc::Request<'_>
     upload_to_session(&state, &header("sid"), &header("ext"), data.clone()).await
 }
 
+/// Same as `ssh_upload` with base64 JSON: Android's IPC bridge drops raw bodies' headers.
+#[tauri::command]
+async fn ssh_upload_b64(state: State<'_, AppState>, sid: String, ext: String, data: String) -> Res<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(e)?;
+    upload_to_session(&state, &sid, &ext, bytes).await
+}
+
+/// iOS: keep the screen on while the app is open (Android does it in MainActivity).
+#[tauri::command]
+fn keep_awake(app: tauri::AppHandle, on: bool) -> Res<()> {
+    #[cfg(target_os = "ios")]
+    app.run_on_main_thread(move || unsafe {
+        use objc2::{class, msg_send, runtime::AnyObject};
+        let ui: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+        if !ui.is_null() {
+            let _: () = msg_send![ui, setIdleTimerDisabled: on];
+        }
+    })
+    .map_err(e)?;
+    #[cfg(not(target_os = "ios"))]
+    let _ = (app, on);
+    Ok(())
+}
+
 /// Clipboard image encoded as PNG.
 #[cfg(desktop)]
 fn clipboard_png(app: &tauri::AppHandle) -> Res<Vec<u8>> {
@@ -1327,6 +1352,8 @@ pub fn run() {
             list_fonts,
             ssh_write,
             ssh_upload,
+            ssh_upload_b64,
+            keep_awake,
             ssh_paste_image,
             save_clipboard_image,
             ssh_resize,

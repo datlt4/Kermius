@@ -88,6 +88,11 @@ pub fn known_id(host: &Host) -> String {
     format!("{}:{}", host.address, host.port)
 }
 
+/// LANG sent to servers: this computer's when it is UTF-8, otherwise en_US.UTF-8 (phones have none).
+fn utf8_lang() -> String {
+    std::env::var("LANG").ok().filter(|l| l.to_ascii_uppercase().contains("UTF-8") || l.to_ascii_uppercase().contains("UTF8")).unwrap_or_else(|| "en_US.UTF-8".into())
+}
+
 /// Connect and authenticate (key first, then password, then keyboard-interactive), directly,
 /// through the host's proxy, or through its jump host.
 pub async fn connect(store: Arc<Store>, host: &Host, log: Logger) -> Result<Handle<Client>, String> {
@@ -324,8 +329,14 @@ pub fn spawn_shell(
             log(format!("Requesting PTY {cols}x{rows}"));
             ch.request_pty(false, "xterm-256color", cols, rows, 0, 0, &[]).await.map_err(|e| e.to_string())?;
             // Servers only accept variables listed in their AcceptEnv; the rest are ignored.
-            for (name, value) in host.env.lines().filter_map(|l| l.trim().split_once('=')) {
-                let _ = ch.set_env(false, name.trim(), value.trim()).await;
+            let env: Vec<(&str, &str)> = host.env.lines().filter_map(|l| l.trim().split_once('=')).map(|(n, v)| (n.trim(), v.trim())).collect();
+            // Like OpenSSH's `SendEnv LANG`: without it, shells on macOS (and servers with no default locale)
+            // run in the C locale and print Vietnamese as `<0091>`. Hosts can still set their own.
+            if !env.iter().any(|(n, _)| *n == "LANG" || *n == "LC_ALL") {
+                let _ = ch.set_env(false, "LANG", utf8_lang()).await;
+            }
+            for (name, value) in env {
+                let _ = ch.set_env(false, name, value).await;
             }
             if host.agent_forward {
                 log("Requesting agent forwarding".into());

@@ -258,6 +258,8 @@ function renderTabs() {
 // ---------- reopen tabs from last time ----------
 
 const RESTORE_KEY = "kermius.restoreTabs";
+/** Phones: keep the screen on while the app is open (Settings → Display). */
+const KEEP_AWAKE_KEY = "kermius.keepAwake";
 const LAST_TABS_KEY = "kermius.lastTabs";
 let tabsRestored = false;
 
@@ -434,7 +436,8 @@ function activate(id: string) {
   els.terms.hidden = id === "home";
   renderTabs();
   renderSidebar();
-  if (id === "home") $<HTMLInputElement>(".search input", els.page)?.focus({ preventScroll: true });
+  // Not on phones: focusing pops the on-screen keyboard up over the host list.
+  if (id === "home" && !/Android|iPhone|iPad/i.test(navigator.userAgent)) $<HTMLInputElement>(".search input", els.page)?.focus({ preventScroll: true });
 }
 
 function goHome() {
@@ -1095,6 +1098,12 @@ els.page.addEventListener("change", (e) => {
       (err) => toast(String(err), "err"),
     );
   }
+  if (t.id === "s-keep-awake") {
+    const on = (t as unknown as HTMLInputElement).checked;
+    localStorage.setItem(KEEP_AWAKE_KEY, on ? "1" : "0");
+    api.keepAwake(on).catch((err) => toast(String(err), "err"));
+    return;
+  }
   if (t.id === "s-restore-tabs") {
     localStorage.setItem("kermius.restoreTabs", (t as unknown as HTMLInputElement).checked ? "1" : "0");
     return;
@@ -1135,6 +1144,11 @@ function renderSettings() {
         <div class="panel-head">${icon("sync")}<div><h3>On startup</h3></div></div>
         <label class="toggle-row"><span><b>Reopen the tabs from last time</b><small class="muted">Like a browser's "Continue where you left off": terminals, SFTP and VNC tabs reconnect when Kermius starts</small></span>
           <input type="checkbox" class="toggle" id="s-restore-tabs" ${localStorage.getItem("kermius.restoreTabs") === "1" ? "checked" : ""} /></label>
+      </div>`}
+      ${isWeb || desktop ? "" : `<div class="panel">
+        <div class="panel-head">${icon("monitor")}<div><h3>Display</h3></div></div>
+        <label class="toggle-row"><span><b>Keep the screen on</b><small class="muted">While Kermius is open, the phone does not dim or lock by itself</small></span>
+          <input type="checkbox" class="toggle" id="s-keep-awake" ${localStorage.getItem(KEEP_AWAKE_KEY) === "1" ? "checked" : ""} /></label>
       </div>`}
       <div class="panel">
         <div class="panel-head">${icon("bell")}<div><h3>Notifications</h3></div></div>
@@ -1824,6 +1838,7 @@ function webUnlock(): Promise<void> {
   renderPage();
   activate("home");
   restoreTabs();
+  if (!isWeb && !desktop && localStorage.getItem(KEEP_AWAKE_KEY) === "1") api.keepAwake(true).catch(() => {});
   if (desktop) {
     await listen<Launch>("kermius-launch", (e) => onLaunch(e.payload));
     (await api.launchReady().catch(() => [])).forEach(onLaunch);

@@ -336,10 +336,12 @@ export class Session {
       if (e.code === "KeyV") return e.preventDefault(), this.paste(), false;
       return !["KeyK", "KeyT", "KeyW", "KeyF", "KeyL"].includes(e.code);
     });
-    this.el.querySelector(".term")!.addEventListener("contextmenu", (e) => {
-      const ev = e as MouseEvent;
-      ev.preventDefault();
-      contextMenu(ev.clientX, ev.clientY, [
+    let menuAt = 0;
+    const menu = (x: number, y: number) => {
+      // Android fires contextmenu for a long press too: one menu per press.
+      if (Date.now() - menuAt < 1000) return;
+      menuAt = Date.now();
+      contextMenu(x, y, [
         { label: "Copy", icon: "copy", action: () => this.copySelection() },
         { label: "Paste", icon: "import", action: () => this.paste() },
         { label: "Paste image", icon: "image", action: () => this.pasteImage() },
@@ -350,7 +352,60 @@ export class Session {
         "-" as const,
         { label: "Clear", icon: "x", action: () => t.clear() },
       ]);
+    };
+    this.el.querySelector(".term")!.addEventListener("contextmenu", (e) => {
+      const ev = e as MouseEvent;
+      ev.preventDefault();
+      menu(ev.clientX, ev.clientY);
     });
+    // A screenshot (or any file) dragged onto the terminal is uploaded and its path typed, like the media button.
+    // Desktop window drops are taken by Tauri before the page sees them; this serves iOS/iPadOS drag and drop.
+    const dropBox = this.el.querySelector<HTMLElement>(".term")!;
+    dropBox.addEventListener("dragover", (e) => {
+      if ((e as DragEvent).dataTransfer?.types.includes("Files")) e.preventDefault();
+    });
+    dropBox.addEventListener("drop", async (e) => {
+      const files = [...((e as DragEvent).dataTransfer?.files ?? [])];
+      if (!files.length) return;
+      e.preventDefault();
+      if (this.local) return toast("Dropped files can be uploaded to SSH sessions only", "info");
+      for (const f of files) {
+        const ext = f.name.includes(".") ? f.name.split(".").pop()! : f.type.startsWith("image/") ? f.type.slice(6).replace("jpeg", "jpg") : "";
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        await this.upload((sid) => api.sshUpload(sid, ext, bytes));
+        this.term.paste(" ");
+      }
+    });
+    // iOS never fires contextmenu: a still long press opens the menu instead.
+    if (coarse) {
+      const termBox = this.el.querySelector<HTMLElement>(".term")!;
+      let timer = 0;
+      let start = { x: 0, y: 0 };
+      let fired = false;
+      termBox.addEventListener(
+        "touchstart",
+        (e) => {
+          const p = (e as TouchEvent).touches[0];
+          clearTimeout(timer);
+          fired = false;
+          if ((e as TouchEvent).touches.length !== 1) return;
+          start = { x: p.clientX, y: p.clientY };
+          timer = window.setTimeout(() => ((fired = true), menu(start.x, start.y)), 550);
+        },
+        { passive: true },
+      );
+      termBox.addEventListener(
+        "touchmove",
+        (e) => {
+          const p = (e as TouchEvent).touches[0];
+          if (Math.hypot(p.clientX - start.x, p.clientY - start.y) > 10) clearTimeout(timer);
+        },
+        { passive: true },
+      );
+      // The finger lifts over the menu that just opened: that release must not pick an item.
+      termBox.addEventListener("touchend", (e) => (clearTimeout(timer), fired && e.preventDefault()), { passive: false });
+      termBox.addEventListener("touchcancel", () => clearTimeout(timer), { passive: true });
+    }
     const keys = this.el.querySelector<HTMLElement>(".keys");
     // Keep the terminal focused, so the phone keyboard does not close and reopen on every key.
     keys?.addEventListener("pointerdown", (e) => e.preventDefault());
@@ -620,7 +675,9 @@ export class Session {
           ? `<div class="ov-bar"><span>Shell exited</span><button class="btn primary sm" data-a="retry">Restart</button><button class="btn ghost sm" data-a="close">Close tab</button></div>`
           : "";
     } else if (s === "connecting") {
+      // Slow routes (mobile data, VPN) can take a while: Edit host and Close stay reachable meanwhile.
       this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3><p class="muted">${target}</p><div class="progress"><i></i></div>
+        <div class="row">${this.local ? "" : `<button class="btn ghost" data-a="edit">Edit host</button>`}<button class="btn ghost" data-a="close">Close</button></div>
         ${this.logsHtml()}</div>`;
     } else if (s === "error") {
       const mismatch = this.error.startsWith("HOSTKEY_MISMATCH");
@@ -684,6 +741,7 @@ export class Session {
   }
 
   pasteImage() {
+    if (coarse) return this.pasteMobile();
     if (this.local) {
       return api.saveClipboardImage().then(
         (path) => this.insertText(quote(path)),
@@ -691,6 +749,29 @@ export class Session {
       );
     }
     return this.upload((sid) => api.sshPasteImage(sid));
+  }
+
+  /** Phones have no native clipboard-image read: an image goes up like the media button, text is pasted. */
+  private async pasteMobile() {
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const img = item.types.find((t) => t.startsWith("image/"));
+        if (img) {
+          const bytes = new Uint8Array(await (await item.getType(img)).arrayBuffer());
+          const ext = img.slice(6).replace("jpeg", "jpg");
+          return this.local ? toast("Images can be pasted into SSH sessions only", "info") : this.upload((sid) => api.sshUpload(sid, ext, bytes));
+        }
+        if (item.types.includes("text/plain")) {
+          const text = await (await item.getType("text/plain")).text();
+          if (text) return this.insertText(text);
+        }
+      }
+    } catch {
+      /* not allowed here (Android WebView): fall back to the plugin's text read */
+    }
+    const text = await api.clipboardRead().catch(() => "");
+    if (text) this.insertText(text);
+    else toast("The clipboard is empty", "info");
   }
 
   private insertText(text: string) {

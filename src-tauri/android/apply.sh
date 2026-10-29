@@ -4,6 +4,9 @@ set -e
 GEN=src-tauri/gen/android/app/src/main
 # Keyboard insets, double back to exit, multicast lock for Nearby Share.
 cp src-tauri/android/MainActivity.kt "$GEN/java/com/koi/kermius/"
+# Release builds are minified: keep the page-callable bridge methods (keep screen on).
+grep -q JavascriptInterface "$GEN/../../proguard-rules.pro" ||
+  printf '\n-keepclassmembers class com.koi.kermius.MainActivity$* {\n    @android.webkit.JavascriptInterface <methods>;\n}\n' >> "$GEN/../../proguard-rules.pro"
 # Nearby Share: multicast lock for discovery; on Android 10 and older, writing to Download/.
 grep -q CHANGE_WIFI_MULTICAST_STATE "$GEN/AndroidManifest.xml" ||
   sed -i 's|<uses-permission android:name="android.permission.INTERNET" />|&\n    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />|' "$GEN/AndroidManifest.xml"

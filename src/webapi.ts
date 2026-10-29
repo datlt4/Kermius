@@ -192,6 +192,7 @@ export const webApi: Api = {
   launchReady: async () => [],
   listFonts: async () => [],
   sshUpload: unsupported,
+  keepAwake: async () => {},
   saveClipboardImage: unsupported,
   sshPasteImage: unsupported,
   sshWrite: unsupported,

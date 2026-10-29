@@ -246,6 +246,16 @@ export const emptyHost = (): Host => ({
   keyPassphrase: "", folder: "", tags: [], notes: "", tunnels: [], identityId: "", keyId: "", protocol: "ssh", baud: 0, updatedAt: 0, deleted: false,
 });
 
+/** Methods MainActivity.kt exposes to the page on Android. */
+const androidBridge = () => (window as unknown as { KermiusAndroid?: { keepAwake(on: boolean): void; clipboardText(): string } }).KermiusAndroid;
+
+/** Base64 of bytes, in chunks (String.fromCharCode takes a limited number of arguments). */
+function toBase64(bytes: Uint8Array) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
 const tauriApi = {
   listHosts: () => invoke<Host[]>("list_hosts"),
   saveHost: (host: Host) => invoke<Host>("save_host", { host }),
@@ -320,7 +330,8 @@ const tauriApi = {
   sshConfigExport: (hostIds: string[], withKeys: boolean, withPasswords: boolean) =>
     invoke<string>("ssh_config_export", { hostIds, withKeys, withPasswords }),
   fsyncInotifyCommand: () => invoke<string>("fsync_inotify_command"),
-  clipboardRead: () => invoke<string>("clipboard_read"),
+  // Android: the plugin reads only plain-text clips (copies from browsers are HTML), MainActivity coerces any clip to text.
+  clipboardRead: async () => androidBridge()?.clipboardText() ?? invoke<string>("clipboard_read"),
   sshConnect: (hostId: string, cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>) =>
     invoke<string>("ssh_connect", { hostId, cols, rows, onData, onStatus }),
   localOpen: (cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>, cwd = "") =>
@@ -328,7 +339,17 @@ const tauriApi = {
   /** Integration API requests that arrived before the UI listened for `kermius-launch`. */
   launchReady: () => invoke<Launch[]>("launch_ready"),
   listFonts: () => invoke<string[]>("list_fonts"),
-  sshUpload: (sid: string, ext: string, bytes: Uint8Array) => invoke<string>("ssh_upload", bytes, { headers: { sid, ext } }),
+  // Android's IPC bridge drops raw bodies' headers: send base64 JSON there.
+  sshUpload: (sid: string, ext: string, bytes: Uint8Array) =>
+    /Android/i.test(navigator.userAgent)
+      ? invoke<string>("ssh_upload_b64", { sid, ext, data: toBase64(bytes) })
+      : invoke<string>("ssh_upload", bytes, { headers: { sid, ext } }),
+  /** Mobile: keep the screen on (Android through MainActivity's bridge, iOS natively). */
+  keepAwake: async (on: boolean) => {
+    const android = androidBridge();
+    if (android) return android.keepAwake(on);
+    return invoke<void>("keep_awake", { on });
+  },
   saveClipboardImage: () => invoke<string>("save_clipboard_image"),
   sshPasteImage: (sid: string) => invoke<string>("ssh_paste_image", { sid }),
   sshWrite: (sid: string, data: string) => invoke<void>("ssh_write", { sid, data }),

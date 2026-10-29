@@ -282,7 +282,7 @@ details .field + .field { margin-top: 10px; }
 /* ---------- terminal sessions ---------- */
 .terms { background: var(--bg); }
 .session { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.term { flex: 1; min-height: 0; padding: 8px 4px 4px 12px; overflow: hidden; }
+.term { flex: 1; min-height: 0; padding: 8px 4px 4px 12px; overflow: hidden; -webkit-touch-callout: none; }
 .term .xterm { height: 100%; }
 .term .xterm-viewport { background: transparent !important; }
 .term .composition-view { display: none !important; }
