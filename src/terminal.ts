@@ -63,6 +63,7 @@ const quote = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
 export type SessionState = "connecting" | "connected" | "closed" | "error";
 
 const coarse = matchMedia("(pointer: coarse)").matches;
+const ios = /iPhone|iPad/.test(navigator.userAgent);
 
 // On phones the on-screen keyboard is open when the usable height falls well below the screen's.
 // The ⌨ key shows that state, and the bottom padding goes while the keyboard covers it.
@@ -244,8 +245,10 @@ export class Session {
     }
     // Keys xterm already sent from keydown; without an IME WebKit also fires `input` for some (space).
     let lastKey = { d: "", t: 0 };
+    let onXtermData = () => {};
     t.onData((d) => {
       lastKey = { d, t: performance.now() };
+      onXtermData();
       this.send(d);
     });
     // WebKitGTK IME commits arrive via several events and xterm sends on more than one; send each once here.
@@ -255,6 +258,30 @@ export class Session {
     const termEl = this.el.querySelector(".term")!;
     let composing = false;
     let lastCommit = { d: "", t: 0 };
+    // iOS: letters stay in the text field so the keyboard can turn "vieetj" into "việt" by editing what it
+    // already typed; each edit goes out as the difference to the last state (DELs, then the new text).
+    let shadow = "";
+    const resetField = () => {
+      if (ios) (ta.value = ""), (shadow = "");
+    };
+    // Enter, arrows, Tab, Esc or a paste from xterm move the cursor away from the field's text.
+    onXtermData = resetField;
+    const syncField = () => {
+      const cur = ta.value.replace(/\u00a0/g, " ");
+      let i = 0;
+      while (i < cur.length && i < shadow.length && cur[i] === shadow[i]) i++;
+      if (i && /[\ud800-\udbff]/.test(cur[i - 1])) i--; // never split a surrogate pair
+      const del = [...shadow.slice(i)].length;
+      const add = cur.slice(i);
+      shadow = cur;
+      const combo = this.ctrl || this.alt;
+      if (del) this.send("\x7f".repeat(del), true);
+      if (add) this.send(add);
+      // Ctrl/Alt + letter is a command, not text to build on.
+      if (combo) return resetField();
+      // A long field slows the keyboard down: start over after a word.
+      if (cur.length > 40 && cur.endsWith(" ")) resetField();
+    };
     const commit = (raw: string) => {
       const d = raw.replace(/\u00a0/g, " ");
       if (!d) return;
@@ -301,6 +328,7 @@ export class Session {
           ch._isSendingComposition = false;
           ch._compositionView?.classList.remove("active");
         }
+        if (ios) return syncField();
         commit((e as CompositionEvent).data);
         ta.value = "";
       },
@@ -311,6 +339,7 @@ export class Session {
       (e) => {
         e.stopPropagation();
         const ie = e as InputEvent;
+        if (ios) return composing || ie.isComposing ? undefined : syncField();
         if (composing || ie.isComposing || ie.inputType !== "insertText" || !ie.data) return;
         const d = ie.data.replace(/\u00a0/g, " ");
         if (d === lastCommit.d && performance.now() - lastCommit.t < 100) return; // same commit reported twice
@@ -327,6 +356,9 @@ export class Session {
     });
     t.attachCustomKeyEventHandler((e) => {
       if (e.isComposing || e.keyCode === 229) return false; // IME: text arrives via composition/input above
+      // iOS reports a keydown for every letter; xterm would send it raw and cancel it, so the keyboard
+      // could never add Vietnamese marks. Letters (and Backspace inside the field) go through the field instead.
+      if (ios && e.type !== "keyup" && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || (e.key === "Backspace" && ta.value))) return false;
       if (e.type !== "keydown" || !e.ctrlKey) return true;
       // App shortcuts (handled globally) must not reach the shell.
       if (e.key === "Tab" || (!e.shiftKey && /^Digit[1-9]$/.test(e.code))) return false;
@@ -336,11 +368,7 @@ export class Session {
       if (e.code === "KeyV") return e.preventDefault(), this.paste(), false;
       return !["KeyK", "KeyT", "KeyW", "KeyF", "KeyL"].includes(e.code);
     });
-    let menuAt = 0;
     const menu = (x: number, y: number) => {
-      // Android fires contextmenu for a long press too: one menu per press.
-      if (Date.now() - menuAt < 1000) return;
-      menuAt = Date.now();
       contextMenu(x, y, [
         { label: "Copy", icon: "copy", action: () => this.copySelection() },
         { label: "Paste", icon: "import", action: () => this.paste() },
@@ -356,7 +384,8 @@ export class Session {
     this.el.querySelector(".term")!.addEventListener("contextmenu", (e) => {
       const ev = e as MouseEvent;
       ev.preventDefault();
-      menu(ev.clientX, ev.clientY);
+      // Phones: a long press selects text (below); Android also reports it as a context menu.
+      if (!coarse) menu(ev.clientX, ev.clientY);
     });
     // A screenshot (or any file) dragged onto the terminal is uploaded and its path typed, like the media button.
     // Desktop window drops are taken by Tauri before the page sees them; this serves iOS/iPadOS drag and drop.
@@ -376,35 +405,106 @@ export class Session {
         this.term.paste(" ");
       }
     });
-    // iOS never fires contextmenu: a still long press opens the menu instead.
+    // Phones: a long press selects the word under the finger, dragging extends the selection, and a small
+    // Copy / Paste bar appears when the finger lifts (the menu above is for mouse right clicks).
     if (coarse) {
       const termBox = this.el.querySelector<HTMLElement>(".term")!;
+      const bar = document.createElement("div");
+      bar.className = "sel-bar";
+      bar.hidden = true;
+      bar.innerHTML = `<button data-sel="copy">Copy</button><button data-sel="paste">Paste</button>`;
+      this.el.append(bar);
       let timer = 0;
       let start = { x: 0, y: 0 };
-      let fired = false;
+      let anchor: { col: number; row: number; end: number } | null = null;
+      const cellAt = (x: number, y: number) => {
+        const r = this.el.querySelector(".xterm-screen")!.getBoundingClientRect();
+        const col = Math.max(0, Math.min(t.cols - 1, Math.floor(((x - r.left) / r.width) * t.cols)));
+        const row = Math.max(0, Math.min(t.rows - 1, Math.floor(((y - r.top) / r.height) * t.rows)));
+        return { col, row: row + t.buffer.active.viewportY };
+      };
+      const hideBar = () => {
+        bar.hidden = true;
+        t.clearSelection();
+      };
+      const selectWord = (x: number, y: number) => {
+        const { col, row } = cellAt(x, y);
+        const line = t.buffer.active.getLine(row)?.translateToString(false) ?? "";
+        let [a, b] = [col, col];
+        if (line[col] && line[col] !== " ") {
+          while (a > 0 && line[a - 1] !== " ") a--;
+          while (b < line.length - 1 && line[b + 1] !== " ") b++;
+        }
+        anchor = { col: a, row, end: b };
+        t.select(a, row, b - a + 1);
+        navigator.vibrate?.(10);
+      };
+      const extendTo = (x: number, y: number) => {
+        if (!anchor) return;
+        const c = cellAt(x, y);
+        const from = anchor.row * t.cols + anchor.col;
+        const to = c.row * t.cols + c.col;
+        const [lo, hi] = to < from ? [to, anchor.row * t.cols + anchor.end] : [from, Math.max(to, anchor.row * t.cols + anchor.end)];
+        t.select(lo % t.cols, Math.floor(lo / t.cols), hi - lo + 1);
+      };
+      const showBar = () => {
+        const pos = t.getSelectionPosition();
+        if (!pos || !t.hasSelection()) return;
+        const r = this.el.querySelector(".xterm-screen")!.getBoundingClientRect();
+        const base = this.el.getBoundingClientRect();
+        const cellH = r.height / t.rows;
+        const top = (pos.start.y - t.buffer.active.viewportY) * cellH + r.top - base.top;
+        bar.hidden = false;
+        const left = Math.min(Math.max(8, (pos.start.x / t.cols) * r.width + r.left - base.left), base.width - bar.offsetWidth - 8);
+        Object.assign(bar.style, { left: `${left}px`, top: `${Math.max(4, top - bar.offsetHeight - 8)}px` });
+      };
+      bar.addEventListener("pointerdown", (e) => e.preventDefault());
+      bar.addEventListener("click", (e) => {
+        const a = (e.target as HTMLElement).closest<HTMLElement>("[data-sel]")?.dataset.sel;
+        if (a === "copy") {
+          const text = t.getSelection();
+          if (text) api.clipboardWrite(text).then(() => toast("Copied", "ok"), (x) => toast(String(x), "err"));
+        } else if (a === "paste") this.paste();
+        hideBar();
+      });
       termBox.addEventListener(
         "touchstart",
         (e) => {
-          const p = (e as TouchEvent).touches[0];
+          const te = e as TouchEvent;
           clearTimeout(timer);
-          fired = false;
-          if ((e as TouchEvent).touches.length !== 1) return;
-          start = { x: p.clientX, y: p.clientY };
-          timer = window.setTimeout(() => ((fired = true), menu(start.x, start.y)), 550);
+          if (!bar.hidden) hideBar();
+          if (te.touches.length !== 1) return;
+          start = { x: te.touches[0].clientX, y: te.touches[0].clientY };
+          timer = window.setTimeout(() => selectWord(start.x, start.y), 450);
         },
         { passive: true },
       );
+      // While selecting, the finger extends the selection instead of scrolling.
       termBox.addEventListener(
         "touchmove",
         (e) => {
           const p = (e as TouchEvent).touches[0];
+          if (anchor) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return extendTo(p.clientX, p.clientY);
+          }
           if (Math.hypot(p.clientX - start.x, p.clientY - start.y) > 10) clearTimeout(timer);
         },
-        { passive: true },
+        { passive: false },
       );
-      // The finger lifts over the menu that just opened: that release must not pick an item.
-      termBox.addEventListener("touchend", (e) => (clearTimeout(timer), fired && e.preventDefault()), { passive: false });
-      termBox.addEventListener("touchcancel", () => clearTimeout(timer), { passive: true });
+      termBox.addEventListener(
+        "touchend",
+        (e) => {
+          clearTimeout(timer);
+          if (!anchor) return;
+          anchor = null;
+          e.preventDefault(); // no click (it would focus the terminal and clear the selection)
+          showBar();
+        },
+        { passive: false },
+      );
+      termBox.addEventListener("touchcancel", () => ((anchor = null), clearTimeout(timer)), { passive: true });
     }
     const keys = this.el.querySelector<HTMLElement>(".keys");
     // Keep the terminal focused, so the phone keyboard does not close and reopen on every key.
@@ -414,6 +514,7 @@ export class Session {
       if (!b) return;
       const k = b.dataset.k;
       const tmux = b.dataset.tmux;
+      resetField();
       if (k === "Ctrl" || k === "Alt") {
         const on = k === "Ctrl" ? (this.ctrl = !this.ctrl) : (this.alt = !this.alt);
         b.classList.toggle("on", on);

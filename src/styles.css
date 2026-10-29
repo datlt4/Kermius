@@ -283,6 +283,10 @@ details .field + .field { margin-top: 10px; }
 .terms { background: var(--bg); }
 .session { position: absolute; inset: 0; display: flex; flex-direction: column; }
 .term { flex: 1; min-height: 0; padding: 8px 4px 4px 12px; overflow: hidden; -webkit-touch-callout: none; }
+/* Copy / Paste bar over a touch selection, like the phone's own. */
+.sel-bar { position: absolute; z-index: 6; display: flex; border-radius: 9px; overflow: hidden; background: #2c2c2e; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5); }
+.sel-bar button { padding: 9px 14px; font-size: 14px; color: #fff; }
+.sel-bar button + button { border-left: 1px solid rgba(255, 255, 255, 0.15); }
 .term .xterm { height: 100%; }
 .term .xterm-viewport { background: transparent !important; }
 .term .composition-view { display: none !important; }
