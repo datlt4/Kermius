@@ -564,6 +564,15 @@ export class Session {
         }
         lastH = innerHeight;
       });
+      // Leaving the app closes the keyboard without a resize we see: back to scroll-only, or the next
+      // key-bar tap (which refocuses the terminal) would bring the keyboard back on its own.
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden && ta.inputMode === "text") {
+          ta.inputMode = "none";
+          ta.blur();
+          this.el.querySelector('.keybar [data-k="kbd"]')?.classList.remove("on");
+        }
+      });
     }
     // Swipes in full-screen apps (tmux, less, vim) become wheel events: xterm turns them into mouse
     // wheel reports when the app tracks the mouse, or into arrow keys otherwise.
