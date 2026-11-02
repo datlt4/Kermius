@@ -118,6 +118,49 @@ fn pid_cwd(pid: u32) -> Option<String> {
 /// Bash prints its folder as OSC 7 before each prompt (unless the user set their own PROMPT_COMMAND).
 const OSC7_HOOK: &str = r#"printf '\033]7;file://%s%s\007' "${HOSTNAME:-}" "$PWD""#;
 
+/// zsh: a ZDOTDIR whose startup files load the user's own (from $KERMIUS_USER_ZDOTDIR or $HOME) and then add a
+/// precmd hook printing OSC 7, the way VS Code injects its shell integration. Written once per run.
+#[cfg(unix)]
+fn zsh_hook_dir() -> Option<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("kermius-zsh-{}", unsafe { libc::getuid() }));
+        std::fs::create_dir_all(&dir).ok()?;
+        let load = |f: &str| format!("_k_z=$ZDOTDIR; ZDOTDIR=${{KERMIUS_USER_ZDOTDIR:-$HOME}}; [[ -r $ZDOTDIR/{f} ]] && . $ZDOTDIR/{f}; ZDOTDIR=$_k_z\n");
+        let hook = "_kermius_osc7() { printf '\\033]7;file://%s%s\\007' \"$HOST\" \"$PWD\"; }; typeset -ga precmd_functions; precmd_functions+=(_kermius_osc7)\n";
+        let files = [
+            (".zshenv", load(".zshenv")),
+            (".zprofile", load(".zprofile")),
+            // /etc/zshrc (macOS) put HISTFILE under this folder: keep the user's history file.
+            (".zshrc", format!("[[ $HISTFILE == $ZDOTDIR/* ]] && HISTFILE=${{KERMIUS_USER_ZDOTDIR:-$HOME}}/${{HISTFILE:t}}\n{}{hook}", load(".zshrc"))),
+            // Last startup file of an interactive shell: from here on ZDOTDIR is the user's again. A `zsh -lc`
+            // (session.run) keeps the shim so the shell it execs afterwards gets the hook too.
+            (".zlogin", format!("{}[[ -o interactive ]] && {{ ZDOTDIR=${{KERMIUS_USER_ZDOTDIR:-$HOME}}; unset KERMIUS_USER_ZDOTDIR _k_z; }}\n", load(".zlogin"))),
+        ];
+        for (name, body) in files {
+            std::fs::write(dir.join(name), body).ok()?;
+        }
+        Some(dir)
+    })
+    .clone()
+}
+
+/// When a new shell may take commands: after its first prompt (the OSC 7 hook), or for shells without the
+/// hook, once output has been quiet for a moment after a few seconds.
+struct Ready {
+    start: std::time::Instant,
+    prompt: std::sync::atomic::AtomicBool,
+    last_output: parking_lot::Mutex<std::time::Instant>,
+}
+
+impl Ready {
+    fn get(&self) -> bool {
+        use std::time::Duration;
+        self.prompt.load(std::sync::atomic::Ordering::Relaxed)
+            || (self.start.elapsed() > Duration::from_secs(5) && self.last_output.lock().elapsed() > Duration::from_millis(300))
+    }
+}
+
 /// Finds OSC 7 (`ESC ] 7 ; file://host/path` ended by BEL or ST) in a byte stream split into chunks.
 #[derive(Default)]
 pub struct Osc7 {
@@ -219,8 +262,17 @@ fn spawn_cmd(
         cmd.env("LANG", utf8);
         cmd.env("LC_CTYPE", utf8);
     }
-    if watch.is_some() && std::env::var_os("PROMPT_COMMAND").is_none() {
-        cmd.env("PROMPT_COMMAND", OSC7_HOOK);
+    if watch.is_some() {
+        if std::env::var_os("PROMPT_COMMAND").is_none() {
+            cmd.env("PROMPT_COMMAND", OSC7_HOOK);
+        }
+        #[cfg(unix)]
+        if let Some(dir) = zsh_hook_dir() {
+            if let Some(orig) = std::env::var_os("ZDOTDIR") {
+                cmd.env("KERMIUS_USER_ZDOTDIR", orig);
+            }
+            cmd.env("ZDOTDIR", dir);
+        }
     }
     // A requested folder (Integration API) if it exists, else home.
     if let Some(dir) = cwd.filter(|d| std::path::Path::new(d).is_dir()).map(std::path::PathBuf::from).or_else(dirs::home_dir) {
@@ -237,14 +289,16 @@ fn spawn_cmd(
         Some(w) => (Some(Arc::new(w.on_cwd)), Some(w.on_exit)),
         None => (None, None),
     };
+    let now = std::time::Instant::now();
+    let ready = Arc::new(Ready { start: now, prompt: false.into(), last_output: parking_lot::Mutex::new(now) });
     let idle: Option<Idle> = on_cwd.as_ref().map(|_| {
-        let m = master.clone();
-        // The shell is in charge when the terminal's foreground process group is its own.
+        let (m, ready) = (master.clone(), ready.clone());
+        // Idle: past its first prompt, and the terminal's foreground process group is the shell's own.
         Arc::new(move || {
             #[cfg(unix)]
-            return pid.is_some_and(|p| m.lock().process_group_leader() == Some(p as i32));
+            return ready.get() && pid.is_some_and(|p| m.lock().process_group_leader() == Some(p as i32));
             #[cfg(not(unix))]
-            true
+            ready.get()
         }) as Idle
     });
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -275,7 +329,9 @@ fn spawn_cmd(
             let Ok(n @ 1..) = reader.read(&mut buf) else { break };
             flow.sent(n);
             if let Some(cb) = &osc_cb {
+                *ready.last_output.lock() = std::time::Instant::now();
                 for p in osc7.feed(&buf[..n]) {
+                    ready.prompt.store(true, std::sync::atomic::Ordering::Relaxed);
                     cb(p);
                 }
             }

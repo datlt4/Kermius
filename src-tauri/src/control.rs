@@ -181,7 +181,13 @@ impl Control {
                 if !self.0.sessions.lock().contains_key(&id) {
                     return Err(("not_found", format!("no session {id}")));
                 }
-                (self.0.ui)(if method == "session.focus" { UiMsg::Focus { session: id } } else { UiMsg::Close { session: id } });
+                if method == "session.close" {
+                    // The key is free before the reply: an open right after gets a new tab, not the closing one.
+                    self.ended(&id);
+                    (self.0.ui)(UiMsg::Close { session: id });
+                } else {
+                    (self.0.ui)(UiMsg::Focus { session: id });
+                }
                 Ok(json!({}))
             }
             "session.list" => {
@@ -298,6 +304,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let screen = Arc::new(Mutex::new(Vec::new()));
         let slot: Arc<Mutex<Option<Control>>> = Default::default();
+        let ptys: Arc<Mutex<HashMap<String, UnboundedSender<Cmd>>>> = Default::default();
         let (seen2, screen2, slot2) = (seen.clone(), screen.clone(), slot.clone());
         let ctl = Control::new("test", move |m| {
             seen2.lock().push(m.clone());
@@ -314,11 +321,14 @@ mod tests {
                     let status: Channel<Status> = Channel::new(|_| Ok(()));
                     let env = env.into_iter().collect();
                     let (tx, idle) = crate::local::spawn_controlled(120, 30, data, status, Arc::new(Flow::default()), Some(cwd), Some(argv), env, ctl.watch(&session)).unwrap();
+                    ptys.lock().insert(session.clone(), tx.clone());
                     ctl.bind(&session, tx, idle);
                 }
                 UiMsg::Close { session } => {
-                    // The tab closes its PTY; the shell's exit then ends the session.
-                    let _ = session;
+                    // Like the tab: kill the PTY (its exit arrives later and must not touch a newer session).
+                    if let Some(tx) = ptys.lock().remove(&session) {
+                        let _ = tx.send(Cmd::Close);
+                    }
                 }
                 _ => {}
             }
@@ -448,6 +458,28 @@ mod tests {
         wait_until("run output", || String::from_utf8_lossy(&screen.lock()[mark..]).contains("[exited with status 3]")).await;
         assert!(String::from_utf8_lossy(&screen.lock()[mark..]).contains("hi"));
         wait_until("run shell idle", || ctl.0.sessions.lock().get(&run).is_some_and(|s| s.pty.as_ref().is_some_and(|(_, idle)| idle()))).await;
+
+        // 9. close then an immediate open with the same key → a new tab that stays.
+        send(&mut w, json!({"id": 20, "method": "session.open", "params": {"key": "r", "focus": false}})).await;
+        let old = next(&mut r, reply(20)).await["result"]["session"].as_str().unwrap().to_string();
+        // 10. Busy while the shell starts, idle at the prompt.
+        send(&mut w, json!({"id": 21, "method": "session.list", "params": {"key": "r"}})).await;
+        assert_eq!(next(&mut r, reply(21)).await["result"]["sessions"][0]["busy"], true);
+        wait_until("r idle", || ctl.0.sessions.lock().get(&old).is_some_and(|s| s.pty.as_ref().is_some_and(|(_, idle)| idle()))).await;
+        send(&mut w, json!({"id": 22, "method": "session.list", "params": {"key": "r"}})).await;
+        assert_eq!(next(&mut r, reply(22)).await["result"]["sessions"][0]["busy"], false);
+        send(&mut w, json!({"id": 23, "method": "session.close", "params": {"session": old}})).await;
+        send(&mut w, json!({"id": 24, "method": "session.open", "params": {"key": "r", "focus": false}})).await;
+        assert_eq!(next(&mut r, reply(23)).await["result"], json!({}));
+        let again = next(&mut r, reply(24)).await;
+        assert_eq!(again["result"]["reused"], false);
+        let new_id = again["result"]["session"].as_str().unwrap().to_string();
+        assert_ne!(new_id, old);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        send(&mut w, json!({"id": 25, "method": "session.list", "params": {"key": "r"}})).await;
+        let listed = next(&mut r, reply(25)).await;
+        assert_eq!(listed["result"]["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["result"]["sessions"][0]["session"], new_id.as_str());
 
         // Errors.
         send(&mut w, json!({"id": 12, "method": "nope"})).await;

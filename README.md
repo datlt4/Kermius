@@ -141,8 +141,8 @@ If the socket is missing, start `kermius --background` (no window, no focus) and
 | `hello` | `client`, `version` | `{"app", "version", "api": 1, "capabilities"}`. Must come first. |
 | `session.open` | `key?`, `cwd?`, `title?`, `icon?` (SVG/PNG path), `focus?` (true) | `{"session", "reused"}`. A live tab with the same `key` is reused (and `cd`ed to `cwd` if idle). |
 | `session.run` | `argv`, `cwd?`, `title?`, `icon?`, `env?`, `focus?` | `{"session"}`. Runs `argv` through the login shell (your `PATH`); when it exits the tab shows the status and keeps a shell. |
-| `session.cd` | `session`, `path` | `{}`; `busy` unless the shell is idle at its prompt (nothing is typed into running programs); no-op if already there. |
-| `session.focus` / `session.close` | `session` | `{}` |
+| `session.cd` | `session`, `path` | `{}`; `busy` unless the shell is idle at its prompt (nothing is typed into running programs or a shell still starting); no-op if already there. |
+| `session.focus` / `session.close` | `session` | `{}`; `close` frees the `key` before replying |
 | `session.list` | `key?` | `{"sessions": [{"session", "key", "cwd", "busy", "title"}]}` |
 | `share` | `paths` (absolute) | `{}`, like `kermius --share` |
 
