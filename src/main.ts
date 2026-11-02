@@ -1,6 +1,6 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Launch, type Snippet, type SyncSettings, type Tunnel } from "./api";
+import { api, emptyHost, isWeb, type Host, type Identity, type Key, type ControlMsg, type Launch, type Snippet, type SyncSettings, type Tunnel } from "./api";
 import { listen } from "@tauri-apps/api/event";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
@@ -231,7 +231,7 @@ function renderTabs() {
       ${state.sessions
         .map(
           (s) => `<div class="tab ${state.active === s.id ? "on" : ""}" data-tab="${s.id}" draggable="${desktop}" title="${esc(s.host.username)}@${esc(s.host.address)}">
-            ${s.kind === "files" ? icon("folder", 13) : s.kind === "vnc" ? icon("monitor", 13) : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(s.host.name)}${s.kind === "files" ? " · SFTP" : s.kind === "vnc" ? " · VNC" : ""}</span>
+            ${s.kind === "files" ? icon("folder", 13) : s.kind === "vnc" ? icon("monitor", 13) : ""}${ctlOf(s)?.icon ? `<img class="tab-icon" src="${esc(ctlOf(s)!.icon)}" alt="" />` : ""}<span class="st ${s.state}"></span><span class="tab-name">${esc(ctlOf(s)?.title || s.host.name)}${s.kind === "files" ? " · SFTP" : s.kind === "vnc" ? " · VNC" : ""}</span>
             <button class="tab-x" data-close="${s.id}">${icon("x", 13)}</button></div>`,
         )
         .join("")}
@@ -266,8 +266,10 @@ let tabsRestored = false;
 /** Open tabs as {kind, host id}, so the next start can reopen them (only after the restore ran). */
 function saveOpenTabs() {
   if (!tabsRestored || isWeb) return;
-  const tabs = state.sessions.map((s) => ({ kind: s.kind, local: "local" in s && s.local, host: s.host.id }));
-  const active = state.sessions.findIndex((s) => s.id === state.active);
+  // Control API tabs belong to the app that opened them: it reopens them itself.
+  const kept = state.sessions.filter((s) => !ctlOf(s));
+  const tabs = kept.map((s) => ({ kind: s.kind, local: "local" in s && s.local, host: s.host.id }));
+  const active = kept.findIndex((s) => s.id === state.active);
   localStorage.setItem(LAST_TABS_KEY, JSON.stringify({ tabs, active }));
 }
 
@@ -302,6 +304,28 @@ function onLaunch(l: Launch) {
   shareFromLaunch(l.files, l.dirs);
   state.view = "nearby";
   goHome();
+}
+
+// ---------- Control API (another app drives local tabs, e.g. Kolphin) ----------
+
+const ctlOf = (s: { kind: string }) => (s instanceof Session ? s.ctl : null);
+const ctlTab = (session: string) => state.sessions.find((s) => ctlOf(s)?.session === session);
+
+function onControl(m: ControlMsg) {
+  if (m.kind === "open") {
+    const ctl = { session: m.session, title: m.title, icon: m.icon, argv: m.argv, env: m.env };
+    const s = new Session(null, renderTabs, (x) => closeSession(x.id), m.cwd, ctl);
+    state.sessions.push(s);
+    s.mount(els.terms);
+    // Without focus the tab opens in the background (the shell still starts).
+    if (m.focus || state.active === "home") activate(s.id);
+    else (s.hide(), renderTabs());
+    return;
+  }
+  const s = ctlTab(m.session);
+  if (!s) return;
+  if (m.kind === "focus") activate(s.id);
+  else closeSession(s.id);
 }
 
 // ---------- drag tabs to reorder ----------
@@ -478,6 +502,8 @@ els.terms.addEventListener("kermius-edit-host", (e) => openEditor((e as CustomEv
 function closeSession(id: string) {
   const i = state.sessions.findIndex((s) => s.id === id);
   if (i < 0) return;
+  const ctl = ctlOf(state.sessions[i]);
+  if (ctl) api.controlClosed(ctl.session).catch(() => {});
   state.sessions[i].dispose();
   state.sessions.splice(i, 1);
   if (state.active === id) activate(state.sessions[Math.min(i, state.sessions.length - 1)]?.id ?? "home");
@@ -1842,6 +1868,8 @@ function webUnlock(): Promise<void> {
   if (desktop) {
     await listen<Launch>("kermius-launch", (e) => onLaunch(e.payload));
     (await api.launchReady().catch(() => [])).forEach(onLaunch);
+    await listen<ControlMsg>("kermius-control", (e) => onControl(e.payload));
+    (await api.controlReady().catch(() => [])).forEach(onControl);
   }
   runSync(false);
   setInterval(() => runSync(false), 60_000);

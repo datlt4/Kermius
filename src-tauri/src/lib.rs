@@ -2,6 +2,8 @@ mod crypto;
 mod files;
 #[cfg(desktop)]
 mod launch;
+#[cfg(all(unix, desktop))]
+mod control;
 #[cfg(target_os = "ios")]
 mod ios_photos;
 mod foldersync;
@@ -604,6 +606,99 @@ fn local_open(
         let sid = uuid::Uuid::new_v4().to_string();
         state.sessions.lock().insert(sid.clone(), (tx, flow));
         Ok(sid)
+    }
+}
+
+/// Control API tab: the local terminal for `session` (asked for by another app, see control.rs).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn control_open(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    cols: u32,
+    rows: u32,
+    on_data: Channel<InvokeResponseBody>,
+    on_status: Channel<ssh::Status>,
+    session: String,
+    cwd: String,
+    argv: Vec<String>,
+    env: HashMap<String, String>,
+) -> Res<String> {
+    #[cfg(all(unix, desktop))]
+    {
+        let ctl = app.state::<control::Control>();
+        let flow = Arc::new(ssh::Flow::default());
+        let (tx, idle) = local::spawn_controlled(cols, rows, on_data, on_status, flow.clone(), Some(cwd), Some(argv), env.into_iter().collect(), ctl.watch(&session))?;
+        ctl.bind(&session, tx.clone(), idle);
+        let sid = uuid::Uuid::new_v4().to_string();
+        state.sessions.lock().insert(sid.clone(), (tx, flow));
+        Ok(sid)
+    }
+    #[cfg(not(all(unix, desktop)))]
+    {
+        let _ = (app, state, cols, rows, on_data, on_status, session, cwd, argv, env);
+        Err("The Control API is not available here".into())
+    }
+}
+
+/// A Control API tab was closed (also before its shell started): the session and its key end now.
+#[tauri::command]
+fn control_closed(app: tauri::AppHandle, session: String) {
+    #[cfg(all(unix, desktop))]
+    app.state::<control::Control>().ended(&session);
+    #[cfg(not(all(unix, desktop)))]
+    let _ = (app, session);
+}
+
+/// UI side of the Control API: start listening, get what arrived before.
+#[tauri::command]
+fn control_ready(app: tauri::AppHandle) -> Vec<serde_json::Value> {
+    #[cfg(all(unix, desktop))]
+    {
+        let ui = app.state::<ControlUi>();
+        let mut pending = ui.pending.lock();
+        ui.ready.store(true, std::sync::atomic::Ordering::Release);
+        return std::mem::take(&mut *pending).into_iter().filter_map(|m| serde_json::to_value(m).ok()).collect();
+    }
+    #[cfg(not(all(unix, desktop)))]
+    {
+        let _ = app;
+        Vec::new()
+    }
+}
+
+/// Control API requests for the UI, kept until it listens (`kermius --background` starts hidden).
+#[cfg(all(unix, desktop))]
+#[derive(Default)]
+struct ControlUi {
+    pending: Mutex<Vec<control::UiMsg>>,
+    ready: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(all(unix, desktop))]
+fn control_to_ui(app: &tauri::AppHandle, msg: control::UiMsg) {
+    use control::UiMsg;
+    use tauri::Emitter;
+    let raise = matches!(&msg, UiMsg::Open { focus: true, .. } | UiMsg::Focus { .. });
+    if raise {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    }
+    if let UiMsg::Share { paths } = msg {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let args: Vec<String> = ["kermius".to_string(), "--share".into()].into_iter().chain(paths).collect();
+        return launch::handle(app, launch::from_args(&args, &cwd), true);
+    }
+    let ui = app.state::<ControlUi>();
+    let mut pending = ui.pending.lock();
+    if ui.ready.load(std::sync::atomic::Ordering::Acquire) {
+        drop(pending);
+        let _ = app.emit("kermius-control", msg);
+    } else {
+        pending.push(msg);
     }
 }
 
@@ -1267,7 +1362,9 @@ pub fn run() {
     // First: a second `kermius …` hands its request to this instance and exits.
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-        launch::handle(app, launch::from_args(&argv, std::path::Path::new(&cwd)), true);
+        // `--background` (Control API clients starting Kermius) must not steal focus.
+        let focus = !argv.iter().any(|a| a == "--background");
+        launch::handle(app, launch::from_args(&argv, std::path::Path::new(&cwd)), focus);
     }));
     builder
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -1294,6 +1391,23 @@ pub fn run() {
             }
             #[cfg(all(unix, desktop))]
             std::thread::spawn(files::kill_orphan_rsyncs);
+            #[cfg(all(unix, desktop))]
+            {
+                if std::env::args().any(|a| a == "--background") {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.hide();
+                    }
+                }
+                app.manage(ControlUi::default());
+                let handle = app.handle().clone();
+                let ctl = control::Control::new(&app.package_info().version.to_string(), move |m| control_to_ui(&handle, m));
+                app.manage(ctl.clone());
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = ctl.serve(control::socket_path()).await {
+                        eprintln!("kermius: control API: {err}");
+                    }
+                });
+            }
             app.manage(nearby::Nearby::new(app.handle().clone()));
             let store = Store::open(app.path().app_data_dir()?)?;
             app.manage(AppState {
@@ -1348,6 +1462,9 @@ pub fn run() {
             clipboard_read,
             ssh_connect,
             local_open,
+            control_open,
+            control_ready,
+            control_closed,
             launch_ready,
             list_fonts,
             ssh_write,
@@ -1412,8 +1529,17 @@ pub fn run() {
             fsync_read,
             fsync_resolve,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Kermius");
+        .build(tauri::generate_context!())
+        .expect("error while running Kermius")
+        .run(|_app, event| {
+            // Clients see the socket go away (EOF) and treat their sessions as gone.
+            #[cfg(all(unix, desktop))]
+            if let tauri::RunEvent::Exit = event {
+                let _ = std::fs::remove_file(control::socket_path());
+            }
+            #[cfg(not(all(unix, desktop)))]
+            let _ = event;
+        });
 }
 
 #[cfg(test)]

@@ -143,6 +143,22 @@ export interface Snippet {
 /** Integration API (desktop): `kermius --new-terminal [--cwd DIR]`, `kermius --share PATH...`. */
 export type Launch = { kind: "terminal"; cwd: string } | { kind: "share"; files: string[]; dirs: string[] };
 
+/** Control API (another app drives a local tab): what the UI is asked to do. */
+export type ControlMsg =
+  | { kind: "open"; session: string; cwd: string; title: string; icon: string; focus: boolean; argv: string[]; env: Record<string, string> }
+  | { kind: "focus"; session: string }
+  | { kind: "close"; session: string };
+
+/** A local tab opened through the Control API. */
+export interface ControlTab {
+  session: string;
+  title: string;
+  /** data: URL, or "". */
+  icon: string;
+  argv: string[];
+  env: Record<string, string>;
+}
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -336,6 +352,11 @@ const tauriApi = {
     invoke<string>("ssh_connect", { hostId, cols, rows, onData, onStatus }),
   localOpen: (cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>, cwd = "") =>
     invoke<string>("local_open", { cols, rows, onData, onStatus, cwd: cwd || null }),
+  controlOpen: (cols: number, rows: number, onData: Channel<ArrayBuffer>, onStatus: Channel<Status>, cwd: string, ctl: ControlTab) =>
+    invoke<string>("control_open", { cols, rows, onData, onStatus, session: ctl.session, cwd, argv: ctl.argv, env: ctl.env }),
+  controlClosed: (session: string) => invoke<void>("control_closed", { session }),
+  /** Control API requests that arrived before the UI listened for `kermius-control`. */
+  controlReady: () => invoke<ControlMsg[]>("control_ready"),
   /** Integration API requests that arrived before the UI listened for `kermius-launch`. */
   launchReady: () => invoke<Launch[]>("launch_ready"),
   listFonts: () => invoke<string[]>("list_fonts"),

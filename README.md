@@ -128,6 +128,28 @@ Other apps (file managers, launchers, scripts) can drive Kermius. If Kermius is 
 
 Example, a file manager "Share with Kermius" action: `kermius --share "/home/me/Pictures/a.png" "/home/me/Docs"`.
 
+### Control API (Linux, macOS)
+
+For apps that keep driving terminal tabs (Kolphin opens a tab, `cd`s it as you browse, runs `claude` in another).
+Kermius listens on a Unix socket, `$XDG_RUNTIME_DIR/kermius/control.sock` (else `/tmp/kermius-$UID/control.sock`),
+folder `0700`, socket `0600`. One JSON object per line: requests `{"id", "method", "params"}`, one reply each
+(`{"id", "result"}` or `{"id", "error": {"code", "message"}}`), and events `{"event", "params"}`.
+If the socket is missing, start `kermius --background` (no window, no focus) and retry for a few seconds.
+
+| Method | Params | Result / behaviour |
+| --- | --- | --- |
+| `hello` | `client`, `version` | `{"app", "version", "api": 1, "capabilities"}`. Must come first. |
+| `session.open` | `key?`, `cwd?`, `title?`, `icon?` (SVG/PNG path), `focus?` (true) | `{"session", "reused"}`. A live tab with the same `key` is reused (and `cd`ed to `cwd` if idle). |
+| `session.run` | `argv`, `cwd?`, `title?`, `icon?`, `env?`, `focus?` | `{"session"}`. Runs `argv` through the login shell (your `PATH`); when it exits the tab shows the status and keeps a shell. |
+| `session.cd` | `session`, `path` | `{}`; `busy` unless the shell is idle at its prompt (nothing is typed into running programs); no-op if already there. |
+| `session.focus` / `session.close` | `session` | `{}` |
+| `session.list` | `key?` | `{"sessions": [{"session", "key", "cwd", "busy", "title"}]}` |
+| `share` | `paths` (absolute) | `{}`, like `kermius --share` |
+
+Events to every client that sent `hello`: `session.closed {session, key}` (tab closed or shell exited) and
+`session.cwd {session, key, cwd}` (tabs with a `key`). Error codes: `bad_request`, `unknown_method`, `not_found`, `busy`.
+Example: `printf '%s\n' '{"id":1,"method":"hello"}' '{"id":2,"method":"session.open","params":{"key":"t","cwd":"/tmp"}}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/kermius/control.sock`.
+
 ## License
 
 [MIT](LICENSE)

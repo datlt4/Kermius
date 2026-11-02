@@ -11,7 +11,7 @@ import "@fontsource/fira-code/700.css";
 import "@fontsource/source-code-pro/400.css";
 import "@fontsource/source-code-pro/700.css";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, Channel, emptyHost, type Host, type Status } from "./api";
+import { api, Channel, emptyHost, type ControlTab, type Host, type Status } from "./api";
 import { notify } from "./notify";
 import { contextMenu, esc, hue, icon, promptDialog, toast } from "./ui";
 
@@ -178,13 +178,20 @@ export class Session {
   private ctrl = false;
   private alt = false;
   private resizeTimer = 0;
+  private ctlUsed = false;
 
   /** `host === null` opens a local shell. */
   readonly local: boolean;
   host: Host;
 
-  /** `cwd`: folder for a local terminal ("" = home). */
-  constructor(host: Host | null, private onChange: () => void, private onClose: (s: Session) => void, private cwd = "") {
+  /** `cwd`: folder for a local terminal ("" = home); `ctl`: the tab belongs to a Control API client (Kolphin). */
+  constructor(
+    host: Host | null,
+    private onChange: () => void,
+    private onClose: (s: Session) => void,
+    private cwd = "",
+    readonly ctl: ControlTab | null = null,
+  ) {
     this.local = !host;
     this.host = host ?? { ...emptyHost(), name: "Local" };
     const prefs = loadPrefs();
@@ -689,9 +696,14 @@ export class Session {
     };
     try {
       const { cols, rows } = this.term;
-      this.sid = this.local
-        ? await api.localOpen(cols, rows, onData, onStatus, this.cwd)
-        : await api.sshConnect(this.host.id, cols, rows, onData, onStatus);
+      // A Control API session lives once: after its shell exits, Restart opens a plain local shell.
+      const ctl = this.ctl && !this.ctlUsed ? this.ctl : null;
+      this.ctlUsed ||= !!ctl;
+      this.sid = ctl
+        ? await api.controlOpen(cols, rows, onData, onStatus, this.cwd, ctl)
+        : this.local
+          ? await api.localOpen(cols, rows, onData, onStatus, this.cwd)
+          : await api.sshConnect(this.host.id, cols, rows, onData, onStatus);
     } catch (e) {
       if (gen === this.gen) this.fail(String(e));
     }
