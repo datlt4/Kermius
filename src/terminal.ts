@@ -466,6 +466,8 @@ export class Session {
         Object.assign(bar.style, { left: `${left}px`, top: `${Math.max(4, top - bar.offsetHeight - 8)}px` });
       };
       bar.addEventListener("pointerdown", (e) => e.preventDefault());
+      // Android starts a native drag on a long press; it swallows the next tap (the bar's Paste).
+      termBox.addEventListener("dragstart", (e) => e.preventDefault());
       bar.addEventListener("click", (e) => {
         const a = (e.target as HTMLElement).closest<HTMLElement>("[data-sel]")?.dataset.sel;
         if (a === "copy") {

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Rect
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -33,8 +34,21 @@ class MainActivity : TauriActivity() {
     ViewCompat.setOnApplyWindowInsetsListener(content) { v, insets ->
       val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
       val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-      v.setPadding(0, bars.top, 0, maxOf(ime, bars.bottom))
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) v.setPadding(0, bars.top, 0, maxOf(ime, bars.bottom))
       insets
+    }
+    // Android 10 and older: the first keyboard of a session often never reaches the insets above (the window's
+    // content insets stay 0 while its visible frame shrinks), so follow the visible frame on every draw instead.
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+      val frame = Rect()
+      content.viewTreeObserver.addOnPreDrawListener {
+        content.getWindowVisibleDisplayFrame(frame)
+        val bottom = maxOf(0, content.rootView.height - frame.bottom)
+        if (content.paddingTop != frame.top || content.paddingBottom != bottom) {
+          content.setPadding(0, frame.top, 0, bottom)
+          false // lay out again with the new size before drawing
+        } else true
+      }
     }
     // A stray back swipe should not leave the app: ask for a second one within 2 s.
     onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
