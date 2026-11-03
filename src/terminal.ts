@@ -13,6 +13,7 @@ import "@fontsource/source-code-pro/700.css";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, Channel, emptyHost, type ControlTab, type Host, type Status } from "./api";
 import { notify } from "./notify";
+import { groupHue } from "./groupcolor";
 import { contextMenu, esc, hue, icon, promptDialog, toast } from "./ui";
 
 export const termTheme = {
@@ -789,7 +790,7 @@ export class Session {
   private setState(s: SessionState) {
     this.state = s;
     const h = this.host;
-    const avatar = `<div class="avatar lg" style="--h:${hue(h.folder || h.name)}">${icon("server", 26)}</div>`;
+    const avatar = `<div class="avatar lg" style="--h:${h.folder ? groupHue(h.folder) : hue(h.name)}">${icon("server", 26)}</div>`;
     const target = esc(describeTarget(h));
     this.overlay.className = `overlay ${s}`;
     if (this.local && s !== "error") {

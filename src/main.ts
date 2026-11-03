@@ -14,6 +14,7 @@ import { bindFolderSync, listenFolderSync, loadJobs, renderFolderSync, runDueJob
 import { BUILTIN_FONTS, MOSH_SERVER_SETUP, Session, describeTarget, fontStack, isSsh, loadFont, loadPrefs, protocolLabel, type TermPrefs } from "./terminal";
 import { webLogin } from "./webapi";
 import { parseSyncConfig } from "./vaultcrypto";
+import { groupHue } from "./groupcolor";
 import { $, confirmDialog, contextMenu, esc, fuzzyBest, fuzzyScore, hue, icon, toast } from "./ui";
 
 /** Open tabs: terminals (SSH / local) and SFTP file managers. */
@@ -140,7 +141,7 @@ function renderSidebar() {
   els.side.innerHTML = `
     <div class="side-title">Groups</div>
     ${fs.map(([f, n]) => `<button class="side-item ${state.folder === f && !state.tag ? "on" : ""}" data-folder="${esc(f)}">
-        <span class="dot" style="--h:${hue(f)}"></span><span class="grow">${esc(f)}</span><span class="count">${n}</span></button>`).join("")}
+        <span class="dot" style="--h:${groupHue(f)}"></span><span class="grow">${esc(f)}</span><span class="count">${n}</span></button>`).join("")}
     <div class="side-title">Tags</div>
     <div class="tag-cloud">${ts.map(([t, n]) => `<button class="chip ${state.tag === t ? "on" : ""}" data-tag="${esc(t)}">${esc(t)} <b>${n}</b></button>`).join("")}</div>`;
   renderSyncFoot();
@@ -528,7 +529,7 @@ function renderPage() {
 function hostCard(h: Host) {
   const shown = h.tags.slice(0, 3);
   return `<div class="card host" data-host="${h.id}" tabindex="0">
-    <div class="avatar" style="--h:${hue(h.folder || h.name)}">${icon(hostIcon(h), 20)}</div>
+    <div class="avatar" style="--h:${h.folder ? groupHue(h.folder) : hue(h.name)}">${icon(hostIcon(h), 20)}</div>
     <div class="card-body">
       <div class="card-title">${esc(h.name || h.address)}</div>
       <div class="card-sub">${esc(protocolLabel(h).toLowerCase())}${h.protocol === "serial" ? `, ${h.baud || 115200} baud` : `, ${esc(h.username || "—")}`}${state.layout === "list" ? ` · ${esc(describeTarget(h))}` : ""}</div>
@@ -584,7 +585,7 @@ function sectionsHtml() {
       const hosts = byFolder.get(f)!;
       const shut = state.collapsed.has(f);
       return `<div class="sec ${shut ? "shut" : ""}">
-        <button class="sec-head" data-sec="${esc(f)}">${icon("chevron", 14)}<span class="dot" style="--h:${hue(f)}"></span>
+        <button class="sec-head" data-sec="${esc(f)}">${icon("chevron", 14)}<span class="dot" style="--h:${groupHue(f)}"></span>
           <b>${esc(f || "No group")}</b><span class="count">${hosts.length}</span></button>
         ${shut ? "" : `<div class="grid ${state.layout}" data-drop-folder="${esc(f)}">${hosts.map(hostCard).join("")}</div>`}</div>`;
     })
@@ -600,7 +601,7 @@ function resultsHtml(groups: [string, number][], list: Host[], showGroups: boole
   return `
     ${groups.length ? `<h4 class="section">Groups</h4><div class="grid groups">${groups
       .map(([f, n]) => `<div class="card group" data-open-folder="${esc(f)}" tabindex="0">
-        <div class="avatar folder" style="--h:${hue(f)}">${icon("folder", 20)}</div>
+        <div class="avatar folder" style="--h:${groupHue(f)}">${icon("folder", 20)}</div>
         <div class="card-body"><div class="card-title">${esc(f)}</div><div class="card-sub">${n} host${n === 1 ? "" : "s"}</div></div></div>`)
       .join("")}</div>` : ""}
     ${list.length ? `<h4 class="section">${showGroups ? "Hosts" : `${list.length} host${list.length === 1 ? "" : "s"}`}</h4>
@@ -1439,7 +1440,7 @@ function renderEditor() {
       <div class="seg proto-seg">${PROTOCOLS.filter(([p]) => isWeb || desktop || !["mosh", "serial"].includes(p))
         .map(([p, label]) => `<button data-ed="proto" data-p="${p}" class="${proto === p ? "on" : ""}">${label}</button>`).join("")}</div>
       <div class="hero">
-        <div class="avatar lg" style="--h:${hue(h.folder || h.name || "x")}">${icon(hostIcon(h), 26)}</div>
+        <div class="avatar lg" style="--h:${h.folder ? groupHue(h.folder) : hue(h.name || "x")}">${icon(hostIcon(h), 26)}</div>
         <label class="field grow"><span>${proto === "serial" ? "Serial port" : "Address"}</span><input id="e-address" value="${esc(h.address)}"
           placeholder="${proto === "serial" ? "/dev/ttyUSB0 or COM3" : "IP or hostname"}" spellcheck="false" ${proto === "serial" ? 'list="dl-ports"' : ""} /></label>
         <datalist id="dl-ports"></datalist>
