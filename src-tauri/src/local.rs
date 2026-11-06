@@ -115,6 +115,9 @@ fn pid_cwd(pid: u32) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
+/// Largest message the sender builds out of merged reads.
+const MERGE_MAX: usize = 256 * 1024;
+
 /// Bash prints its folder as OSC 7 before each prompt (unless the user set their own PROMPT_COMMAND).
 const OSC7_HOOK: &str = r#"printf '\033]7;file://%s%s\007' "${HOSTNAME:-}" "$PWD""#;
 
@@ -318,6 +321,10 @@ fn spawn_cmd(
 
     let status = on_status.clone();
     let osc_cb = on_cwd.clone();
+    // A pty hands over a few KB per read: a busy build would become thousands of IPC messages a second, each an
+    // ArrayBuffer the page must allocate and collect. The reader passes chunks on; the sender merges what arrives
+    // within a few ms (like the SSH path) into one message.
+    let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut buf = vec![0u8; 64 * 1024];
         let mut osc7 = Osc7::default();
@@ -335,10 +342,25 @@ fn spawn_cmd(
                     cb(p);
                 }
             }
-            if on_data.send(InvokeResponseBody::Raw(buf[..n].to_vec())).is_err() {
+            if chunk_tx.send(buf[..n].to_vec()).is_err() {
                 break;
             }
         }
+    });
+    std::thread::spawn(move || {
+        while let Ok(mut out) = chunk_rx.recv() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(4);
+            while out.len() < MERGE_MAX {
+                match chunk_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                    Ok(more) => out.extend_from_slice(&more),
+                    Err(_) => break,
+                }
+            }
+            if on_data.send(InvokeResponseBody::Raw(out)).is_err() {
+                break;
+            }
+        }
+        // The reader has ended and everything it read was sent: now the tab can say the shell is gone.
         let _ = status.send(Status::Closed);
         if let Some(f) = on_exit {
             f();
@@ -367,4 +389,42 @@ fn spawn_cmd(
         let _ = child.kill();
     });
     Ok((tx, idle))
+}
+
+#[cfg(all(test, unix, not(any(target_os = "ios", target_os = "android"))))]
+mod tests {
+    use super::*;
+    use parking_lot::Mutex;
+
+    /// A flood of output arrives complete and in order after the sender merges the reads.
+    #[test]
+    fn merged_reads_keep_every_byte() {
+        const N: u64 = 200_000;
+        let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let messages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (s2, m2) = (seen.clone(), messages.clone());
+        let data = Channel::new(move |b| {
+            if let InvokeResponseBody::Raw(b) = b {
+                s2.lock().extend_from_slice(&b);
+                m2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        let status: Channel<Status> = Channel::new(|_| Ok(()));
+        let watch = Watch { on_cwd: Box::new(|_| {}), on_exit: Box::new(|| {}) };
+        let argv = vec!["seq".to_string(), "1".into(), N.to_string()];
+        let (_tx, _idle) = spawn_controlled(120, 30, data, status, Arc::new(Flow::default()), None, Some(argv), Vec::new(), watch).unwrap();
+        let marker = b"[exited with status 0]";
+        let t0 = std::time::Instant::now();
+        while !seen.lock().windows(marker.len()).any(|w| w == marker) {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(60), "output never finished");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let text = String::from_utf8_lossy(&seen.lock()).into_owned();
+        let numbers: Vec<u64> = text.split("\r\n").filter_map(|l| l.trim().parse().ok()).collect();
+        assert_eq!(numbers, (1..=N).collect::<Vec<_>>(), "bytes lost or reordered");
+        // Unmerged, a pty read is about 4 KB: this output (~1.3 MB) would be 300+ messages.
+        let n = messages.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(n < 120, "{n} messages: reads were not merged");
+    }
 }
