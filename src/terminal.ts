@@ -688,10 +688,35 @@ export class Session {
         pendingAck = 0;
       }
     };
+    // Every write makes xterm redraw (the DOM renderer re-lays-out whole rows): a build log arriving 50+ times a
+    // second kept the page at 80% CPU. Chunks are merged and written at most every 50 ms (250 ms while the tab
+    // is hidden); a terminal that has been quiet writes the next chunk at once, so typing stays instant.
+    let queued: Uint8Array[] = [];
+    let queuedLen = 0;
+    let timer = 0;
+    let lastWrite = 0;
+    const flush = () => {
+      timer = 0;
+      if (gen !== this.gen || !queuedLen) return;
+      let out = queued[0];
+      if (queued.length > 1) {
+        out = new Uint8Array(queuedLen);
+        let at = 0;
+        for (const q of queued) (out.set(q, at), (at += q.length));
+      }
+      queued = [];
+      queuedLen = 0;
+      lastWrite = performance.now();
+      this.term.write(out, () => ack(out.length));
+    };
     onData.onmessage = (d) => {
       if (gen !== this.gen) return;
       const bytes = d instanceof ArrayBuffer ? new Uint8Array(d) : new Uint8Array(d as unknown as number[]);
-      this.term.write(bytes, () => ack(bytes.length));
+      queued.push(bytes);
+      queuedLen += bytes.length;
+      if (timer) return;
+      const every = this.el.hidden ? 250 : 50;
+      timer = window.setTimeout(flush, Math.max(0, every - (performance.now() - lastWrite)));
     };
     const onStatus = new Channel<Status>();
     onStatus.onmessage = (s) => {
