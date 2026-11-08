@@ -547,6 +547,16 @@ fn open_url(app: tauri::AppHandle, url: String) -> Res<()> {
     app.opener().open_url(url, None::<&str>).map_err(e)
 }
 
+/// Links from terminal output (untrusted remote text): http(s) only, system browser only.
+#[tauri::command]
+fn open_external(app: tauri::AppHandle, url: String) -> Res<()> {
+    use tauri_plugin_opener::OpenerExt;
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("Only http(s) links can be opened".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(e)
+}
+
 /// Whether Kermius starts when the user logs in.
 #[tauri::command]
 fn autostart_get(app: tauri::AppHandle) -> bool {
@@ -1518,6 +1528,7 @@ pub fn run() {
             update_check,
             update_install,
             open_url,
+            open_external,
             autostart_set,
             serial_setup_command,
             vnc_open,

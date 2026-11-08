@@ -1485,7 +1485,7 @@ function renderEditor() {
         <div ${isSsh(h) ? "" : "hidden"}>${credentialPickers(h.identityId, h.keyId, keychain)}</div>
         <div class="vnc-opts" ${proto === "vnc" ? "" : "hidden"}>
           <label class="toggle-row"><span><b>Allow control</b><small class="muted">Mouse and keyboard; off = view only</small></span><input type="checkbox" class="toggle" id="e-vnc-control" ${h.viewOnly ? "" : "checked"} /></label>
-          <label class="toggle-row"><span><b>Share clipboard</b><small class="muted">Copy and paste between this device and the remote desktop</small></span><input type="checkbox" class="toggle" id="e-vnc-clip" ${h.noClipboard ? "" : "checked"} /></label>
+          <label class="toggle-row"><span><b>Share clipboard</b><small class="muted">Copy and paste between this device and the remote desktop. Off for sensitive clipboards: with it on, focusing this tab sends your clipboard to the remote.</small></span><input type="checkbox" class="toggle" id="e-vnc-clip" ${h.noClipboard ? "" : "checked"} /></label>
         </div>
         <label class="field" ${proto === "serial" ? "hidden" : ""}><span>${proto === "vnc" ? "VNC password" : "Password"}</span>
           <div class="input-group"><input id="e-pass" type="password" value="${esc(h.password)}" autocomplete="off" />

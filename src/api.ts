@@ -393,6 +393,8 @@ const tauriApi = {
   updateCheck: () => invoke<UpdateInfo | null>("update_check"),
   updateInstall: (onProgress: Channel<[number, number]>) => invoke<void>("update_install", { onProgress }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
+  /** Links from terminal output: http(s) only, opened in the system browser. */
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
   autostartSet: (enabled: boolean) => invoke<void>("autostart_set", { enabled }),
   serialSetupCommand: () => invoke<string>("serial_setup_command"),
   trustNewHostKey: (hostId: string) => invoke<void>("trust_new_host_key", { hostId }),

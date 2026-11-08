@@ -216,6 +216,10 @@ export const webApi: Api = {
   updateCheck: async () => null,
   updateInstall: unsupported,
   openUrl: unsupported,
+  openExternal: async (url: string) => {
+    if (!/^https?:\/\//i.test(url)) throw new Error("Only http(s) links can be opened");
+    window.open(url, "_blank", "noopener");
+  },
   autostartSet: unsupported,
   serialSetupCommand: async () => "",
   trustNewHostKey: unsupported,

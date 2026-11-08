@@ -247,7 +247,7 @@ export class Session {
     parent.append(this.el);
     const t = this.term;
     t.loadAddon(this.fit);
-    t.loadAddon(new WebLinksAddon());
+    t.loadAddon(new WebLinksAddon((_, url) => api.openExternal(url).catch(() => {})));
     // OSC 52: a remote app (opencode, tmux, vim) copies text to the local clipboard.
     // Capped and opt-out: a compromised server must not stuff the clipboard (paste-jacking).
     t.parser.registerOscHandler(52, (data) => {
