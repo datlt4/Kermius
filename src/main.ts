@@ -1109,6 +1109,14 @@ els.terms.addEventListener("kermius-snippets", (e) => {
 
 // ---------- settings ----------
 
+/** Plain HTTP to a non-local host: the access token travels unencrypted (use TLS). */
+export function isInsecureSyncUrl(url: string): boolean {
+  const u = url.trim().toLowerCase();
+  if (!u.startsWith("http://")) return false;
+  const host = u.slice("http://".length).split(/[/:?#]/, 1)[0];
+  return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]";
+}
+
 const RENDERERS = [
   ["", "Automatic"],
   ["canvas", "Canvas (exact grid, drawn box lines)"],
@@ -1152,8 +1160,7 @@ els.page.addEventListener("change", (e) => {
 
 function renderSettings() {
   const s = state.sync ?? { url: "", token: "", passphrase: "", lastSync: 0 };
-  const p = loadPrefs();
-  // Re-renders (font size, sync save…) keep the scroll position.
+  const p = loadPrefs();  // Re-renders (font size, sync save…) keep the scroll position.
   const scroll = els.page.querySelector(".content.settings")?.scrollTop ?? 0;
   els.page.innerHTML = `
     <div class="content settings">
@@ -1163,6 +1170,7 @@ function renderSettings() {
           <button class="icon-btn" data-set="sync-paste" title="Paste sync config (base64)">${icon("paste", 17)}</button>
           <button class="icon-btn" data-set="sync-copy" title="Copy sync config (base64)">${icon("copy", 17)}</button></div>
         <label class="field"><span>Server URL</span><input id="s-url" placeholder="https://sync.example.com" value="${esc(s.url)}" ${isWeb ? "readonly" : ""} /></label>
+        ${isInsecureSyncUrl(s.url) ? `<p class="err">Plain HTTP on a network: anyone there can read your access token and replace the vault. Use https (reverse proxy) or sync only on localhost.</p>` : ""}
         <label class="field"><span>Access token</span><div class="input-group"><input id="s-token" type="password" value="${esc(s.token)}" />
           <button class="icon-btn" data-set="show" data-target="s-token" title="Show">${icon("eye", 16)}</button></div></label>
         <label class="field"><span>Encryption passphrase</span><div class="input-group"><input id="s-pass" type="password" value="${esc(s.passphrase)}" />
@@ -1261,6 +1269,7 @@ els.page.addEventListener("click", async (e) => {
     toast("Pasted. Press Save & sync to apply", "ok");
   } else if (a === "sync-save") {
     const settings = { url: v("s-url").trim(), token: v("s-token"), passphrase: v("s-pass"), lastSync: state.sync?.lastSync ?? 0 };
+    if (isInsecureSyncUrl(settings.url) && !(await confirmDialog("Sync over plain HTTP?", "The access token will travel unencrypted. Anyone on this network can read it and replace your vault. Use https unless this is a trusted LAN.", "Save anyway"))) return;
     await api.setSyncSettings(settings);
     state.sync = settings;
     if (settings.url) await runSync(true);
