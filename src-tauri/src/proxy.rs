@@ -58,7 +58,11 @@ pub async fn connect(url: &str, host: &str, port: u16) -> Result<TcpStream, Stri
         return Ok(s);
     }
     // SOCKS5 (RFC 1928/1929); the proxy resolves the host name.
+    // Lengths are single bytes: reject anything that would be silently truncated.
     let methods: &[u8] = if p.auth.is_some() { &[0, 2] } else { &[0] };
+    if p.auth.as_ref().is_some_and(|(u, pw)| u.len() > 255 || pw.len() > 255) {
+        return Err("SOCKS5 user name or password is too long (max 255 bytes)".into());
+    }
     s.write_all(&[&[5, methods.len() as u8][..], methods].concat()).await.map_err(io)?;
     let mut r = [0u8; 2];
     s.read_exact(&mut r).await.map_err(io)?;
@@ -73,7 +77,11 @@ pub async fn connect(url: &str, host: &str, port: u16) -> Result<TcpStream, Stri
         }
         _ => return Err("SOCKS5 proxy accepts none of our authentication methods".into()),
     }
-    let mut req = vec![5, 1, 0, 3, host.len() as u8];
+    let mut req = vec![5, 1, 0, 3];
+    if host.len() > 255 {
+        return Err("SOCKS5 host name is too long (max 255 bytes)".into());
+    }
+    req.push(host.len() as u8);
     req.extend_from_slice(host.as_bytes());
     req.extend_from_slice(&port.to_be_bytes());
     s.write_all(&req).await.map_err(io)?;
