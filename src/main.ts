@@ -1135,6 +1135,10 @@ els.page.addEventListener("change", (e) => {
     localStorage.setItem("kermius.restoreTabs", (t as unknown as HTMLInputElement).checked ? "1" : "0");
     return;
   }
+  if (t.id === "s-osc52") {
+    localStorage.setItem("kermius.osc52", (t as unknown as HTMLInputElement).checked ? "1" : "0");
+    return;
+  }
   if (t.id === "s-notes-read") {
     const n = setNotesTtl(notesTtl().hours, (t as unknown as HTMLInputElement).checked);
     if (n) toast(`Deleted ${n} old notification${n > 1 ? "s" : ""}`, "ok");
@@ -1216,6 +1220,8 @@ echo "Tiếng Việt có dấu" 0O 1lI {}[]() =&gt; != &lt;=</pre>
         <label class="field" style="margin-top:12px"><span>Renderer <small class="muted">(applies to new tabs)</small></span>
           <select id="s-renderer">${RENDERERS.map(([v, l]) => `<option value="${v}" ${(localStorage.getItem("kermius.renderer") ?? "") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
           <small>If tmux/htop borders look broken or columns drift (e.g. with display scaling), try Canvas.</small></label>
+        <label class="toggle-row"><span><b>Remote clipboard (OSC 52)</b><small class="muted">Let remote apps (vim, tmux) write to this computer's clipboard. Off for untrusted servers.</small></span>
+          <input type="checkbox" class="toggle" id="s-osc52" ${localStorage.getItem("kermius.osc52") !== "0" ? "checked" : ""} /></label>
       </div>`}
       <p class="muted center">Kermius ${state.version} · ${state.hosts.length} hosts${isWeb ? "" : ` · <button class="link-btn" data-set="check-update">Check for updates</button>`}</p>
     </div>`;

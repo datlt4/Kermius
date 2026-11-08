@@ -80,16 +80,26 @@ if (coarse && window.visualViewport) {
   sync();
 }
 
-/** Text of an OSC 52 payload ("c;<base64>"); null for clipboard reads or bad data. */
+/** Text of an OSC 52 payload ("c;<base64>"); null for clipboard reads, oversized or bad data. */
 export function osc52Text(data: string): string | null {
   const b64 = data.slice(data.indexOf(";") + 1);
-  if (!b64 || b64 === "?") return null;
+  if (!b64 || b64 === "?" || osc52TooBig(data)) return null;
   try {
     return new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
   } catch {
     return null;
   }
 }
+
+/** ~1 MB decoded: a remote must not stuff the local clipboard without a limit. */
+export const OSC52_MAX_B64 = 1_400_000;
+
+export function osc52TooBig(data: string): boolean {
+  return data.slice(data.indexOf(";") + 1).length > OSC52_MAX_B64;
+}
+
+/** Remote clipboard writes (OSC 52) allowed; disable for untrusted servers. */
+export const osc52Allowed = () => localStorage.getItem("kermius.osc52") !== "0";
 
 /** On-screen key row for touch devices (Termius-style), with an optional tmux row. */
 const KEYS: Record<string, string> = {
@@ -164,6 +174,7 @@ export class Session {
   readonly kind = "terminal";
   state: SessionState = "connecting";
   private sid: string | null = null;
+  private osc52Warned = false;
   private term: Terminal;
   private fit = new FitAddon();
   private overlay: HTMLElement;
@@ -235,7 +246,16 @@ export class Session {
     t.loadAddon(this.fit);
     t.loadAddon(new WebLinksAddon());
     // OSC 52: a remote app (opencode, tmux, vim) copies text to the local clipboard.
+    // Capped and opt-out: a compromised server must not stuff the clipboard (paste-jacking).
     t.parser.registerOscHandler(52, (data) => {
+      if (!osc52Allowed()) return true;
+      if (osc52TooBig(data)) {
+        if (!this.osc52Warned) {
+          this.osc52Warned = true;
+          toast("Remote tried to write over 1 MB to the clipboard; blocked", "err");
+        }
+        return true;
+      }
       const text = osc52Text(data);
       if (text !== null) api.clipboardWrite(text).catch(() => {});
       return true;
