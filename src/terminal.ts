@@ -179,6 +179,9 @@ export class Session {
   private fit = new FitAddon();
   private overlay: HTMLElement;
   private error = "";
+  /** Host-key mismatch details (parsed from the HOSTKEY_MISMATCH error). */
+  private keyOld = "";
+  private keyNew = "";
   private logs: string[] = [];
   private gen = 0;
   // Auto-reconnect backoff (seconds); the last value repeats.
@@ -794,6 +797,12 @@ export class Session {
     // A dropped live session is worth a notification (the tab may be in the background).
     if (this.state === "connected" && !this.local) notify("warn", `${protocolLabel(this.host)} · ${this.host.name}`, message, "");
     this.error = message;
+    this.keyOld = "";
+    this.keyNew = "";
+    const m = message.match(/^HOSTKEY_MISMATCH: the host key of (.+) has changed\nold SHA256:(\S+)\nnew SHA256:(\S+)/);
+    if (m) {
+      [, , this.keyOld, this.keyNew] = m;
+    }
     this.addLog(`Error: ${message}`);
     // Host key changes need a decision from the user; never retry those automatically.
     // Same for setup problems with a fix command (missing mosh, serial permissions): retrying cannot help.
@@ -851,8 +860,13 @@ export class Session {
         ${this.logsHtml()}</div>`;
     } else if (s === "error") {
       const mismatch = this.error.startsWith("HOSTKEY_MISMATCH");
+      const fpRow = mismatch && this.keyOld
+        ? `<div class="fp-row"><div>Was: <code class="mono">${esc(this.keyOld)}</code></div><div>Now: <code class="mono">${esc(this.keyNew)}</code></div>
+           <p class="muted small">Only trust this if you reinstalled the server or its IP moved to a new machine (DHCP). If in doubt, check with the server admin first.</p></div>`
+        : "";
       this.overlay.innerHTML = `<div class="ov-card">${avatar}<h3>${esc(h.name)}</h3>${this.local ? "" : `<p class="muted">${target}</p>`}
-        <p class="err">${esc(this.error.replace(/^HOSTKEY_MISMATCH: /, "⚠ "))}</p>
+        <p class="err">${esc(this.error.replace(/^HOSTKEY_MISMATCH: /, "⚠ ").split("\n")[0])}</p>
+        ${fpRow}
         <p class="countdown muted"></p>
         <div class="row">${mismatch ? `<button class="btn danger" data-a="trust">Trust new key</button>` : ""}
         ${fixCommand(this.error) ? `<button class="btn" data-a="copy-fix">Copy command</button>` : ""}

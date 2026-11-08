@@ -154,6 +154,10 @@ pub struct LocalState {
     pub folder_syncs: Vec<crate::foldersync::Job>,
     /// This computer's password for the local terminal's "Type password" (never synced).
     pub local_password: String,
+    /// Last host-key mismatch (known_id, presented fingerprint): transient, never
+    /// synced or saved. Lets the error path show old vs new fingerprints.
+    #[serde(skip, default)]
+    pub last_mismatch: Option<(String, String)>,
 }
 
 pub fn now_ms() -> i64 {

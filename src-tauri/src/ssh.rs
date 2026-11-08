@@ -45,9 +45,11 @@ impl client::Handler for Client {
                     (self.log)(format!("Host key verified: {fp}"));
                     return Ok(true);
                 }
-                Some(_) => {
-                    (self.log)(format!("Host key CHANGED: {fp}"));
+                Some(k) => {
+                    (self.log)(format!("Host key CHANGED: presented {fp}, expected {}", k.fingerprint));
                     self.mismatch = Some(fp);
+                    // Remember for the error path (the handler is consumed by connect).
+                    self.store.state.lock().last_mismatch = Some((self.known_id.clone(), self.mismatch.clone().unwrap()));
                     return Ok(false);
                 }
                 None => {
@@ -165,7 +167,10 @@ async fn connect_inner(store: Arc<Store>, host: &Host, log: Logger, depth: u32) 
     let mut handle = match connecting.await? {
         Err(_) => return Err("Connection timed out".into()),
         Ok(Err(russh::Error::UnknownKey)) => {
-            return Err(format!("{HOSTKEY_MISMATCH}: the host key of {} has changed", known_id(host)))
+            let st = store.state.lock();
+            let old = st.vault.known_hosts.iter().find(|k| k.id == known_id(host)).map(|k| k.fingerprint.as_str()).unwrap_or("?");
+            let new = st.last_mismatch.as_ref().filter(|(id, _)| *id == known_id(host)).map(|(_, fp)| fp.as_str()).unwrap_or("?");
+            return Err(format!("{HOSTKEY_MISMATCH}: the host key of {} has changed\nold SHA256:{old}\nnew SHA256:{new}", known_id(host)));
         }
         Ok(Err(e)) => return Err(e.to_string()),
         Ok(Ok(h)) => h,
