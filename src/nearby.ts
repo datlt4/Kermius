@@ -207,12 +207,13 @@ const ios = /iPhone|iPad/i.test(navigator.userAgent);
 /** iOS keeps received files in the app's Documents folder, which Files shows as On My iPhone › Kermius. */
 const dirLabel = (dir: string) => (ios && /\/Documents\/?$/.test(dir) ? `Files › On My ${/iPad/i.test(navigator.userAgent) ? "iPad" : "iPhone"} › Kermius` : dir);
 
-function requestDialog(id: string, alias: string, files: [string, number][], count: number, total: number) {
+function requestDialog(id: string, alias: string, ip: string, files: [string, number][], count: number, total: number) {
   const el = document.createElement("div");
   el.className = "modal-wrap";
   el.dataset.request = id;
   el.innerHTML = `<div class="modal"><h3>${esc(alias)} wants to send you ${count.toLocaleString()} file${count === 1 ? "" : "s"}</h3>
-    <p class="muted nb-req-dir">${fmtSize(total)} · saved to ${esc(dirLabel(status.dir))}${ios ? " (photos and videos also go to Photos)" : ""}</p>
+    <p class="muted nb-req-dir">From <code class="mono">${esc(ip)}</code> · ${fmtSize(total)} · saved to ${esc(dirLabel(status.dir))}${ios ? " (photos and videos also go to Photos)" : ""}</p>
+    <p class="muted small">Only accept if you recognize this device. The name can be faked; the IP cannot.</p>
     <div class="nb-req-files">${files.map(([n, s]) => `<div><span>${esc(n)}</span><small>${fmtSize(s)}</small></div>`).join("")}
       ${count > files.length ? `<div class="muted">… and ${(count - files.length).toLocaleString()} more</div>` : ""}</div>
     <div class="modal-actions"><button class="btn ghost" data-r="0">Decline</button><button class="btn primary" data-r="1">Accept</button></div></div>`;
@@ -259,8 +260,8 @@ export async function initNearby(rerender: () => void, savedHosts: () => Host[],
     }
     else if (ev.kind === "request") {
       // The save folder can change (e.g. storage permission granted on Android 10).
-      api.nearbyStatus().then((s) => (status = s)).finally(() => requestDialog(ev.id, ev.alias, ev.files, ev.count, ev.total));
-      notify("info", "Nearby Share", `${ev.alias} wants to send ${ev.count} file(s)`, "nearby");
+      api.nearbyStatus().then((s) => (status = s)).finally(() => requestDialog(ev.id, ev.alias, ev.ip, ev.files, ev.count, ev.total));
+      notify("info", "Nearby Share", `${ev.alias} (${ev.ip}) wants to send ${ev.count} file(s)`, "nearby");
     } else if (ev.kind === "message") {
       messageDialog(ev.alias, ev.text);
       notify("info", "Nearby Share", `Message from ${ev.alias}`, "nearby");

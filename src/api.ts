@@ -93,7 +93,7 @@ export interface NearbyTransfer {
 export type NearbyEvent =
   | { kind: "devices"; devices: NearbyDevice[] }
   /** `files`: the first 50 names; `count`/`total`: all of them. */
-  | { kind: "request"; id: string; alias: string; files: [string, number][]; count: number; total: number }
+  | { kind: "request"; id: string; alias: string; ip: string; files: [string, number][]; count: number; total: number }
   | { kind: "message"; alias: string; text: string }
   | { kind: "requestGone"; id: string }
   | ({ kind: "transfer" } & NearbyTransfer);

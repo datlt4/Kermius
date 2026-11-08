@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -129,7 +129,7 @@ pub struct Transfer {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum Event {
     Devices { devices: Vec<Device> },
-    Request { id: String, alias: String, files: Vec<(String, u64)>, count: usize, total: u64 },
+    Request { id: String, alias: String, ip: String, files: Vec<(String, u64)>, count: usize, total: u64 },
     Message { alias: String, text: String },
     RequestGone { id: String },
     Transfer(Transfer),
@@ -348,11 +348,11 @@ fn err_chain(e: &dyn std::error::Error) -> String {
 
 /// Self-signed certificate: LocalSend's HTTPS servers require a client certificate,
 /// and its SHA-256 is the device fingerprint.
-fn http_client() -> (reqwest::Client, String) {
-    use sha2::Digest;
-    let ck = rcgen::generate_simple_self_signed(vec!["LocalSend User".into()]).expect("certificate");
-    let fingerprint = sha2::Sha256::digest(ck.cert.der()).iter().map(|b| format!("{b:02x}")).collect();
-    let pem = format!("{}{}", ck.signing_key.serialize_pem(), ck.cert.pem());
+fn http_client(app: &AppHandle) -> (reqwest::Client, String) {
+    let (pem, fingerprint) = match app.path().app_data_dir() {
+        Ok(dir) => load_or_generate_identity(&dir),
+        Err(_) => ephemeral_identity(),
+    };
     let client = reqwest::Client::builder()
         // Peers use self-signed certificates.
         .danger_accept_invalid_certs(true)
@@ -362,6 +362,70 @@ fn http_client() -> (reqwest::Client, String) {
     (client, fingerprint)
 }
 
+fn ephemeral_identity() -> (String, String) {
+    let ck = rcgen::generate_simple_self_signed(vec!["LocalSend User".into()]).expect("certificate");
+    (format!("{}{}", ck.signing_key.serialize_pem(), ck.cert.pem()), fingerprint_of(ck.cert.der()))
+}
+
+fn fingerprint_of(der: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(der).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedIdentity {
+    key_pem: String,
+    cert_pem: String,
+    fingerprint: String,
+}
+
+/// Stable identity, persisted (0600) so the fingerprint survives restarts and
+/// other devices can actually trust it on first use. A tampered or unreadable
+/// file falls back to a fresh identity (like before).
+fn load_or_generate_identity(dir: &Path) -> (String, String) {
+    let path = dir.join("nearby-identity.json");
+    if let Ok(raw) = std::fs::read(&path) {
+        if let Ok(saved) = serde_json::from_slice::<SavedIdentity>(&raw) {
+            let valid = rcgen::KeyPair::from_pem(&saved.key_pem).is_ok()
+                && {
+                    use rustls_pki_types::pem::PemObject;
+                    rustls_pki_types::CertificateDer::from_pem_slice(saved.cert_pem.as_bytes())
+                        .map(|der| fingerprint_of(der.as_ref()) == saved.fingerprint)
+                        .unwrap_or(false)
+                };
+            if valid {
+                return (format!("{}{}", saved.key_pem, saved.cert_pem), saved.fingerprint);
+            }
+        }
+    }
+    let ck = rcgen::generate_simple_self_signed(vec!["LocalSend User".into()]).expect("certificate");
+    let saved = SavedIdentity {
+        key_pem: ck.signing_key.serialize_pem(),
+        cert_pem: ck.cert.pem(),
+        fingerprint: fingerprint_of(ck.cert.der()),
+    };
+    let pem = format!("{}{}", saved.key_pem, saved.cert_pem);
+    let fp = saved.fingerprint.clone();
+    if let Ok(json) = serde_json::to_vec(&saved) {
+        let _ = std::fs::create_dir_all(dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::io::Write;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true).mode(0o600);
+            if let Ok(mut f) = opts.open(&path) {
+                let _ = f.write_all(&json);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+    (pem, fp)
+}
+
 fn base_url(d: &Device) -> String {
     let host = if d.ip.contains(':') { format!("[{}]", d.ip) } else { d.ip.clone() };
     format!("{}://{}:{}{API}", if d.https { "https" } else { "http" }, host, d.port)
@@ -369,7 +433,7 @@ fn base_url(d: &Device) -> String {
 
 impl Nearby {
     pub fn new(app: AppHandle) -> Arc<Self> {
-        let (client, fingerprint) = http_client();
+        let (client, fingerprint) = http_client(&app);
         Arc::new(Self {
             app,
             client,
@@ -1056,6 +1120,11 @@ async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketA
     if me.session.lock().is_some() {
         return Err(StatusCode::CONFLICT);
     }
+    // One unanswered request at a time: a second one while the user is still
+    // deciding is spam (or a flood), not a new transfer.
+    if !me.pending.lock().is_empty() {
+        return Err(StatusCode::CONFLICT);
+    }
     me.add_device(addr.ip(), &req.info);
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
@@ -1064,7 +1133,7 @@ async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketA
     let mut files: Vec<(String, u64)> = req.files.values().take(50).map(|f| (f.file_name.clone(), f.size)).collect();
     files.sort();
     let (count, total) = (req.files.len(), req.files.values().map(|f| f.size).sum());
-    me.emit(Event::Request { id: id.clone(), alias: req.info.alias.clone(), files, count, total });
+    me.emit(Event::Request { id: id.clone(), alias: req.info.alias.clone(), ip: addr.ip().to_string(), files, count, total });
     let accepted = tokio::time::timeout(Duration::from_secs(120), rx).await;
     me.pending.lock().remove(&id);
     if !matches!(accepted, Ok(Ok(true))) {
@@ -1193,6 +1262,22 @@ async fn cancel(AxState(me): Svc, Query(q): Query<CancelQuery>) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_survives_restarts_and_rejects_tampering() {
+        let dir = std::env::temp_dir().join(format!("kermius-nearby-id-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (pem1, fp1) = load_or_generate_identity(&dir);
+        let (pem2, fp2) = load_or_generate_identity(&dir);
+        assert_eq!((pem1.as_str(), fp1.as_str()), (pem2.as_str(), fp2.as_str()));
+        assert_eq!(fp1.len(), 64);
+        // Tampered file: a fresh identity is generated instead of trusting it.
+        let bad = std::fs::read(dir.join("nearby-identity.json")).unwrap().into_iter().map(|b| b.wrapping_add(1)).collect::<Vec<_>>();
+        std::fs::write(dir.join("nearby-identity.json"), bad).unwrap();
+        let (_, fp3) = load_or_generate_identity(&dir);
+        assert_ne!(fp1, fp3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn target_path_stays_inside() {
