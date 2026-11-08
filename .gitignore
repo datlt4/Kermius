@@ -3,3 +3,15 @@ dist/
 src-tauri/target/
 server/target/
 src-tauri/gen/
+# Secrets & local data: never commit these.
+.env
+.env.*
+!.env.example
+server/data/
+*.jks
+*.p12
+*.pfx
+*.keystore
+*.pem
+*.key
+!**/test-*.pem
