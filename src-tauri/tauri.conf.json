@@ -22,10 +22,7 @@
       }
     ],
     "security": {
-      // Production CSP: local files + Tauri IPC/asset only. style 'unsafe-inline' is needed
-      // (dynamic inline styles everywhere, xterm). No remote content is ever loaded.
       "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; font-src 'self' data: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
-      // Dev server (vite + HMR) additionally allowed while running `tauri dev`.
       "devCsp": "default-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; script-src 'self' http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; img-src 'self' asset: http://asset.localhost data: blob: http://localhost:1420; font-src 'self' data: asset: http://asset.localhost http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost asset: http://asset.localhost http://localhost:1420 ws://localhost:1420; media-src 'self' data: blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
   },

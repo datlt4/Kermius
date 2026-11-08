@@ -94,7 +94,7 @@ export function bindKeychainMenu(root: HTMLElement, ctx: KeychainCtx, active: ()
       contextMenu(e.clientX, e.clientY, [
         { label: "Edit", icon: "edit", action: () => keyDialog(k, ctx) },
         ...(k.publicKey ? [{ label: "Copy public key", icon: "copy", action: () => copy(k.publicKey, "Public key") }] : []),
-        { label: "Copy private key", icon: "key", action: () => copy(k.privateKey, "Private key") },
+        { label: "Copy private key", icon: "key", action: () => api.clipboardWriteSecret(k.privateKey).then(() => toast("Private key copied (clears in 30s)", "ok")) },
         "-" as const,
         { label: "Delete", icon: "trash", danger: true, action: () => deleteKey(k, ctx) },
       ]);
@@ -102,7 +102,7 @@ export function bindKeychainMenu(root: HTMLElement, ctx: KeychainCtx, active: ()
       contextMenu(e.clientX, e.clientY, [
         { label: "Edit", icon: "edit", action: () => identityDialog(i, ctx) },
         { label: "Copy username", icon: "user", action: () => copy(i.username, "Username") },
-        ...(i.password ? [{ label: "Copy password", icon: "key", action: () => copy(i.password, "Password") }] : []),
+        ...(i.password ? [{ label: "Copy password", icon: "key", action: () => api.clipboardWriteSecret(i.password).then(() => toast("Password copied (clears in 30s)", "ok")) }] : []),
         "-" as const,
         { label: "Delete", icon: "trash", danger: true, action: () => deleteIdentity(i, ctx) },
       ]);

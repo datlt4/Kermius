@@ -186,6 +186,7 @@ export const webApi: Api = {
     await copyText(password);
   },
   clipboardWrite: copyText,
+  clipboardWriteSecret: copyText,
   clipboardRead: async () => (navigator.clipboard && isSecureContext ? navigator.clipboard.readText() : unsupported()),
   sshConnect: unsupported,
   localOpen: unsupported,

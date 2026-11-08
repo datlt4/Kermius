@@ -279,11 +279,45 @@ async fn with_clipboard<T: Send + 'static>(app: tauri::AppHandle, f: impl FnOnce
 
 #[tauri::command]
 async fn copy_password(app: tauri::AppHandle, state: State<'_, AppState>, id: String) -> Res<()> {
-    let host = state.host(&id)?;
-    if host.password.is_empty() {
+    let password = state.host(&id)?.password;
+    if password.is_empty() {
         return Err("This host has no password".into());
     }
-    with_clipboard(app, move |a| a.clipboard().write_text(host.password).map_err(e)).await
+    with_clipboard(app.clone(), {
+        let password = password.clone();
+        move |a| a.clipboard().write_text(password).map_err(e)
+    })
+    .await?;
+    clear_clipboard_later(&app, password);
+    Ok(())
+}
+
+/// Clear the clipboard after `SECS`, but only if it still holds `secret`
+/// (the user may have copied something else meanwhile).
+fn clear_clipboard_later(app: &tauri::AppHandle, secret: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(SECRET_CLIPBOARD_TTL)).await;
+        let same = with_clipboard(app.clone(), |a| a.clipboard().read_text().map_err(e)).await;
+        if same.as_deref() == Ok(secret.as_str()) {
+            let _ = with_clipboard(app, |a| a.clipboard().write_text(String::new()).map_err(e)).await;
+        }
+    });
+}
+
+/// Secrets stay in the clipboard this long before they are wiped.
+const SECRET_CLIPBOARD_TTL: u64 = 30;
+
+/// Write a secret (private key, passphrase…) and wipe it from the clipboard after 30s.
+#[tauri::command]
+async fn clipboard_write_secret(app: tauri::AppHandle, text: String) -> Res<()> {
+    with_clipboard(app.clone(), {
+        let text = text.clone();
+        move |a| a.clipboard().write_text(text).map_err(e)
+    })
+    .await?;
+    clear_clipboard_later(&app, text);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1459,6 +1493,7 @@ pub fn run() {
             generate_key,
             copy_password,
             clipboard_write,
+            clipboard_write_secret,
             clipboard_read,
             ssh_connect,
             local_open,

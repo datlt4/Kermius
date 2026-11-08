@@ -326,6 +326,8 @@ const tauriApi = {
   importTermix: (path: string) => invoke<{ added: number; updated: number }>("import_termix", { path }),
   copyPassword: (id: string) => invoke<void>("copy_password", { id }),
   clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
+  /** Secrets: wiped from the clipboard after 30s. Use for passwords and private keys. */
+  clipboardWriteSecret: (text: string) => invoke<void>("clipboard_write_secret", { text }),
   sshTest: (host: Host) => invoke<string[]>("ssh_test", { host }),
   nearbyStatus: () => invoke<NearbyStatus>("nearby_status"),
   nearbyStart: () => invoke<NearbyStatus>("nearby_start"),
