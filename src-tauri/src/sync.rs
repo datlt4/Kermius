@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
 
 const MAGIC: &[u8; 4] = b"KMS1";
+const MAGIC_V2: &[u8; 4] = b"KMS2";
 const SALT_LEN: usize = 16;
 
 #[derive(Serialize)]
@@ -19,19 +20,25 @@ pub struct SyncReport {
 }
 
 fn encode(passphrase: &str, salt: &[u8; SALT_LEN], vault: &Vault) -> Result<Vec<u8>> {
-    let key = crypto::derive_key(passphrase, salt)?;
-    let mut out = MAGIC.to_vec();
+    // New blobs use the stronger v2 KDF; v1 blobs remain decodable (see decode).
+    let key = crypto::derive_key_v2(passphrase, salt)?;
+    let mut out = MAGIC_V2.to_vec();
     out.extend_from_slice(salt);
     out.extend(crypto::seal(&key, &serde_json::to_vec(vault)?));
     Ok(out)
 }
 
 fn decode(passphrase: &str, blob: &[u8]) -> Result<([u8; SALT_LEN], Vault)> {
-    if blob.len() < 4 + SALT_LEN || &blob[..4] != MAGIC {
+    if blob.len() < 4 + SALT_LEN {
+        bail!("server returned an unrecognized vault format");
+    }
+    let v1 = &blob[..4] == MAGIC;
+    let v2 = &blob[..4] == MAGIC_V2;
+    if !v1 && !v2 {
         bail!("server returned an unrecognized vault format");
     }
     let salt: [u8; SALT_LEN] = blob[4..4 + SALT_LEN].try_into()?;
-    let key = crypto::derive_key(passphrase, &salt)?;
+    let key = if v2 { crypto::derive_key_v2(passphrase, &salt)? } else { crypto::derive_key(passphrase, &salt)? };
     Ok((salt, serde_json::from_slice(&crypto::open(&key, &blob[4 + SALT_LEN..])?)?))
 }
 
@@ -105,6 +112,20 @@ mod tests {
         let v = Vault { hosts: vec![Default::default()], ..Default::default() };
         let salt = crypto::random::<SALT_LEN>();
         let blob = encode("pw", &salt, &v).unwrap();
+        assert_eq!(&blob[..4], b"KMS2", "new blobs use the v2 KDF");
+        assert_eq!(decode("pw", &blob).unwrap().1, v);
+        assert!(decode("wrong", &blob).is_err());
+    }
+
+    /// Blobs written by older versions (KMS1) must stay readable.
+    #[test]
+    fn blob_v1_still_decodes() {
+        let v = Vault { hosts: vec![Default::default()], ..Default::default() };
+        let salt = crypto::random::<SALT_LEN>();
+        let key = crypto::derive_key("pw", &salt).unwrap();
+        let mut blob = MAGIC.to_vec();
+        blob.extend_from_slice(&salt);
+        blob.extend(crypto::seal(&key, &serde_json::to_vec(&v).unwrap()));
         assert_eq!(decode("pw", &blob).unwrap().1, v);
         assert!(decode("wrong", &blob).is_err());
     }

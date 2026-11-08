@@ -20,32 +20,38 @@ export interface Vault {
 export const emptyVault = (): Vault => ({ hosts: [], knownHosts: [], snippets: [] });
 
 const MAGIC = new TextEncoder().encode("KMS1");
+const MAGIC2 = new TextEncoder().encode("KMS2");
 const SALT_LEN = 16;
 const NONCE_LEN = 24;
 
 const random = (n: number) => crypto.getRandomValues(new Uint8Array(n));
 
-/** Argon2id with the Rust `argon2` crate defaults (m=19 MiB, t=2, p=1). */
-export async function deriveKey(passphrase: string, salt: Uint8Array): Promise<Uint8Array> {
-  return argon2id({ password: passphrase, salt, parallelism: 1, iterations: 2, memorySize: 19 * 1024, hashLength: 32, outputType: "binary" });
+/** Argon2id. v1 (KMS1) used the Rust `argon2` crate defaults (m=19 MiB, t=2, p=1);
+ *  v2 (KMS2) uses m=64 MiB, t=3, p=1. */
+export async function deriveKey(passphrase: string, salt: Uint8Array, v2 = false): Promise<Uint8Array> {
+  return argon2id({ password: passphrase, salt, parallelism: 1, iterations: v2 ? 3 : 2, memorySize: (v2 ? 64 : 19) * 1024, hashLength: 32, outputType: "binary" });
 }
 
 export async function encodeVault(passphrase: string, salt: Uint8Array, vault: Vault): Promise<Uint8Array> {
-  const key = await deriveKey(passphrase, salt);
+  const key = await deriveKey(passphrase, salt, true);
   const nonce = random(NONCE_LEN);
   const ct = xchacha20poly1305(key, nonce).encrypt(new TextEncoder().encode(JSON.stringify(vault)));
-  const out = new Uint8Array(MAGIC.length + SALT_LEN + NONCE_LEN + ct.length);
-  out.set(MAGIC, 0);
+  const out = new Uint8Array(MAGIC2.length + SALT_LEN + NONCE_LEN + ct.length);
+  out.set(MAGIC2, 0);
   out.set(salt, 4);
   out.set(nonce, 4 + SALT_LEN);
   out.set(ct, 4 + SALT_LEN + NONCE_LEN);
   return out;
 }
 
+const isMagic = (blob: Uint8Array, m: Uint8Array) => m.every((b, i) => blob[i] === b);
+
 export async function decodeVault(passphrase: string, blob: Uint8Array): Promise<{ salt: Uint8Array; vault: Vault }> {
-  if (blob.length < 4 + SALT_LEN + NONCE_LEN || MAGIC.some((b, i) => blob[i] !== b)) throw new Error("Unrecognized vault format");
+  if (blob.length < 4 + SALT_LEN + NONCE_LEN) throw new Error("Unrecognized vault format");
+  const v2 = isMagic(blob, MAGIC2);
+  if (!v2 && !isMagic(blob, MAGIC)) throw new Error("Unrecognized vault format");
   const salt = blob.slice(4, 4 + SALT_LEN);
-  const key = await deriveKey(passphrase, salt);
+  const key = await deriveKey(passphrase, salt, v2);
   const nonce = blob.slice(4 + SALT_LEN, 4 + SALT_LEN + NONCE_LEN);
   let plain: Uint8Array;
   try {

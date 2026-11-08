@@ -24,8 +24,21 @@ pub fn open(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn derive_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32]> {
+    // v1 params (KMS1 blobs, kept so old vaults stay readable).
     let mut out = [0u8; 32];
     argon2::Argon2::default()
+        .hash_password_into(passphrase.as_bytes(), salt, &mut out)
+        .map_err(|e| anyhow!("key derivation failed: {e}"))?;
+    Ok(out)
+}
+
+/// v2 params (KMS2 blobs): m=64 MiB, t=3, p=1. Stronger against GPU guessing;
+/// old KMS1 blobs still decode via [`derive_key`].
+pub fn derive_key_v2(passphrase: &str, salt: &[u8]) -> Result<[u8; 32]> {
+    let params = argon2::Params::new(64 * 1024, 3, 1, Some(32))
+        .map_err(|e| anyhow!("key derivation failed: {e}"))?;
+    let mut out = [0u8; 32];
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
         .hash_password_into(passphrase.as_bytes(), salt, &mut out)
         .map_err(|e| anyhow!("key derivation failed: {e}"))?;
     Ok(out)
