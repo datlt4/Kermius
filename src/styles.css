@@ -51,9 +51,9 @@ input, textarea { font: inherit; color: inherit; }
 .collapse-btn { margin-right: -6px; }
 .side-collapsed { --side-w: 64px; }
 .side-collapsed .brand { flex-direction: column; padding: 14px 0 10px; }
-.side-collapsed .brand > span, .side-collapsed .nav-item span, .side-collapsed .side-scroll > *, .side-collapsed .sync-pill span { display: none; }
+.side-collapsed .brand > span, .side-collapsed .nav-item span, .side-collapsed .side-scroll > *, .side-collapsed .sync-pill span, .side-collapsed .update-pill span { display: none; }
 .side-collapsed .collapse-btn { margin: 0; }
-.side-collapsed .nav-item, .side-collapsed .sync-pill { justify-content: center; padding: 10px 0; }
+.side-collapsed .nav-item, .side-collapsed .sync-pill, .side-collapsed .update-pill { justify-content: center; padding: 10px 0; }
 .side-collapsed .sidebar { overflow: hidden; }
 
 .sidebar {
