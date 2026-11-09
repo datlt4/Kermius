@@ -23,9 +23,11 @@ export function systemAlert(title: string, body: string) {
 const lastOs = new Map<string, number>();
 
 /** System notification, only while Kermius is not in front (the bell has it otherwise);
- *  a repeating note (e.g. "offline") at most once a minute. */
+ *  a repeating note (e.g. "offline") at most once a minute.
+ *  Skipped while the system is offline (sleep, no network): the in-app note is still
+ *  kept, but nothing buzzes the user until they are back. */
 function osNotify(title: string, body: string) {
-  if (isWeb || (document.visibilityState === "visible" && document.hasFocus())) return;
+  if (isWeb || !navigator.onLine || (document.visibilityState === "visible" && document.hasFocus())) return;
   const key = `${title}\n${body}`;
   if (Date.now() - (lastOs.get(key) ?? 0) < 60_000) return;
   lastOs.set(key, Date.now());

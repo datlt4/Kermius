@@ -175,6 +175,8 @@ export class Session {
   state: SessionState = "connecting";
   private sid: string | null = null;
   private osc52Warned = false;
+  /** Waiting for the network to come back (see stopRetrying/retryConnection). */
+  private offlinePaused = false;
   private term: Terminal;
   private fit = new FitAddon();
   private overlay: HTMLElement;
@@ -696,6 +698,7 @@ export class Session {
   /** Connect now; also used by Retry (keeps the backoff position, so a failure waits for the next step). */
   async connect() {
     this.clearRetry();
+    this.offlinePaused = false;
     if (this.sid) api.sshClose(this.sid).catch(() => {});
     this.sid = null;
     this.logs = [];
@@ -806,6 +809,14 @@ export class Session {
     this.addLog(`Error: ${message}`);
     // Host key changes need a decision from the user; never retry those automatically.
     // Same for setup problems with a fix command (missing mosh, serial permissions): retrying cannot help.
+    // And while the system is offline (sleep, no network): wait for it to come back instead
+    // of retrying into the void.
+    if (!navigator.onLine && !this.local) {
+      this.offlinePaused = true;
+      this.clearRetry();
+      this.setState("error");
+      return;
+    }
     if (!this.local && !message.startsWith("HOSTKEY_MISMATCH") && !fixCommand(message)) {
       const delay = Session.DELAYS[Math.min(this.retryStep, Session.DELAYS.length - 1)];
       this.retryStep++;
@@ -820,6 +831,21 @@ export class Session {
     clearTimeout(this.retryTimer);
     clearInterval(this.tickTimer);
     this.retryAt = 0;
+  }
+
+  /** The system just went offline (sleep, network lost): stop a pending retry countdown. */
+  stopRetrying() {
+    if (this.local || this.state !== "error") return;
+    this.clearRetry();
+    this.offlinePaused = true;
+    this.renderCountdown();
+  }
+
+  /** The system is back online: resume a connection that was waiting for it. */
+  retryConnection() {
+    if (this.local || this.state !== "error" || !this.offlinePaused || !navigator.onLine) return;
+    this.offlinePaused = false;
+    this.connect();
   }
 
   private renderCountdown() {

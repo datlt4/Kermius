@@ -1751,6 +1751,11 @@ function scheduleSync() {
 
 async function runSync(manual: boolean) {
   if (state.syncing || !state.sync?.url) return;
+  // Sleep / no network: stay quiet, the online handler below retries.
+  if (!navigator.onLine) {
+    if (manual) toast("Offline — will sync when connected", "info");
+    return;
+  }
   state.syncing = true;
   renderSyncFoot();
   try {
@@ -1769,6 +1774,17 @@ async function runSync(manual: boolean) {
 }
 
 // ---------- global ----------
+
+/** Sleep / network lost: stop retry countdowns and system notifications (in-app notes
+ *  are still kept). Back online: resume waiting sessions and sync. */
+addEventListener("offline", () => {
+  for (const s of state.sessions) if (s instanceof Session) s.stopRetrying();
+  renderTabs();
+});
+addEventListener("online", () => {
+  for (const s of state.sessions) if (s instanceof Session) s.retryConnection();
+  scheduleSync();
+});
 
 async function reload() {
   [state.hosts, state.snippets, state.keys, state.identities] = await Promise.all([
