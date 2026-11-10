@@ -4,7 +4,7 @@ import { api, emptyHost, isWeb, type Host, type Identity, type Key, type Control
 import { listen } from "@tauri-apps/api/event";
 import { bindKeychain, bindKeychainMenu, credentialPickers, readPickers, renderKeychain, type KeychainCtx } from "./keychain";
 import { FilesTab } from "./files";
-import { bellButton, initOsNotifications, notesTtl, onNotesChange, setNotesTtl, toggleNotesPanel, TTLS, ttlLabel } from "./notify";
+import { bellButton, initOsNotifications, isQuietOffline, notesTtl, onNotesChange, setNotesTtl, toggleNotesPanel, TTLS, ttlLabel } from "./notify";
 import { VncTab } from "./vnc";
 import { checkUpdate, pendingUpdate, updateDialog } from "./update";
 import { sshExportDialog } from "./sshexport";
@@ -1109,12 +1109,20 @@ els.terms.addEventListener("kermius-snippets", (e) => {
 
 // ---------- settings ----------
 
-/** Plain HTTP to a non-local host: the access token travels unencrypted (use TLS). */
+/** Plain HTTP to a non-local host: the access token travels unencrypted (use TLS).
+ *  Parsed with URL, not string splits: `http://localhost:x@evil.example.com/`
+ *  is evil.example.com (userinfo), and `http://[::1]:8080` is loopback. */
 export function isInsecureSyncUrl(url: string): boolean {
-  const u = url.trim().toLowerCase();
-  if (!u.startsWith("http://")) return false;
-  const host = u.slice("http://".length).split(/[/:?#]/, 1)[0];
-  return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]";
+  const raw = url.trim();
+  if (!raw || !raw.toLowerCase().startsWith("http://")) return false;
+  let host: string;
+  try {
+    host = new URL(raw).hostname.toLowerCase();
+  } catch {
+    return true; // unparseable: warn rather than silently allow
+  }
+  // URL.hostname keeps IPv6 brackets in some engines; accept both forms.
+  return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]" && host !== "::1";
 }
 
 const RENDERERS = [
@@ -1143,6 +1151,10 @@ els.page.addEventListener("change", (e) => {
     localStorage.setItem("kermius.restoreTabs", (t as unknown as HTMLInputElement).checked ? "1" : "0");
     return;
   }
+  if (t.id === "s-quiet-offline") {
+    localStorage.setItem("kermius.quietOffline", (t as unknown as HTMLInputElement).checked ? "1" : "0");
+    return;
+  }
   if (t.id === "s-osc52") {
     localStorage.setItem("kermius.osc52", (t as unknown as HTMLInputElement).checked ? "1" : "0");
     return;
@@ -1159,7 +1171,7 @@ els.page.addEventListener("change", (e) => {
 });
 
 function renderSettings() {
-  const s = state.sync ?? { url: "", token: "", passphrase: "", lastSync: 0 };
+  const s = state.sync ?? { url: "", token: "", passphrase: "", legacyFormat: false, lastSync: 0 };
   const p = loadPrefs();  // Re-renders (font size, sync save…) keep the scroll position.
   const scroll = els.page.querySelector(".content.settings")?.scrollTop ?? 0;
   els.page.innerHTML = `
@@ -1176,6 +1188,10 @@ function renderSettings() {
         <label class="field"><span>Encryption passphrase</span><div class="input-group"><input id="s-pass" type="password" value="${esc(s.passphrase)}" />
           <button class="icon-btn" data-set="show" data-target="s-pass" title="Show">${icon("eye", 16)}</button></div>
           <small>Use the same passphrase on every device. If you lose it, synced data cannot be recovered.</small></label>
+        <label class="toggle-row"><span><b>Legacy vault format (KMS1)</b><small class="muted">Only if some devices still run Kermius older than 1.40 — they cannot read the new format. Turn off once everything is updated.</small></span>
+          <input type="checkbox" class="toggle" id="s-legacy-format" ${s.legacyFormat ? "checked" : ""} /></label>
+        <label class="toggle-row"><span><b>Pause sync, retries and alerts while offline</b><small class="muted">No notifications or reconnect attempts during sleep. Off restores always-retry (useful if your network misreports status).</small></span>
+          <input type="checkbox" class="toggle" id="s-quiet-offline" ${localStorage.getItem("kermius.quietOffline") !== "0" ? "checked" : ""} /></label>
         <div class="row"><button class="btn primary" data-set="sync-save">Save &amp; sync</button>${isWeb ? `<button class="btn ghost" data-set="lock">${icon("lock", 15)} Lock</button>` : ""}
           <span class="muted">${s.lastSync ? `Last sync ${ago(s.lastSync)}` : ""}${state.syncError ? ` · <span class="err">${esc(state.syncError)}</span>` : ""}</span></div>
       </div>
@@ -1268,7 +1284,7 @@ els.page.addEventListener("click", async (e) => {
     $<HTMLInputElement>("#s-pass").value = pass.join("|");
     toast("Pasted. Press Save & sync to apply", "ok");
   } else if (a === "sync-save") {
-    const settings = { url: v("s-url").trim(), token: v("s-token"), passphrase: v("s-pass"), lastSync: state.sync?.lastSync ?? 0 };
+    const settings = { url: v("s-url").trim(), token: v("s-token"), passphrase: v("s-pass"), legacyFormat: $<HTMLInputElement>("#s-legacy-format").checked, lastSync: state.sync?.lastSync ?? 0 };
     if (isInsecureSyncUrl(settings.url) && !(await confirmDialog("Sync over plain HTTP?", "The access token will travel unencrypted. Anyone on this network can read it and replace your vault. Use https unless this is a trusted LAN.", "Save anyway"))) return;
     await api.setSyncSettings(settings);
     state.sync = settings;
@@ -1751,11 +1767,8 @@ function scheduleSync() {
 
 async function runSync(manual: boolean) {
   if (state.syncing || !state.sync?.url) return;
-  // Sleep / no network: stay quiet, the online handler below retries.
-  if (!navigator.onLine) {
-    if (manual) toast("Offline — will sync when connected", "info");
-    return;
-  }
+  // Offline + quiet mode: skip auto sync (manual clicks always try); the online handler below retries.
+  if (!manual && isQuietOffline()) return;
   state.syncing = true;
   renderSyncFoot();
   try {
