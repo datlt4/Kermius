@@ -3,6 +3,15 @@ import type { Api, Host, Identity, Key, Snippet, SyncSettings } from "./api";
 import { decodeVault, emptyVault, encodeVault, mergeVaults, newSalt, type Vault } from "./vaultcrypto";
 
 let session: { token: string; passphrase: string } | null = null;
+/** Non-secret preference, kept across page loads (the session itself is memory-only). */
+const LEGACY_KEY = "kermius.web.legacyFormat";
+let legacyFormat = (() => {
+  try {
+    return localStorage.getItem(LEGACY_KEY) === "1";
+  } catch {
+    return false;
+  }
+})();
 let vault: Vault = emptyVault();
 let lastSync = 0;
 
@@ -48,7 +57,7 @@ async function sync(): Promise<boolean> {
       const put = await fetch("/v1/vault", {
         method: "PUT",
         headers: { ...auth, "x-base-version": String(version) },
-        body: (await encodeVault(session.passphrase, salt, merged)) as Uint8Array<ArrayBuffer>,
+        body: (await encodeVault(session.passphrase, salt, merged, legacyFormat)) as Uint8Array<ArrayBuffer>,
       });
       if (put.status === 409) continue;
       if (!put.ok) throw new Error(`Sync push failed: HTTP ${put.status}`);
@@ -226,8 +235,14 @@ export const webApi: Api = {
   tunnelStart: unsupported,
   tunnelStop: unsupported,
   tunnelList: async () => [],
-  getSyncSettings: async (): Promise<SyncSettings> => ({ url: location.origin, token: session?.token ?? "", passphrase: session?.passphrase ?? "", lastSync }),
+  getSyncSettings: async (): Promise<SyncSettings> => ({ url: location.origin, token: session?.token ?? "", passphrase: session?.passphrase ?? "", legacyFormat, lastSync }),
   setSyncSettings: async (s: SyncSettings) => {
+    legacyFormat = s.legacyFormat;
+    try {
+      localStorage.setItem(LEGACY_KEY, legacyFormat ? "1" : "0");
+    } catch {
+      /* private window: the choice lasts until the page is closed */
+    }
     await webLogin(s.token, s.passphrase);
   },
   syncNow: async () => {
