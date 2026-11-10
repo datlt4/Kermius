@@ -46,8 +46,12 @@ impl client::Handler for Client {
                     return Ok(true);
                 }
                 Some(k) => {
-                    (self.log)(format!("Host key CHANGED: presented {fp}, expected {}", k.fingerprint));
-                    self.mismatch = Some(fp);
+                    // russh fingerprints already carry the "SHA256:" prefix; strip it so
+                    // messages never read "SHA256:SHA256:…".
+                    let presented = fp.trim_start_matches("SHA256:");
+                    let expected = k.fingerprint.trim_start_matches("SHA256:");
+                    (self.log)(format!("Host key CHANGED: presented {presented}, expected {expected}"));
+                    self.mismatch = Some(presented.to_string());
                     // Remember for the error path (the handler is consumed by connect).
                     self.store.state.lock().last_mismatch = Some((self.known_id.clone(), self.mismatch.clone().unwrap()));
                     return Ok(false);
@@ -168,7 +172,7 @@ async fn connect_inner(store: Arc<Store>, host: &Host, log: Logger, depth: u32) 
         Err(_) => return Err("Connection timed out".into()),
         Ok(Err(russh::Error::UnknownKey)) => {
             let st = store.state.lock();
-            let old = st.vault.known_hosts.iter().find(|k| k.id == known_id(host)).map(|k| k.fingerprint.as_str()).unwrap_or("?");
+            let old = st.vault.known_hosts.iter().find(|k| k.id == known_id(host)).map(|k| k.fingerprint.trim_start_matches("SHA256:")).unwrap_or("?");
             let new = st.last_mismatch.as_ref().filter(|(id, _)| *id == known_id(host)).map(|(_, fp)| fp.as_str()).unwrap_or("?");
             return Err(format!("{HOSTKEY_MISMATCH}: the host key of {} has changed\nold SHA256:{old}\nnew SHA256:{new}", known_id(host)));
         }
