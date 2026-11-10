@@ -19,10 +19,15 @@ pub struct SyncReport {
     pub last_sync: i64,
 }
 
-fn encode(passphrase: &str, salt: &[u8; SALT_LEN], vault: &Vault) -> Result<Vec<u8>> {
-    // New blobs use the stronger v2 KDF; v1 blobs remain decodable (see decode).
-    let key = crypto::derive_key_v2(passphrase, salt)?;
-    let mut out = MAGIC_V2.to_vec();
+fn encode(passphrase: &str, salt: &[u8; SALT_LEN], vault: &Vault, legacy: bool) -> Result<Vec<u8>> {
+    // New blobs use the stronger v2 KDF unless the fleet still has old apps
+    // (Settings → Sync → legacy format); v1 blobs remain decodable (see decode).
+    let (magic, key) = if legacy {
+        (MAGIC, crypto::derive_key(passphrase, salt)?)
+    } else {
+        (MAGIC_V2, crypto::derive_key_v2(passphrase, salt)?)
+    };
+    let mut out = magic.to_vec();
     out.extend_from_slice(salt);
     out.extend(crypto::seal(&key, &serde_json::to_vec(vault)?));
     Ok(out)
@@ -70,7 +75,7 @@ pub async fn sync(store: &Store) -> Result<SyncReport> {
                 .put(&url)
                 .bearer_auth(&cfg.token)
                 .header("x-base-version", version.to_string())
-                .body(encode(&cfg.passphrase, &salt, &merged)?)
+                .body(encode(&cfg.passphrase, &salt, &merged, cfg.legacy_format)?)
                 .send()
                 .await?;
             match resp.status().as_u16() {
@@ -111,10 +116,20 @@ mod tests {
     fn blob_roundtrip() {
         let v = Vault { hosts: vec![Default::default()], ..Default::default() };
         let salt = crypto::random::<SALT_LEN>();
-        let blob = encode("pw", &salt, &v).unwrap();
+        let blob = encode("pw", &salt, &v, false).unwrap();
         assert_eq!(&blob[..4], b"KMS2", "new blobs use the v2 KDF");
         assert_eq!(decode("pw", &blob).unwrap().1, v);
         assert!(decode("wrong", &blob).is_err());
+    }
+
+    /// Legacy mode encodes KMS1 so old apps keep working; it still decodes everywhere.
+    #[test]
+    fn blob_legacy_encodes_v1() {
+        let v = Vault { hosts: vec![Default::default()], ..Default::default() };
+        let salt = crypto::random::<SALT_LEN>();
+        let blob = encode("pw", &salt, &v, true).unwrap();
+        assert_eq!(&blob[..4], b"KMS1");
+        assert_eq!(decode("pw", &blob).unwrap().1, v);
     }
 
     /// Blobs written by older versions (KMS1) must stay readable.
@@ -145,6 +160,7 @@ mod e2e {
             url: url.into(),
             token: token.into(),
             passphrase: "correct horse".into(),
+            legacy_format: false,
             last_sync: 0,
         };
         s

@@ -239,6 +239,8 @@ export interface SyncSettings {
   token: string;
   passphrase: string;
   lastSync: number;
+  /** Encode KMS1 for fleets with old (< 1.40) apps; default (false) is KMS2. */
+  legacyFormat: boolean;
 }
 
 export type Status =

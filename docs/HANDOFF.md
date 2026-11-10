@@ -10,7 +10,7 @@ Owner's language: Vietnamese. Replies to the owner in Vietnamese.
 - Owner rule (2026-10-18): release automatically after every finished fix, without asking. Do not install to phones unless asked.
 - Version bump on every release, in three files: `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`. `src-tauri/Cargo.lock` is stale (still `kermius 1.38.0`); cargo updates it on the next build.
 - Tag push triggers `.github/workflows/release.yml` (desktop matrix, `mobile.yml` for APK + unsigned IPA, then a `publish` job builds `latest.json` and un-drafts the release). Check CI with the public API: `https://api.github.com/repos/datlt4/Kermius/actions/runs` (no token needed for reads).
-- GitHub Actions đã được owner bật lại (2026-10-20). Release mới nhất: **v1.40.3**.
+- GitHub Actions đã được owner bật lại (2026-10-20). Release mới nhất: **v1.40.4**.
 - v1.38.12's release run was **cancelled** (superseded). v1.38.11 is a leftover draft and is not in the published list. v1.38.3, v1.38.9, v1.38.10 are missing from the published list; check on GitHub before assuming they exist.
 
 ## 2. Environment facts
