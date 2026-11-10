@@ -168,7 +168,7 @@ pub struct Nearby {
     udp: Mutex<Option<Arc<tokio::net::UdpSocket>>>,
     error: Mutex<String>,
     devices: Mutex<HashMap<String, Device>>,
-    pending: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    pending: Pending,
     session: Mutex<Option<Session>>,
     sends: Mutex<HashMap<String, CancellationToken>>,
 }
@@ -1113,20 +1113,25 @@ struct PrepareRes {
     files: HashMap<String, String>,
 }
 
+/// Incoming requests waiting for the user's answer.
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
+
 /// Removes the pending request and tells the UI it is gone, unless the transfer
 /// was accepted. Runs on every exit path — including handler cancellation when
 /// the sender disconnects mid-wait — so a dead request can never wedge later ones.
 struct PendingGuard {
-    me: Arc<Nearby>,
+    pending: Pending,
     id: String,
     accepted: bool,
+    /// Dismisses the request's dialog.
+    gone: Box<dyn Fn(&str) + Send + Sync>,
 }
 
 impl Drop for PendingGuard {
     fn drop(&mut self) {
-        self.me.pending.lock().remove(&self.id);
+        self.pending.lock().remove(&self.id);
         if !self.accepted {
-            self.me.emit(Event::RequestGone { id: self.id.clone() });
+            (self.gone)(&self.id);
         }
     }
 }
@@ -1157,7 +1162,15 @@ async fn prepare_upload(AxState(me): Svc, ConnectInfo(addr): ConnectInfo<SocketA
     me.pending.lock().insert(id.clone(), tx);
     // Guard owns cleanup from here on: decline, timeout, error, or a cancelled
     // handler all remove the entry and dismiss the dialog.
-    let mut guard = PendingGuard { me: me.clone(), id: id.clone(), accepted: false };
+    let mut guard = PendingGuard {
+        pending: me.pending.clone(),
+        id: id.clone(),
+        accepted: false,
+        gone: {
+            let me = me.clone();
+            Box::new(move |id| me.emit(Event::RequestGone { id: id.to_string() }))
+        },
+    };
     // Only the first names: a folder can hold millions of files.
     let mut files: Vec<(String, u64)> = req.files.values().take(50).map(|f| (f.file_name.clone(), f.size)).collect();
     files.sort();
@@ -1290,6 +1303,53 @@ async fn cancel(AxState(me): Svc, Query(q): Query<CancelQuery>) -> StatusCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sender that disconnects while the user is deciding must not leave a dead request behind
+    /// (it used to block every later request with 409 until the app restarted).
+    #[tokio::test]
+    async fn pending_guard_clears_dead_requests() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let pending: Pending = Default::default();
+        let dismissed = Arc::new(AtomicUsize::new(0));
+        let guard = |id: &str, pending: &Pending| {
+            let (tx, _rx) = oneshot::channel();
+            pending.lock().insert(id.to_string(), tx);
+            let dismissed = dismissed.clone();
+            PendingGuard {
+                pending: pending.clone(),
+                id: id.to_string(),
+                accepted: false,
+                gone: Box::new(move |_| {
+                    dismissed.fetch_add(1, Ordering::Relaxed);
+                }),
+            }
+        };
+
+        // The handler is cancelled while waiting (client closed the connection).
+        let g = guard("cancelled", &pending);
+        let task = tokio::spawn(async move {
+            let _g = g;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(pending.lock().len(), 1);
+        task.abort();
+        let _ = task.await;
+        assert!(pending.lock().is_empty(), "a cancelled request stayed pending");
+        assert_eq!(dismissed.load(Ordering::Relaxed), 1, "its dialog was not dismissed");
+
+        // Declined or timed out: same cleanup.
+        drop(guard("declined", &pending));
+        assert!(pending.lock().is_empty());
+        assert_eq!(dismissed.load(Ordering::Relaxed), 2);
+
+        // Accepted: the entry goes, and the dialog (already closed by the user) is not dismissed again.
+        let mut g = guard("accepted", &pending);
+        g.accepted = true;
+        drop(g);
+        assert!(pending.lock().is_empty());
+        assert_eq!(dismissed.load(Ordering::Relaxed), 2);
+    }
 
     #[test]
     fn identity_survives_restarts_and_rejects_tampering() {
