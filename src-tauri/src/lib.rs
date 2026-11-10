@@ -1400,8 +1400,25 @@ fn ios_fix_webview(webview: tauri::webview::PlatformWebview) {
     }
 }
 
+/// Set when Kermius itself put `Malloc=1` into its environment (Linux), so terminals can drop it again.
+pub(crate) static SET_MALLOC_ENV: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// WebKitGTK's allocator (libpas) trims freed memory in 16 KB pieces: on a big, churned heap that leaves a
+/// checkerboard of 60 000+ memory mappings, reaches `vm.max_map_count` (65530), and the page freezes (white
+/// window, 100% CPU, `madvise` failing with EAGAIN in a loop). The system allocator does not do that.
+/// Must run before any thread starts; the web process inherits it. An existing `Malloc` is left alone.
+#[cfg(target_os = "linux")]
+fn webkit_use_system_malloc() {
+    if std::env::var_os("Malloc").is_none() {
+        std::env::set_var("Malloc", "1");
+        SET_MALLOC_ENV.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    webkit_use_system_malloc();
     let builder = tauri::Builder::default();
     // First: a second `kermius …` hands its request to this instance and exits.
     #[cfg(desktop)]

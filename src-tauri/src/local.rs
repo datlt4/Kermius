@@ -256,6 +256,10 @@ fn spawn_cmd(
     let pair = native_pty_system().openpty(size(cols, rows)).map_err(e)?;
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // Kermius sets Malloc=1 for its own WebKit (lib.rs): the shell and the programs in it must not inherit it.
+    if crate::SET_MALLOC_ENV.load(std::sync::atomic::Ordering::Relaxed) {
+        cmd.env_remove("Malloc");
+    }
     // Apps started from the macOS Dock get no locale (Terminal.app sets one itself): the shell then
     // reads typed UTF-8 (Vietnamese đ, ệ…) byte by byte. Give it a UTF-8 one when none is set.
     let ctype = ["LC_ALL", "LC_CTYPE", "LANG"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
