@@ -27,7 +27,7 @@ const lastOs = new Map<string, number>();
  *  Skipped while the system is offline (sleep, no network): the in-app note is still
  *  kept, but nothing buzzes the user until they are back. */
 function osNotify(title: string, body: string) {
-  if (isWeb || !navigator.onLine || (document.visibilityState === "visible" && document.hasFocus())) return;
+  if (isWeb || isQuietOffline() || (document.visibilityState === "visible" && document.hasFocus())) return;
   const key = `${title}\n${body}`;
   if (Date.now() - (lastOs.get(key) ?? 0) < 60_000) return;
   lastOs.set(key, Date.now());
@@ -53,6 +53,18 @@ export interface Note {
 
 const KEY = "kermius.notifications";
 const MAX = 200;
+/** "Pause sync, retries and alerts while offline" (Settings → Sync); default on.
+ *  navigator.onLine is only a hint (LAN without internet still reads "online"),
+ *  so this is a best effort — turning it off restores the old always-retry behavior. */
+export const quietOffline = () => {
+  try {
+    return localStorage.getItem("kermius.quietOffline") !== "0";
+  } catch {
+    return true;
+  }
+};
+/** Offline AND quiet mode on: suppress background activity that assumes a network. */
+export const isQuietOffline = () => quietOffline() && !navigator.onLine;
 let notes: Note[] = [];
 try {
   notes = JSON.parse(localStorage.getItem(KEY) || "[]");

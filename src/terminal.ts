@@ -12,7 +12,7 @@ import "@fontsource/source-code-pro/400.css";
 import "@fontsource/source-code-pro/700.css";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, Channel, emptyHost, type ControlTab, type Host, type Status } from "./api";
-import { notify } from "./notify";
+import { isQuietOffline, notify, quietOffline } from "./notify";
 import { groupHue } from "./groupcolor";
 import { contextMenu, esc, hue, icon, promptDialog, toast } from "./ui";
 
@@ -811,7 +811,7 @@ export class Session {
     // Same for setup problems with a fix command (missing mosh, serial permissions): retrying cannot help.
     // And while the system is offline (sleep, no network): wait for it to come back instead
     // of retrying into the void.
-    if (!navigator.onLine && !this.local) {
+    if (isQuietOffline() && !this.local) {
       this.offlinePaused = true;
       this.clearRetry();
       this.setState("error");
@@ -835,7 +835,7 @@ export class Session {
 
   /** The system just went offline (sleep, network lost): stop a pending retry countdown. */
   stopRetrying() {
-    if (this.local || this.state !== "error") return;
+    if (this.local || this.state !== "error" || !quietOffline()) return;
     this.clearRetry();
     this.offlinePaused = true;
     this.renderCountdown();
