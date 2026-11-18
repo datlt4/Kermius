@@ -32,15 +32,18 @@ export const termTheme = {
 export interface TermPrefs {
   fontFamily: string;
   fontSize: number;
+  /** Kept lines per tab (DOM cost ~ per line); applies live, trimming right away. */
+  scrollback: number;
 }
 
 export const BUILTIN_FONTS = ["JetBrains Mono", "Fira Code", "Source Code Pro"];
 
 export function loadPrefs(): TermPrefs {
-  const d: TermPrefs = { fontFamily: "JetBrains Mono", fontSize: 14 };
+  const d: TermPrefs = { fontFamily: "JetBrains Mono", fontSize: 14, scrollback: 10000 };
   try {
     const p = { ...d, ...JSON.parse(localStorage.getItem("kermius.term") || "{}") };
     if (p.fontFamily.includes(",")) p.fontFamily = d.fontFamily; // old free-text font list
+    p.scrollback = Math.min(50000, Math.max(1000, Math.floor(Number(p.scrollback) || d.scrollback)));
     return p;
   } catch {
     return d;
@@ -177,6 +180,9 @@ export class Session {
   private osc52Warned = false;
   /** Waiting for the network to come back (see stopRetrying/retryConnection). */
   private offlinePaused = false;
+  private resizeObserver: ResizeObserver | null = null;
+  private resizeRaf = 0;
+  private coarseResizeHandler: (() => void) | null = null;
   private term: Terminal;
   private fit = new FitAddon();
   private overlay: HTMLElement;
@@ -219,7 +225,7 @@ export class Session {
       cursorBlink: true,
       cursorStyle: "block",
       cursorInactiveStyle: "outline",
-      scrollback: 10000,
+      scrollback: prefs.scrollback,
       allowProposedApi: true,
       macOptionIsMeta: true,
       theme: termTheme,
@@ -583,13 +589,14 @@ export class Session {
     // Keyboard closed by the system (back gesture): the view grows again, go back to scroll-only.
     if (coarse) {
       let lastH = innerHeight;
-      addEventListener("resize", () => {
+      this.coarseResizeHandler = () => {
         if (this.el.isConnected && innerHeight - lastH > 80 && ta.inputMode === "text") {
           ta.inputMode = "none";
           ta.blur();
         }
         lastH = innerHeight;
-      });
+      };
+      addEventListener("resize", this.coarseResizeHandler);
       // Leaving the app closes the keyboard without a resize we see: back to scroll-only, or the next
       // key-bar tap (which refocuses the terminal) would bring the keyboard back on its own.
       document.addEventListener("visibilitychange", () => {
@@ -646,11 +653,11 @@ export class Session {
       else if (a === "mosh-server") api.clipboardWrite(MOSH_SERVER_SETUP).then(() => toast(`Command copied; run it on ${this.host.name}`, "ok"));
       else if (a === "close") this.onClose(this);
     });
-    let raf = 0;
-    new ResizeObserver(() => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => this.refit());
-    }).observe(this.el.querySelector(".term")!);
+    this.resizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(this.resizeRaf);
+      this.resizeRaf = requestAnimationFrame(() => this.refit());
+    });
+    this.resizeObserver.observe(this.el.querySelector(".term")!);
     this.refit();
     this.connect();
   }
@@ -855,9 +862,11 @@ export class Session {
 
   private addLog(line: string) {
     this.logs.push(line);
+    if (this.logs.length > 500) this.logs.splice(0, this.logs.length - 500);
     const list = this.overlay.querySelector(".logs");
     if (list) {
       list.insertAdjacentHTML("beforeend", `<div>${esc(line)}</div>`);
+      while (list.children.length > 500) list.firstChild?.remove();
       list.scrollTop = list.scrollHeight;
     }
   }
@@ -1059,12 +1068,18 @@ export class Session {
   applyPrefs(p: TermPrefs) {
     this.term.options.fontFamily = fontStack(p.fontFamily);
     this.term.options.fontSize = p.fontSize;
+    this.term.options.scrollback = p.scrollback;
     this.refit();
   }
 
   dispose() {
     this.clearRetry();
     this.gen++;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    cancelAnimationFrame(this.resizeRaf);
+    if (this.coarseResizeHandler) removeEventListener("resize", this.coarseResizeHandler);
+    this.coarseResizeHandler = null;
     if (this.sid) api.sshClose(this.sid);
     this.term.dispose();
     this.el.remove();

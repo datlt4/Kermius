@@ -507,9 +507,11 @@ export class VncTab {
   private addLog(line: string) {
     const t = new Date().toLocaleTimeString();
     this.logs.push(`${t}  ${line}`);
+    if (this.logs.length > 500) this.logs.splice(0, this.logs.length - 500);
     const list = this.el.querySelector(".logs");
     if (list) {
       list.insertAdjacentHTML("beforeend", `<div>${esc(this.logs[this.logs.length - 1])}</div>`);
+      while (list.children.length > 500) list.firstChild?.remove();
       list.scrollTop = list.scrollHeight;
     }
   }
