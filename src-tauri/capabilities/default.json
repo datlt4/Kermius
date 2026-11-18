@@ -10,8 +10,6 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "dialog:allow-open",
-    "notification:default",
-    "opener:allow-open-url",
-    "opener:allow-open-path"
+    "notification:default"
   ]
 }

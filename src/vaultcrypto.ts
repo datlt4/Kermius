@@ -32,12 +32,13 @@ export async function deriveKey(passphrase: string, salt: Uint8Array, v2 = false
   return argon2id({ password: passphrase, salt, parallelism: 1, iterations: v2 ? 3 : 2, memorySize: (v2 ? 64 : 19) * 1024, hashLength: 32, outputType: "binary" });
 }
 
-export async function encodeVault(passphrase: string, salt: Uint8Array, vault: Vault): Promise<Uint8Array> {
-  const key = await deriveKey(passphrase, salt, true);
+export async function encodeVault(passphrase: string, salt: Uint8Array, vault: Vault, legacy = false): Promise<Uint8Array> {
+  const key = await deriveKey(passphrase, salt, !legacy);
   const nonce = random(NONCE_LEN);
   const ct = xchacha20poly1305(key, nonce).encrypt(new TextEncoder().encode(JSON.stringify(vault)));
-  const out = new Uint8Array(MAGIC2.length + SALT_LEN + NONCE_LEN + ct.length);
-  out.set(MAGIC2, 0);
+  const magic = legacy ? MAGIC : MAGIC2;
+  const out = new Uint8Array(magic.length + SALT_LEN + NONCE_LEN + ct.length);
+  out.set(magic, 0);
   out.set(salt, 4);
   out.set(nonce, 4 + SALT_LEN);
   out.set(ct, 4 + SALT_LEN + NONCE_LEN);

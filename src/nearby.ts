@@ -213,7 +213,7 @@ function requestDialog(id: string, alias: string, ip: string, files: [string, nu
   el.dataset.request = id;
   el.innerHTML = `<div class="modal"><h3>${esc(alias)} wants to send you ${count.toLocaleString()} file${count === 1 ? "" : "s"}</h3>
     <p class="muted nb-req-dir">From <code class="mono">${esc(ip)}</code> · ${fmtSize(total)} · saved to ${esc(dirLabel(status.dir))}${ios ? " (photos and videos also go to Photos)" : ""}</p>
-    <p class="muted small">Only accept if you recognize this device. The name can be faked; the IP cannot.</p>
+    <p class="muted small">Only accept if you recognize this device. The name is self-reported (spoofable); the IP is the actual TCP peer, which is much harder to fake.</p>
     <div class="nb-req-files">${files.map(([n, s]) => `<div><span>${esc(n)}</span><small>${fmtSize(s)}</small></div>`).join("")}
       ${count > files.length ? `<div class="muted">… and ${(count - files.length).toLocaleString()} more</div>` : ""}</div>
     <div class="modal-actions"><button class="btn ghost" data-r="0">Decline</button><button class="btn primary" data-r="1">Accept</button></div></div>`;

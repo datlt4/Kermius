@@ -142,6 +142,9 @@ pub struct SyncSettings {
     pub token: String,
     pub passphrase: String,
     pub last_sync: i64,
+    /// Encode vaults in the legacy KMS1 format for fleets with old (< 1.40) apps.
+    /// KMS2 is default; KMS1 stays readable everywhere.
+    pub legacy_format: bool,
 }
 
 /// Device-local state: the vault plus settings that never leave this device.
