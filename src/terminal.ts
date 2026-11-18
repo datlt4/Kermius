@@ -702,15 +702,22 @@ export class Session {
     api.sshWrite(this.sid, d);
   }
 
-  /** Connect now; also used by Retry (keeps the backoff position, so a failure waits for the next step). */
-  async connect() {
+  /** Connect now; also used by Retry (keeps the backoff position, so a failure waits for the next step).
+   *  `quiet` (auto-retry timer) keeps the error card on screen instead of swapping to the
+   *  connecting card: rebuilding the buttons risks swallowing a tap racing the swap (phones). */
+  async connect(quiet = false) {
     this.clearRetry();
     this.offlinePaused = false;
     if (this.sid) api.sshClose(this.sid).catch(() => {});
     this.sid = null;
     this.logs = [];
     const gen = ++this.gen;
-    this.setState("connecting");
+    if (quiet && this.state === "error") {
+      const cd = this.overlay.querySelector(".countdown");
+      if (cd) cd.textContent = "Retrying…";
+    } else {
+      this.setState("connecting");
+    }
     const onData = new Channel<ArrayBuffer>();
     // Ack rendered bytes in ~256 KB batches so the backend keeps reading (flow control).
     let pendingAck = 0;
@@ -806,6 +813,9 @@ export class Session {
     }
     // A dropped live session is worth a notification (the tab may be in the background).
     if (this.state === "connected" && !this.local) notify("warn", `${protocolLabel(this.host)} · ${this.host.name}`, message, "");
+    // Retry loop, same failure already on screen: leave the buttons alone so a tap can't be
+    // swallowed by a rebuild racing it (phones); just refresh the countdown.
+    const sameError = this.state === "error" && this.error === message;
     this.error = message;
     this.keyOld = "";
     this.keyNew = "";
@@ -828,8 +838,12 @@ export class Session {
       const delay = Session.DELAYS[Math.min(this.retryStep, Session.DELAYS.length - 1)];
       this.retryStep++;
       this.retryAt = Date.now() + delay * 1000;
-      this.retryTimer = window.setTimeout(() => this.connect(), delay * 1000);
+      this.retryTimer = window.setTimeout(() => this.connect(true), delay * 1000);
       this.tickTimer = window.setInterval(() => this.renderCountdown(), 1000);
+    }
+    if (sameError) {
+      this.renderCountdown();
+      return;
     }
     this.setState("error");
   }
