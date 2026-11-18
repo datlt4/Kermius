@@ -41,7 +41,8 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci --ignore-scripts
       - name: Audit web dependencies (fail on high/critical)
-        run: npm audit --audit-level=high
+        # Unfixable advisories are documented as exceptions in the script itself.
+        run: node .github/scripts/npm-audit-gate.mjs
       - name: Read app version (web client and image share it)
         id: ver
         run: |
